@@ -443,10 +443,11 @@ async function tryReuse(args: {
   }
 
   const info = await inspectContainer(existing.id);
-  // info === undefined: container vanished between find and inspect. Forget
-  // the registry entry so the caller's create path can reuse the --name.
+  // info === undefined: container vanished between find and inspect. CAS-
+  // forget so a peer that recorded a replacement between our lookup and
+  // this cleanup is not silently de-trusted.
   if (info === undefined) {
-    await scopeRegistry.forget(scope);
+    await scopeRegistry.forgetIfMatches(scope, existing.id);
     return undefined;
   }
 
@@ -460,7 +461,9 @@ async function tryReuse(args: {
       // Best-effort: if remove fails, the create will throw a name-conflict
       // and the caller will get an actionable error.
     }
-    await scopeRegistry.forget(scope);
+    // CAS-forget by id so a peer's freshly-recorded replacement (between
+    // our lookup and this cleanup) is preserved instead of silently erased.
+    await scopeRegistry.forgetIfMatches(scope, existing.id);
     return undefined;
   }
 
@@ -577,20 +580,18 @@ async function doDestroyScope(
   const strangers = matches.filter((c) => c.id !== ownedId);
 
   if (owned !== undefined) {
-    try {
-      await owned.remove();
-    } catch (e: unknown) {
-      // Preserve ownership: a future destroyScope must be able to retry.
-      throw e;
-    }
+    // Let any error propagate — ownership is preserved (we have not yet
+    // touched the registry on this path) so a future destroyScope can retry.
+    await owned.remove();
   }
 
   if (strangers.length > 0) {
     // Owned container is gone (either just removed or never present); the
-    // surviving label-matching containers are not ours to delete. Forget
-    // ownership so this scope is no longer tracked, but surface the
-    // ambiguity so the operator knows the label is still claimed.
-    await scopeRegistry.forget(scope);
+    // surviving label-matching containers are not ours to delete. CAS-
+    // forget by id so a peer's freshly-recorded replacement is preserved
+    // (a blind forget would erase it and silently re-classify the new
+    // owner's container as a stranger).
+    await scopeRegistry.forgetIfMatches(scope, ownedId);
     const error: KoiError = {
       code: "VALIDATION",
       message: `sandbox-docker: destroyScope("${scope}") removed our recorded container but ${strangers.length} additional container(s) still carry the scope label — refusing to delete containers we do not own; investigate via 'docker ps -a --filter label=${SCOPE_LABEL}=${scope}' and remove manually if appropriate`,
@@ -600,6 +601,9 @@ async function doDestroyScope(
     throw new Error(error.message, { cause: error });
   }
 
-  await scopeRegistry.forget(scope);
+  // CAS-forget: if a peer process recorded a replacement between our
+  // initial lookup and this point (after we removed the old container),
+  // their record survives — only our own ownerships id is unlinked.
+  await scopeRegistry.forgetIfMatches(scope, ownedId);
   return owned !== undefined;
 }

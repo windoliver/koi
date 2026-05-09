@@ -901,6 +901,7 @@ describe("createDockerAdapter", () => {
       },
       lookup: async () => undefined,
       forget: async () => {},
+      forgetIfMatches: async () => false,
     };
     const client: DockerClient = {
       createContainer: async () => trackedContainer,
@@ -933,6 +934,7 @@ describe("createDockerAdapter", () => {
         return reg.lookup(scope);
       },
       forget: reg.forget,
+      forgetIfMatches: reg.forgetIfMatches,
     };
     // Realistic loser race: pre-create sees no matches (winner hasn't
     // created yet), createContainer throws name-conflict (winner won the
@@ -1018,5 +1020,80 @@ describe("createDockerAdapter", () => {
     // Registry MUST still hold the recorded ID — the next attempt should
     // be able to reattach once the daemon is healthy.
     expect(await reg.lookup("scope-TRANSIENT")).toBe(existing.id);
+  });
+
+  // Persistence (cross-process race): destroyScope must use CAS-by-id when
+  // forgetting so a peer process that recorded a brand-new replacement
+  // between our lookup and our cleanup is not silently de-trusted.
+  test("destroyScope CAS-forget preserves a peer's freshly recorded replacement", async () => {
+    const oldOwned = fakeContainer("old-owned");
+    const peerReplacement = "peer-new-id";
+    const reg = createInMemoryScopeRegistry();
+    void reg.record("scope-RACE", oldOwned.id);
+    const client: DockerClient = {
+      createContainer: async () => fakeContainer("never"),
+      // After our remove(), simulate the peer having already replaced us:
+      // findContainers no longer sees the old container.
+      findContainers: async () => [oldOwned],
+      inspectContainer: async () => ({ state: "running", labels: {} }),
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
+    // Inject a peer record() between our remove and forget by wrapping
+    // oldOwned.remove to land the peer's record before we call forget.
+    const tracked: DockerContainer = {
+      ...oldOwned,
+      remove: async () => {
+        // Peer process succeeded in recreating the scope while we were
+        // mid-destroy.
+        await reg.record("scope-RACE", peerReplacement);
+      },
+    };
+    const racingClient: DockerClient = {
+      ...client,
+      findContainers: async () => [tracked],
+    };
+    const r2 = await createDockerAdapter({ client: racingClient, scopeRegistry: reg });
+    if (!r2.ok) throw new Error("setup failed");
+    if (r2.value.destroyScope === undefined) throw new Error("destroyScope must exist");
+    await r2.value.destroyScope("scope-RACE");
+    // Critical: peer's brand-new ownership record MUST survive.
+    expect(await reg.lookup("scope-RACE")).toBe(peerReplacement);
+  });
+
+  // Persistence (cross-process race): tryReuse cleanup of a vanished/dead
+  // container must use CAS-by-id so a peer's freshly-recorded replacement
+  // ID is preserved.
+  test("tryReuse CAS-forget on vanished container preserves a peer's replacement record", async () => {
+    const stale = fakeContainer("stale-id");
+    const reg = createInMemoryScopeRegistry();
+    void reg.record("scope-VANISH", stale.id);
+    const client: DockerClient = {
+      // After tryReuse cleanup, adapter would proceed to create — make that
+      // throw so we can assert the registry state immediately after the
+      // vanish-cleanup step.
+      createContainer: async () => {
+        throw new Error("blocked-for-test");
+      },
+      findContainers: async () => [stale],
+      // Simulate peer recording the replacement during our inspect call:
+      // inspectContainer races with the registry mutation.
+      inspectContainer: async () => {
+        await reg.record("scope-VANISH", "peer-replaces");
+        // Container vanished from the daemon's perspective.
+        return undefined;
+      },
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    // findOrCreate sees stale entry, peer's record lands during inspect,
+    // forgetIfMatches(stale.id) MUST NOT delete the peer's "peer-replaces"
+    // entry. Then create throws (synthetic), letting us inspect the state.
+    await expect(r.value.findOrCreate("scope-VANISH", PROFILE)).rejects.toThrow("blocked-for-test");
+    expect(await reg.lookup("scope-VANISH")).toBe("peer-replaces");
   });
 });

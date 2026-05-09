@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -31,6 +31,20 @@ export interface ScopeRegistry {
   readonly lookup: (scope: string) => Promise<string | undefined>;
   /** Drop the entry for a scope. Idempotent — no error if the scope is unknown. */
   readonly forget: (scope: string) => Promise<void>;
+  /**
+   * Compare-and-swap delete: drop the entry only if it currently maps to
+   * `expectedContainerId`. Returns true when the entry was matching and was
+   * removed, false when no entry exists OR the recorded ID differs.
+   *
+   * Why this exists: blind `forget(scope)` is not safe across processes.
+   * Process A removing the old container and process B recording a fresh
+   * replacement can interleave such that A's trailing `forget` deletes B's
+   * brand-new ownership record, leaving a live replacement classified as
+   * an unowned stranger. CAS-by-id eliminates that window: the per-id
+   * file-name encoding makes the delete atomic against another writer
+   * recording a different id.
+   */
+  readonly forgetIfMatches: (scope: string, expectedContainerId: string) => Promise<boolean>;
 }
 
 /**
@@ -48,6 +62,11 @@ export function createInMemoryScopeRegistry(): ScopeRegistry {
     lookup: async (scope): Promise<string | undefined> => map.get(scope),
     forget: async (scope): Promise<void> => {
       map.delete(scope);
+    },
+    forgetIfMatches: async (scope, expectedContainerId): Promise<boolean> => {
+      if (map.get(scope) !== expectedContainerId) return false;
+      map.delete(scope);
+      return true;
     },
   };
 }
@@ -101,19 +120,45 @@ function isFsNotFound(e: unknown): boolean {
 export function createFileScopeRegistry(opts?: { readonly dir?: string }): ScopeRegistry {
   const dir = opts?.dir ?? defaultScopeRegistryDir();
 
-  function pathFor(scope: string): string {
-    // Hash so arbitrary scope strings (containing slashes, colons, etc.)
-    // become safe filenames. Scope strings are not secrets; the hash is
-    // about path safety, not confidentiality.
-    const hash = createHash("sha256").update(scope, "utf8").digest("hex");
-    return join(dir, `${hash}.scope`);
+  function scopeHash(scope: string): string {
+    return createHash("sha256").update(scope, "utf8").digest("hex");
+  }
+  function idHash(containerId: string): string {
+    return createHash("sha256").update(containerId, "utf8").digest("hex").slice(0, 32);
+  }
+  function entryPath(scope: string, containerId: string): string {
+    // Filename encodes the (scope, containerId) pair so an unlink is an
+    // atomic compare-and-swap-by-id: a stale forgetIfMatches cannot delete
+    // a different process's freshly-recorded entry because that entry lives
+    // at a different path.
+    return join(dir, `${scopeHash(scope)}.${idHash(containerId)}.scope`);
+  }
+  function entryPattern(scope: string): string {
+    return `${scopeHash(scope)}.`;
+  }
+
+  async function listEntries(scope: string): Promise<readonly string[]> {
+    const prefix = entryPattern(scope);
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch (e: unknown) {
+      // Directory genuinely missing → no entries; other errors must surface
+      // so a permission fault on the state dir does not silently look empty.
+      if (isFsNotFound(e)) return [];
+      throw e;
+    }
+    return names.filter((n) => n.startsWith(prefix) && n.endsWith(".scope"));
   }
 
   return {
     record: async (scope, containerId): Promise<void> => {
       mkdirSync(dir, { recursive: true });
-      const target = pathFor(scope);
+      const target = entryPath(scope, containerId);
       const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+      // Content is the raw container ID so lookup can recover it without
+      // reversing the hash. The filename hash is the CAS key; the content
+      // is the value.
       await writeFile(tmp, containerId, { mode: 0o600 });
       try {
         await rename(tmp, target);
@@ -125,28 +170,60 @@ export function createFileScopeRegistry(opts?: { readonly dir?: string }): Scope
         }
         throw e;
       }
+      // Sweep stale (scope, otherId) entries left over from a prior record.
+      // Best effort: a concurrent peer's brand-new entry that lands between
+      // listEntries() and unlink() is racy here, but that's a same-scope
+      // double-record (already pathological — the deterministic --name
+      // ensures only one container exists per scope cluster-wide).
+      const stale = await listEntries(scope);
+      const targetName = `${scopeHash(scope)}.${idHash(containerId)}.scope`;
+      for (const n of stale) {
+        if (n === targetName) continue;
+        try {
+          await unlink(join(dir, n));
+        } catch (e: unknown) {
+          if (!isFsNotFound(e)) throw e;
+        }
+      }
     },
     lookup: async (scope): Promise<string | undefined> => {
+      const entries = await listEntries(scope);
+      if (entries.length === 0) return undefined;
+      // Normal case: exactly one entry. During a record sweep there may
+      // briefly be more than one — pick any; the sweep will reduce it.
+      const first = entries[0];
+      if (first === undefined) return undefined;
       try {
-        const raw = await readFile(pathFor(scope), "utf-8");
+        const raw = await readFile(join(dir, first), "utf-8");
         const trimmed = raw.trim();
         return trimmed.length > 0 ? trimmed : undefined;
       } catch (e: unknown) {
-        // Only treat "file does not exist" as absence. Permission errors or
-        // other I/O faults must surface — silently returning undefined would
-        // make an owned container look unowned and let findOrCreate create a
-        // duplicate (or destroyScope refuse to clean up a real survivor).
+        // Race: file disappeared between readdir and readFile. Treat as
+        // absent. Other I/O faults still surface.
         if (isFsNotFound(e)) return undefined;
         throw e;
       }
     },
     forget: async (scope): Promise<void> => {
+      const entries = await listEntries(scope);
+      for (const n of entries) {
+        try {
+          await unlink(join(dir, n));
+        } catch (e: unknown) {
+          if (!isFsNotFound(e)) throw e;
+        }
+      }
+    },
+    forgetIfMatches: async (scope, expectedContainerId): Promise<boolean> => {
+      // Atomic CAS by filename: if another process recorded a DIFFERENT id
+      // for this scope, that entry lives at a different path and our
+      // unlink does not touch it. ENOENT means either no entry or a
+      // different id is recorded — both safely "did not match".
       try {
-        await unlink(pathFor(scope));
+        await unlink(entryPath(scope, expectedContainerId));
+        return true;
       } catch (e: unknown) {
-        // Idempotent for missing files only. Other errors (e.g. EPERM, EBUSY)
-        // must surface so callers know the registry mutation didn't land.
-        if (isFsNotFound(e)) return;
+        if (isFsNotFound(e)) return false;
         throw e;
       }
     },
