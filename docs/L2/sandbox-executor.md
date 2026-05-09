@@ -7,6 +7,8 @@ stderr-framed protocol. OS-level isolation (seatbelt/bwrap) is delegated to
 
 ## Recent updates
 
+- **Lint-only no-op (#1355)**: a stray `export {};` line in `subprocess-runner.ts` was removed by a Biome auto-format pass on an unrelated PR and reverted; behavior unchanged.
+
 - **Result protocol moved to fd=3 (#2106)**: the framing marker + JSON payload now flow over a dedicated pipe (`stdio: ["ignore", "pipe", "pipe", "pipe"]`) that the runner writes via `writeSync(3, ...)` and the parent reads via `Bun.file(fd).stream()`. Previously the marker shared stderr with arbitrary user-code output; on Linux CI runners under heavy `process.stderr.write` bursts the marker could be overrun by libuv-queued user writes, surfacing as `CRASH: Sandbox exited without result marker` for legitimately successful executions. fd=3 is touched only by the runner so user code on stdout/stderr can no longer race the protocol. Stderr-side scanning is preserved as a backward-compat fallback for direct-exec/legacy parents.
 
 ## Why it exists

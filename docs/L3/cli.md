@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/auto-harness` wiring (#1355)**: added as a dependency of `@koi/cli`. The CLI runtime factory (`packages/meta/cli/src/runtime-factory.ts`) accepts an `autoHarness` block on `createKoiRuntime` config and threads it through `createRuntime`. Configuration guards: forge-preset stack and `autoHarness` are mutually exclusive (fail closed if both are active); caller-supplied `policy-cache` middleware on the CLI middleware list is rejected with an actionable error rather than silently dropped; both the auto-harness `policyCache` middleware and the runtime's session-cleanup observer middleware are spliced into preset extras (with undefined-guard for stub adapters that have no terminals); a full-chain policy-cache uniqueness check fires after composition to catch duplicate registrations from any source. No new CLI flag surface — host applications opt in by passing `autoHarness` through their `createKoiRuntime` config. See `docs/L2/auto-harness.md` for the underlying contract.
+
 - **`@koi/daemon` remote worker backend (#1871)**: `@koi/daemon` now exports `createRemoteBackend`, a Nexus-backed `WorkerBackend` driven by a `NexusTransport`. No CLI command/flag surface change — the new backend slots into `SupervisorConfig.backends` alongside subprocess/tmux, so any future `koi bg` or supervisor wiring that registers it inherits the same lifecycle, heartbeat, and respawn contract. Heartbeat is opt-in to avoid routing heartbeat-required workers to endpoints that do not emit heartbeat events. See `docs/L2/daemon.md` for the contract.
 
 - **Remote TUI gateway client (#2122)**: `koi tui --gateway-url ws://…`
