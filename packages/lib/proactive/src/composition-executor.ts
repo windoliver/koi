@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type AgentId,
   type CompositionExecutionError,
@@ -228,7 +229,7 @@ function deriveStepIdempotencyKey(
   // and create_schedule already carry agentId on the step, but notify_user
   // does not — without this, two agents notifying the same user about the
   // same trigger emission would dedupe to a single delivery.
-  const hasher = new Bun.CryptoHasher("sha256");
+  const hasher = createHash("sha256");
   hasher.update(
     JSON.stringify({
       agentId: String(agentId),
