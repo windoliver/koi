@@ -88,7 +88,10 @@ export function createGovernanceSignalSource(
         safeCall(options?.onDisconnect);
       });
 
-      return subscription.unsubscribe;
+      return () => {
+        if (subscription.closed) return;
+        subscription.unsubscribe();
+      };
     },
   };
 }

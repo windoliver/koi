@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { GovernanceController, GovernanceSnapshot, SystemSignal } from "@koi/core";
 import { createGovernanceSignalSource } from "./governance.js";
-import { createSubscriptionController, matchesAnyPathFilter } from "./shared.js";
+import { matchesAnyPathFilter } from "./shared.js";
 
 function createController(readings: GovernanceSnapshot["readings"]): GovernanceController {
   return {
@@ -106,26 +106,109 @@ describe("createGovernanceSignalSource", () => {
 
     expect(onError).toHaveBeenCalledWith(err);
   });
-});
 
-describe("shared helper coverage for focused governance run", () => {
-  test("subscription controller reports closed after unsubscribe", () => {
-    const controller = createSubscriptionController(() => {});
+  test("enforces cooldown before emitting a new crossing", async () => {
+    let now = 100;
+    let current = 0.1;
+    const controller = createController([
+      { name: "error_rate", current, limit: 1, utilization: current },
+    ]);
+    controller.snapshot = async () => ({
+      timestamp: now,
+      readings: [{ name: "error_rate", current, limit: 1, utilization: current }],
+      healthy: true,
+      violations: [],
+    });
 
-    expect(controller.closed).toBe(false);
-    controller.unsubscribe();
-    expect(controller.closed).toBe(true);
+    const source = createGovernanceSignalSource(
+      controller,
+      [{ sensor: "error_rate", limit: 0.3, direction: "above", cooldownMs: 50 }],
+      { pollIntervalMs: 1, now: () => now },
+    );
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    now = 110;
+    current = 0.4;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    now = 120;
+    current = 0.1;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    now = 140;
+    current = 0.45;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    now = 170;
+    current = 0.1;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    now = 180;
+    current = 0.5;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    stop();
+    expect(seen).toEqual([
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.4,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 110,
+      },
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.5,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 180,
+      },
+    ]);
   });
 
-  test("path filter helper supports wildcard and exact matching", () => {
-    expect(matchesAnyPathFilter("/workspace/docs/a.md", ["/workspace/docs/*"])).toBe(
-      true,
+  test("unsubscribe clears polling and disconnects only once", async () => {
+    const snapshot = mock(async () => ({
+      timestamp: 100,
+      readings: [{ name: "error_rate", current: 0.1, limit: 1, utilization: 0.1 }],
+      healthy: true,
+      violations: [],
+    }));
+    const controller = {
+      ...createController([]),
+      snapshot,
+    } satisfies GovernanceController;
+
+    const source = createGovernanceSignalSource(
+      controller,
+      [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
+      { pollIntervalMs: 2, now: () => 100 },
     );
-    expect(matchesAnyPathFilter("/workspace/docs/a.md", ["/workspace/docs/a.md"])).toBe(
-      true,
-    );
-    expect(matchesAnyPathFilter("/workspace/src/a.ts", ["/workspace/docs/*"])).toBe(
-      false,
-    );
+
+    const onDisconnect = mock(() => {});
+    const stop = source.watch(() => {}, { onDisconnect });
+
+    await new Promise((resolve) => setTimeout(resolve, 8));
+    const callsBeforeStop = snapshot.mock.calls.length;
+
+    stop();
+    stop();
+
+    await new Promise((resolve) => setTimeout(resolve, 8));
+
+    expect(snapshot.mock.calls.length).toBe(callsBeforeStop);
+    expect(onDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test("shared path filters default to match-all", () => {
+    expect(matchesAnyPathFilter("/workspace/anywhere", undefined)).toBe(true);
   });
 });
