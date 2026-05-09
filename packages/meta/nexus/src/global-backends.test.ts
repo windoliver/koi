@@ -1,16 +1,42 @@
-import { describe, expect, test } from "bun:test";
-import { createGlobalBackends } from "./global-backends.js";
+import { describe, expect, mock, test } from "bun:test";
+
+mock.module("@koi/registry-nexus", () => ({
+  createNexusRegistry: mock(async () => ({ kind: "registry" })),
+}));
+
+mock.module("@koi/permissions-nexus", () => ({
+  createNexusPermissionBackend: mock(() => ({ kind: "permissions" })),
+}));
+
+mock.module("@koi/audit-sink-nexus", () => ({
+  createNexusAuditSink: mock(() => ({ kind: "audit" })),
+}));
+
+mock.module("@koi/search-nexus", () => ({
+  createNexusSearch: mock(() => ({ kind: "search" })),
+}));
+
+mock.module("@koi/scheduler-nexus", () => ({
+  createNexusSchedulerBackends: mock(() => ({ kind: "scheduler" })),
+}));
 
 describe("createGlobalBackends", () => {
   test("only wires live v2 singleton packages and omits archive-only names", async () => {
+    const { createGlobalBackends } = await import(
+      `./global-backends.js?cacheBust=${Date.now()}-${Math.random()}`
+    );
     const created: string[] = [];
+    const track = (name: string) => {
+      created.push(name);
+      return { kind: name };
+    };
     const backends = await createGlobalBackends(
       {
-        registry: async () => (created.push("registry"), { kind: "registry" }),
-        permissions: () => (created.push("permissions"), { kind: "permissions" }),
-        audit: () => (created.push("audit"), { kind: "audit" }),
-        search: () => (created.push("search"), { kind: "search" }),
-        scheduler: () => (created.push("scheduler"), { kind: "scheduler" }),
+        registry: async () => track("registry"),
+        permissions: () => track("permissions"),
+        audit: () => track("audit"),
+        search: () => track("search"),
+        scheduler: () => track("scheduler"),
       },
       { registry: true, permissions: true, audit: false, search: true, scheduler: true },
     );

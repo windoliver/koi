@@ -1498,6 +1498,26 @@
         "ssh2": "1.16.0",
       },
     },
+    "packages/meta/nexus": {
+      "name": "@koi/nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/audit-sink-nexus": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/fs-nexus": "workspace:*",
+        "@koi/handoff": "workspace:*",
+        "@koi/ipc-nexus": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+        "@koi/permissions-nexus": "workspace:*",
+        "@koi/playbook-store-nexus": "workspace:*",
+        "@koi/registry-nexus": "workspace:*",
+        "@koi/scheduler-nexus": "workspace:*",
+        "@koi/scratchpad-nexus": "workspace:*",
+        "@koi/search-nexus": "workspace:*",
+        "@koi/snapshot-store-nexus": "workspace:*",
+        "@koi/workspace-nexus": "workspace:*",
+      },
+    },
     "packages/meta/rlm-stack": {
       "name": "@koi/rlm-stack",
       "version": "0.0.0",
@@ -2928,6 +2948,8 @@
     "@koi/model-registry": ["@koi/model-registry@workspace:packages/lib/model-registry"],
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/lib/model-router"],
+
+    "@koi/nexus": ["@koi/nexus@workspace:packages/meta/nexus"],
 
     "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
 
