@@ -16,6 +16,15 @@ import {
   preCommitRejection,
   type SchedulerComponent,
 } from "@koi/core";
+import {
+  type CompositionGovernance,
+  defaultPatternKey,
+  evaluateCompositionGate,
+  inferCompositionGap,
+  type NoveltyTracker,
+  type OutcomeRecorder,
+  type SessionRateTracker,
+} from "./composition-governance.js";
 
 export type { CompositionPreCommitRejection };
 // Re-export the L0 brand surface so consumers of @koi/proactive that
@@ -151,6 +160,37 @@ export interface CompositionExecutionContext {
    * `notify` to additional channels MUST opt those channels in explicitly.
    */
   readonly allowedNotifyChannels?: readonly string[] | undefined;
+  /**
+   * Optional governance config — confidence/budget/delegation/rate-limit/
+   * novelty checks. When provided, the executor evaluates the gate before
+   * dispatching steps and returns `requires_approval` (with the failing
+   * reason in the error message) if any check denies the plan. Omitted →
+   * the existing `plan.requiresApproval` boolean is the only gate.
+   */
+  readonly governance?: CompositionGovernance | undefined;
+  /**
+   * Per-session rate-limit tracker. Wired together with `sessionId` so the
+   * gate can refuse runaway plans within a single session window. Without
+   * both, the rate-limit component of the gate is skipped.
+   */
+  readonly sessionRate?: SessionRateTracker | undefined;
+  readonly sessionId?: string | undefined;
+  /**
+   * Pattern-novelty tracker. Counts successful executions per pattern key
+   * (default: `${trigger.source}|${trigger.moment.kind}`) so the
+   * novel-pattern guard can auto-approve once a pattern has succeeded N
+   * times. Without it, novelty gating is skipped.
+   */
+  readonly novelty?: NoveltyTracker | undefined;
+  /**
+   * Optional outcome sink — receives every execute() result for downstream
+   * recording (ACE trajectory, collective memory, observability) and
+   * receives a CompositionGap for each step the executor surfaces as
+   * unsupported (capability-gap → ForgeDemand candidate).
+   */
+  readonly outcomeRecorder?: OutcomeRecorder | undefined;
+  /** Clock override; defaults to `Date.now`. Used for CompositionGap timestamps. */
+  readonly now?: (() => number) | undefined;
 }
 
 const DEFAULT_ALLOWED_NOTIFY_CHANNELS: readonly string[] = ["inbox"];
@@ -291,7 +331,10 @@ function malformedCronExpression(expression: string): string | undefined {
   return undefined;
 }
 
-function approvalRequired(trigger: CompositionTrigger): CompositionExecutionResult {
+function approvalRequired(
+  trigger: CompositionTrigger,
+  reason?: string,
+): CompositionExecutionResult {
   return {
     triggerId: trigger.id,
     status: "requires_approval",
@@ -299,7 +342,10 @@ function approvalRequired(trigger: CompositionTrigger): CompositionExecutionResu
     executedCount: 0,
     error: {
       code: "APPROVAL_REQUIRED",
-      message: "Composition plan requires approval before execution.",
+      message:
+        reason === undefined
+          ? "Composition plan requires approval before execution."
+          : `Composition plan requires approval: ${reason}`,
     },
   };
 }
@@ -388,439 +434,512 @@ function unsupportedResult(
 export function createCompositionExecutor(
   context: CompositionExecutionContext,
 ): CompositionExecutor {
+  const now = context.now ?? Date.now;
+  const recorder = context.outcomeRecorder;
+
+  async function emitGap(trigger: CompositionTrigger, step: CompositionStep): Promise<void> {
+    if (recorder?.recordGap === undefined) return;
+    try {
+      await recorder.recordGap(inferCompositionGap({ trigger, step, now: now() }));
+    } catch {
+      // Recorder failures must not turn a structured executor result into
+      // an uncaught throw. Drop silently — observability is best-effort.
+    }
+  }
+
+  async function finalize(
+    trigger: CompositionTrigger,
+    plan: CompositionPlan,
+    result: CompositionExecutionResult,
+  ): Promise<CompositionExecutionResult> {
+    if (result.status === "executed") {
+      if (context.sessionId !== undefined && context.sessionRate !== undefined) {
+        try {
+          await context.sessionRate.increment(context.sessionId);
+        } catch {
+          /* tracker hiccups must not invalidate a successful execution */
+        }
+      }
+      if (context.governance !== undefined && context.novelty !== undefined) {
+        const keyFn = context.governance.patternKey ?? defaultPatternKey;
+        try {
+          await context.novelty.recordSuccess(keyFn(trigger));
+        } catch {
+          /* tracker hiccups must not invalidate a successful execution */
+        }
+      }
+    }
+    if (recorder?.record !== undefined) {
+      try {
+        await recorder.record(trigger, plan, result);
+      } catch {
+        /* recorder failures are observability-only */
+      }
+    }
+    return result;
+  }
+
+  async function runPlan(
+    trigger: CompositionTrigger,
+    plan: CompositionPlan,
+  ): Promise<CompositionExecutionResult> {
+    if (plan.triggerId !== trigger.id) {
+      return {
+        triggerId: trigger.id,
+        status: "failed",
+        stepResults: [],
+        executedCount: 0,
+        error: invalidTriggerPlanError(trigger, plan),
+      };
+    }
+
+    // Bind plan to the exact trigger emission, not just `trigger.id`.
+    // Trigger ids are not guaranteed unique across emissions, so a
+    // stale plan from emission A could otherwise execute against
+    // emission B. `triggerEmittedAt` is required by the L0
+    // CompositionPlan contract.
+    if (plan.triggerEmittedAt !== trigger.emittedAt) {
+      return {
+        triggerId: trigger.id,
+        status: "failed",
+        stepResults: [],
+        executedCount: 0,
+        error: {
+          code: "INVALID_PLAN",
+          message:
+            `plan.triggerEmittedAt ${plan.triggerEmittedAt} does not match ` +
+            `trigger.emittedAt ${trigger.emittedAt} (stale plan for reused trigger id)`,
+        },
+      };
+    }
+
+    if (plan.requiresApproval) return approvalRequired(trigger);
+
+    // 5-component governance gate (confidence/budget/delegation/rate-limit/
+    // novelty). Runs AFTER the basic plan-validity checks so they always
+    // win, but BEFORE step dispatch so a denied plan never commits side
+    // effects. Skipped entirely when no governance config is wired.
+    if (context.governance !== undefined) {
+      const decision = await evaluateCompositionGate({
+        trigger,
+        plan,
+        agentId: context.agentId,
+        governance: context.governance,
+        sessionId: context.sessionId,
+        sessionRate: context.sessionRate,
+        novelty: context.novelty,
+      });
+      if (!decision.allowed) return approvalRequired(trigger, decision.reason);
+    }
+
+    // Empty non-approval plans are almost always a planner bug — silently
+    // succeeding would drop the trigger without any visible action. Fail
+    // closed as INVALID_PLAN so the caller can re-plan or escalate.
+    if (plan.steps.length === 0) {
+      return {
+        triggerId: trigger.id,
+        status: "failed",
+        stepResults: [],
+        executedCount: 0,
+        error: {
+          code: "INVALID_PLAN",
+          message: "plan has zero steps; refusing to silently succeed on an empty plan",
+        },
+      };
+    }
+
+    const allowedChannels = context.allowedNotifyChannels ?? DEFAULT_ALLOWED_NOTIFY_CHANNELS;
+
+    const stepResults: ExecutedStepResult[] = [];
+
+    // Per-content occurrence counter — the Nth identical step in a plan
+    // gets occurrenceIndex N. Stable across reorders of unrelated steps.
+    const occurrenceCounts = new Map<string, number>();
+
+    for (let index = 0; index < plan.steps.length; index += 1) {
+      const step = plan.steps[index]!;
+      // Fingerprint + key derivation walks the step payload, so a
+      // circular reference, throwing getter, or other non-serializable
+      // value would crash execute() before the fail-closed path runs.
+      // Wrap as INVALID_PLAN so the contract holds: every execute()
+      // call resolves to a structured result.
+      let fingerprint: string;
+      let stepIdempotencyKey: string;
+      try {
+        fingerprint = stepFingerprint(step);
+        stepIdempotencyKey = deriveStepIdempotencyKey(
+          context.agentId,
+          trigger,
+          occurrenceCounts.get(fingerprint) ?? 0,
+          step,
+        );
+      } catch (cause) {
+        return failedResult(trigger.id, stepResults, {
+          step,
+          status: "failed",
+          error: {
+            code: "INVALID_PLAN",
+            message: `step payload could not be canonicalized: ${cause instanceof Error ? cause.message : String(cause)}`,
+            stepKind: step.kind,
+          },
+        });
+      }
+      const occurrenceIndex = occurrenceCounts.get(fingerprint) ?? 0;
+      occurrenceCounts.set(fingerprint, occurrenceIndex + 1);
+      // Track whether this step has acquired the executionLog claim so the
+      // outer catch can release on pre-commit rejection or surface the key
+      // on ambiguous failure. Only set after claim() returns "claimed".
+      let claimedKey: string | undefined;
+      try {
+        switch (step.kind) {
+          case "submit_task": {
+            if (step.agentId !== context.agentId) {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: invalidPlanError(step, context.agentId),
+              });
+            }
+
+            // Always use the executor-derived key, even if the planner
+            // provided one. Trusting planner keys would let a buggy or
+            // adversarial plan reuse the same key across distinct steps
+            // and cause the scheduler to silently drop later submissions
+            // as duplicates. If a planner needs to influence dedupe, it
+            // should do so via the canonicalized step content (which
+            // already feeds `stepIdempotencyKey`).
+            //
+            // submit_task goes through the same atomic executionLog
+            // claim/record path as create_schedule and notify_user.
+            // scheduler.submit() backends are not all required to honor
+            // idempotencyKey natively (the in-process heap-backed
+            // scheduler ignores it), so the executionLog is the
+            // universal source of truth for "did this side effect
+            // already happen?".
+            const claimSubmit = await context.executionLog.claim(stepIdempotencyKey);
+            if (claimSubmit.kind === "complete") {
+              stepResults.push({ step, status: "executed", output: claimSubmit.output });
+              break;
+            }
+            if (claimSubmit.kind === "pending") {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "STEP_FAILED",
+                  message:
+                    "Previous submit_task attempt is in indeterminate state " +
+                    `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                  stepKind: "submit_task",
+                  idempotencyKey: stepIdempotencyKey,
+                },
+              });
+            }
+
+            claimedKey = stepIdempotencyKey;
+
+            const { idempotencyKey: _ignored, ...submitOptions } = step.taskOptions ?? {};
+            const output = await context.scheduler.submit(step.input, step.mode, {
+              ...submitOptions,
+              idempotencyKey: stepIdempotencyKey,
+            });
+            await context.executionLog.record(stepIdempotencyKey, output);
+            stepResults.push({ step, status: "executed", output });
+            break;
+          }
+
+          case "create_schedule": {
+            if (step.agentId !== context.agentId) {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: invalidPlanError(step, context.agentId),
+              });
+            }
+
+            // Cheap cron syntax pre-check before claim so an obviously
+            // malformed expression surfaces as INVALID_PLAN (re-plannable)
+            // instead of wedging the execution log on a deterministic
+            // scheduler.schedule() throw.
+            const cronError = malformedCronExpression(step.expression);
+            if (cronError !== undefined) {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "INVALID_PLAN",
+                  message: `create_schedule expression "${step.expression}" is malformed: ${cronError}`,
+                  stepKind: "create_schedule",
+                },
+              });
+            }
+
+            // Replay safety: scheduler.schedule() has no native dedupe and
+            // the Temporal backend explicitly rejects idempotencyKey. The
+            // mandatory executionLog enforces single-fire across retries.
+            const claim = await context.executionLog.claim(stepIdempotencyKey);
+            if (claim.kind === "complete") {
+              stepResults.push({ step, status: "executed", output: claim.output });
+              break;
+            }
+            if (claim.kind === "pending") {
+              // Prior attempt reached scheduler.schedule() but never
+              // finalized — the schedule may or may not have been created.
+              // Fail closed: a retry could register a duplicate.
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "STEP_FAILED",
+                  message:
+                    "Previous create_schedule attempt is in indeterminate state " +
+                    `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                  stepKind: "create_schedule",
+                  idempotencyKey: stepIdempotencyKey,
+                },
+              });
+            }
+
+            claimedKey = stepIdempotencyKey;
+
+            // Forward all taskOptions plus optional timezone to the
+            // scheduler. Backend-specific option support is the
+            // scheduler's responsibility: implementations that cannot
+            // honor a given option MUST throw `preCommitRejection(...)`
+            // (no side effect committed) so the executor releases the
+            // claim and the caller can retry with corrected input.
+            // Plain `Error` throws remain ambiguous and leave the claim
+            // pending for operator reconciliation.
+            const scheduleOptions: Record<string, unknown> = {
+              ...(step.taskOptions ?? {}),
+              ...(step.timezone === undefined ? {} : { timezone: step.timezone }),
+            };
+            const output = await context.scheduler.schedule(
+              step.expression,
+              step.input,
+              step.mode,
+              Object.keys(scheduleOptions).length === 0
+                ? undefined
+                : (scheduleOptions as Parameters<typeof context.scheduler.schedule>[3]),
+            );
+            await context.executionLog.record(stepIdempotencyKey, output);
+            stepResults.push({ step, status: "executed", output });
+            break;
+          }
+
+          case "notify_user": {
+            // Channel allowlist: reject planner-controlled (LLM) channel
+            // strings outside the host-approved set BEFORE claiming the
+            // execution-log key, so a malformed plan is re-plannable
+            // without operator intervention.
+            if (!allowedChannels.includes(step.channel)) {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "INVALID_PLAN",
+                  message: `notify_user channel "${step.channel}" is not in the allowlist [${allowedChannels.join(", ")}]`,
+                  stepKind: "notify_user",
+                },
+              });
+            }
+
+            // Notification adapters are best-effort on dedupe, so the
+            // executor enforces replay safety via the same atomic claim
+            // path as create_schedule.
+            const claim = await context.executionLog.claim(stepIdempotencyKey);
+            if (claim.kind === "complete") {
+              stepResults.push({ step, status: "executed", output: claim.output });
+              break;
+            }
+            if (claim.kind === "pending") {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "STEP_FAILED",
+                  message:
+                    "Previous notify_user attempt is in indeterminate state " +
+                    `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                  stepKind: "notify_user",
+                  idempotencyKey: stepIdempotencyKey,
+                },
+              });
+            }
+
+            claimedKey = stepIdempotencyKey;
+
+            // Same release rules as create_schedule: pre-commit rejections
+            // release the claim; other throws leave it pending and surface
+            // the key, since the notification may have been delivered.
+            const notifyOutput = await context.notify({
+              channel: step.channel,
+              message: step.message,
+              priority: step.priority,
+              idempotencyKey: stepIdempotencyKey,
+            });
+            await context.executionLog.record(stepIdempotencyKey, notifyOutput);
+            stepResults.push({ step, status: "executed", output: notifyOutput });
+            break;
+          }
+
+          case "spawn_agent": {
+            if (context.spawn === undefined) {
+              await emitGap(trigger, step);
+              return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+            }
+            const claim = await context.executionLog.claim(stepIdempotencyKey);
+            if (claim.kind === "complete") {
+              stepResults.push({ step, status: "executed", output: claim.output });
+              break;
+            }
+            if (claim.kind === "pending") {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "STEP_FAILED",
+                  message:
+                    "Previous spawn_agent attempt is in indeterminate state " +
+                    `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                  stepKind: "spawn_agent",
+                  idempotencyKey: stepIdempotencyKey,
+                },
+              });
+            }
+            claimedKey = stepIdempotencyKey;
+            const output = await context.spawn({
+              agentType: step.agentType,
+              input: step.input,
+              delivery: step.delivery,
+              idempotencyKey: stepIdempotencyKey,
+            });
+            await context.executionLog.record(stepIdempotencyKey, output);
+            stepResults.push({ step, status: "executed", output });
+            break;
+          }
+
+          case "forge_skill": {
+            if (context.forge === undefined) {
+              await emitGap(trigger, step);
+              return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+            }
+            const claim = await context.executionLog.claim(stepIdempotencyKey);
+            if (claim.kind === "complete") {
+              stepResults.push({ step, status: "executed", output: claim.output });
+              break;
+            }
+            if (claim.kind === "pending") {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "STEP_FAILED",
+                  message:
+                    "Previous forge_skill attempt is in indeterminate state " +
+                    `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                  stepKind: "forge_skill",
+                  idempotencyKey: stepIdempotencyKey,
+                },
+              });
+            }
+            claimedKey = stepIdempotencyKey;
+            const output = await context.forge({
+              demand: step.demand,
+              idempotencyKey: stepIdempotencyKey,
+            });
+            await context.executionLog.record(stepIdempotencyKey, output);
+            stepResults.push({ step, status: "executed", output });
+            break;
+          }
+
+          case "tool_call": {
+            if (context.toolCall === undefined) {
+              await emitGap(trigger, step);
+              return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+            }
+            const claim = await context.executionLog.claim(stepIdempotencyKey);
+            if (claim.kind === "complete") {
+              stepResults.push({ step, status: "executed", output: claim.output });
+              break;
+            }
+            if (claim.kind === "pending") {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "STEP_FAILED",
+                  message:
+                    "Previous tool_call attempt is in indeterminate state " +
+                    `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                  stepKind: "tool_call",
+                  idempotencyKey: stepIdempotencyKey,
+                },
+              });
+            }
+            claimedKey = stepIdempotencyKey;
+            const output = await context.toolCall({
+              toolName: step.toolName,
+              input: step.input,
+              idempotencyKey: stepIdempotencyKey,
+            });
+            await context.executionLog.record(stepIdempotencyKey, output);
+            stepResults.push({ step, status: "executed", output });
+            break;
+          }
+        }
+      } catch (cause) {
+        if (claimedKey !== undefined) {
+          if (isPreCommitRejection(cause)) {
+            // Caller proved no durable side effect committed; release the
+            // claim so an ordinary retry with corrected input succeeds.
+            // A release() failure must NOT abort execute() — the original
+            // pre-commit error is still the actionable failure for the
+            // caller, and a degraded log backend should not turn a
+            // structured rejection into an uncaught throw. Compose the
+            // release error into the message so operators see both.
+            try {
+              await context.executionLog.release(claimedKey);
+            } catch (releaseCause) {
+              const original = cause instanceof Error ? cause.message : String(cause);
+              const releaseMsg =
+                releaseCause instanceof Error ? releaseCause.message : String(releaseCause);
+              return failedResult(
+                trigger.id,
+                stepResults,
+                stepFailed(
+                  step,
+                  new Error(
+                    `${original} (release() also failed for key ${claimedKey}: ${releaseMsg})`,
+                  ),
+                  claimedKey,
+                ),
+              );
+            }
+          }
+          // For ambiguous throws, leave the claim pending and surface the
+          // idempotency key so operators can reconcile from this failure.
+          return failedResult(trigger.id, stepResults, stepFailed(step, cause, claimedKey));
+        }
+        return failedResult(trigger.id, stepResults, stepFailed(step, cause));
+      }
+    }
+
+    return {
+      triggerId: trigger.id,
+      status: "executed",
+      stepResults,
+      executedCount: stepResults.length,
+    };
+  }
+
   return {
     async execute(
       trigger: CompositionTrigger,
       plan: CompositionPlan,
     ): Promise<CompositionExecutionResult> {
-      if (plan.triggerId !== trigger.id) {
-        return {
-          triggerId: trigger.id,
-          status: "failed",
-          stepResults: [],
-          executedCount: 0,
-          error: invalidTriggerPlanError(trigger, plan),
-        };
-      }
-
-      // Bind plan to the exact trigger emission, not just `trigger.id`.
-      // Trigger ids are not guaranteed unique across emissions, so a
-      // stale plan from emission A could otherwise execute against
-      // emission B. `triggerEmittedAt` is required by the L0
-      // CompositionPlan contract.
-      if (plan.triggerEmittedAt !== trigger.emittedAt) {
-        return {
-          triggerId: trigger.id,
-          status: "failed",
-          stepResults: [],
-          executedCount: 0,
-          error: {
-            code: "INVALID_PLAN",
-            message:
-              `plan.triggerEmittedAt ${plan.triggerEmittedAt} does not match ` +
-              `trigger.emittedAt ${trigger.emittedAt} (stale plan for reused trigger id)`,
-          },
-        };
-      }
-
-      if (plan.requiresApproval) return approvalRequired(trigger);
-
-      // Empty non-approval plans are almost always a planner bug — silently
-      // succeeding would drop the trigger without any visible action. Fail
-      // closed as INVALID_PLAN so the caller can re-plan or escalate.
-      if (plan.steps.length === 0) {
-        return {
-          triggerId: trigger.id,
-          status: "failed",
-          stepResults: [],
-          executedCount: 0,
-          error: {
-            code: "INVALID_PLAN",
-            message: "plan has zero steps; refusing to silently succeed on an empty plan",
-          },
-        };
-      }
-
-      const allowedChannels = context.allowedNotifyChannels ?? DEFAULT_ALLOWED_NOTIFY_CHANNELS;
-
-      const stepResults: ExecutedStepResult[] = [];
-
-      // Per-content occurrence counter — the Nth identical step in a plan
-      // gets occurrenceIndex N. Stable across reorders of unrelated steps.
-      const occurrenceCounts = new Map<string, number>();
-
-      for (let index = 0; index < plan.steps.length; index += 1) {
-        const step = plan.steps[index]!;
-        // Fingerprint + key derivation walks the step payload, so a
-        // circular reference, throwing getter, or other non-serializable
-        // value would crash execute() before the fail-closed path runs.
-        // Wrap as INVALID_PLAN so the contract holds: every execute()
-        // call resolves to a structured result.
-        let fingerprint: string;
-        let stepIdempotencyKey: string;
-        try {
-          fingerprint = stepFingerprint(step);
-          stepIdempotencyKey = deriveStepIdempotencyKey(
-            context.agentId,
-            trigger,
-            occurrenceCounts.get(fingerprint) ?? 0,
-            step,
-          );
-        } catch (cause) {
-          return failedResult(trigger.id, stepResults, {
-            step,
-            status: "failed",
-            error: {
-              code: "INVALID_PLAN",
-              message: `step payload could not be canonicalized: ${cause instanceof Error ? cause.message : String(cause)}`,
-              stepKind: step.kind,
-            },
-          });
-        }
-        const occurrenceIndex = occurrenceCounts.get(fingerprint) ?? 0;
-        occurrenceCounts.set(fingerprint, occurrenceIndex + 1);
-        // Track whether this step has acquired the executionLog claim so the
-        // outer catch can release on pre-commit rejection or surface the key
-        // on ambiguous failure. Only set after claim() returns "claimed".
-        let claimedKey: string | undefined;
-        try {
-          switch (step.kind) {
-            case "submit_task": {
-              if (step.agentId !== context.agentId) {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: invalidPlanError(step, context.agentId),
-                });
-              }
-
-              // Always use the executor-derived key, even if the planner
-              // provided one. Trusting planner keys would let a buggy or
-              // adversarial plan reuse the same key across distinct steps
-              // and cause the scheduler to silently drop later submissions
-              // as duplicates. If a planner needs to influence dedupe, it
-              // should do so via the canonicalized step content (which
-              // already feeds `stepIdempotencyKey`).
-              //
-              // submit_task goes through the same atomic executionLog
-              // claim/record path as create_schedule and notify_user.
-              // scheduler.submit() backends are not all required to honor
-              // idempotencyKey natively (the in-process heap-backed
-              // scheduler ignores it), so the executionLog is the
-              // universal source of truth for "did this side effect
-              // already happen?".
-              const claimSubmit = await context.executionLog.claim(stepIdempotencyKey);
-              if (claimSubmit.kind === "complete") {
-                stepResults.push({ step, status: "executed", output: claimSubmit.output });
-                break;
-              }
-              if (claimSubmit.kind === "pending") {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: {
-                    code: "STEP_FAILED",
-                    message:
-                      "Previous submit_task attempt is in indeterminate state " +
-                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
-                    stepKind: "submit_task",
-                    idempotencyKey: stepIdempotencyKey,
-                  },
-                });
-              }
-
-              claimedKey = stepIdempotencyKey;
-
-              const { idempotencyKey: _ignored, ...submitOptions } = step.taskOptions ?? {};
-              const output = await context.scheduler.submit(step.input, step.mode, {
-                ...submitOptions,
-                idempotencyKey: stepIdempotencyKey,
-              });
-              await context.executionLog.record(stepIdempotencyKey, output);
-              stepResults.push({ step, status: "executed", output });
-              break;
-            }
-
-            case "create_schedule": {
-              if (step.agentId !== context.agentId) {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: invalidPlanError(step, context.agentId),
-                });
-              }
-
-              // Cheap cron syntax pre-check before claim so an obviously
-              // malformed expression surfaces as INVALID_PLAN (re-plannable)
-              // instead of wedging the execution log on a deterministic
-              // scheduler.schedule() throw.
-              const cronError = malformedCronExpression(step.expression);
-              if (cronError !== undefined) {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: {
-                    code: "INVALID_PLAN",
-                    message: `create_schedule expression "${step.expression}" is malformed: ${cronError}`,
-                    stepKind: "create_schedule",
-                  },
-                });
-              }
-
-              // Replay safety: scheduler.schedule() has no native dedupe and
-              // the Temporal backend explicitly rejects idempotencyKey. The
-              // mandatory executionLog enforces single-fire across retries.
-              const claim = await context.executionLog.claim(stepIdempotencyKey);
-              if (claim.kind === "complete") {
-                stepResults.push({ step, status: "executed", output: claim.output });
-                break;
-              }
-              if (claim.kind === "pending") {
-                // Prior attempt reached scheduler.schedule() but never
-                // finalized — the schedule may or may not have been created.
-                // Fail closed: a retry could register a duplicate.
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: {
-                    code: "STEP_FAILED",
-                    message:
-                      "Previous create_schedule attempt is in indeterminate state " +
-                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
-                    stepKind: "create_schedule",
-                    idempotencyKey: stepIdempotencyKey,
-                  },
-                });
-              }
-
-              claimedKey = stepIdempotencyKey;
-
-              // Forward all taskOptions plus optional timezone to the
-              // scheduler. Backend-specific option support is the
-              // scheduler's responsibility: implementations that cannot
-              // honor a given option MUST throw `preCommitRejection(...)`
-              // (no side effect committed) so the executor releases the
-              // claim and the caller can retry with corrected input.
-              // Plain `Error` throws remain ambiguous and leave the claim
-              // pending for operator reconciliation.
-              const scheduleOptions: Record<string, unknown> = {
-                ...(step.taskOptions ?? {}),
-                ...(step.timezone === undefined ? {} : { timezone: step.timezone }),
-              };
-              const output = await context.scheduler.schedule(
-                step.expression,
-                step.input,
-                step.mode,
-                Object.keys(scheduleOptions).length === 0
-                  ? undefined
-                  : (scheduleOptions as Parameters<typeof context.scheduler.schedule>[3]),
-              );
-              await context.executionLog.record(stepIdempotencyKey, output);
-              stepResults.push({ step, status: "executed", output });
-              break;
-            }
-
-            case "notify_user": {
-              // Channel allowlist: reject planner-controlled (LLM) channel
-              // strings outside the host-approved set BEFORE claiming the
-              // execution-log key, so a malformed plan is re-plannable
-              // without operator intervention.
-              if (!allowedChannels.includes(step.channel)) {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: {
-                    code: "INVALID_PLAN",
-                    message: `notify_user channel "${step.channel}" is not in the allowlist [${allowedChannels.join(", ")}]`,
-                    stepKind: "notify_user",
-                  },
-                });
-              }
-
-              // Notification adapters are best-effort on dedupe, so the
-              // executor enforces replay safety via the same atomic claim
-              // path as create_schedule.
-              const claim = await context.executionLog.claim(stepIdempotencyKey);
-              if (claim.kind === "complete") {
-                stepResults.push({ step, status: "executed", output: claim.output });
-                break;
-              }
-              if (claim.kind === "pending") {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: {
-                    code: "STEP_FAILED",
-                    message:
-                      "Previous notify_user attempt is in indeterminate state " +
-                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
-                    stepKind: "notify_user",
-                    idempotencyKey: stepIdempotencyKey,
-                  },
-                });
-              }
-
-              claimedKey = stepIdempotencyKey;
-
-              // Same release rules as create_schedule: pre-commit rejections
-              // release the claim; other throws leave it pending and surface
-              // the key, since the notification may have been delivered.
-              const notifyOutput = await context.notify({
-                channel: step.channel,
-                message: step.message,
-                priority: step.priority,
-                idempotencyKey: stepIdempotencyKey,
-              });
-              await context.executionLog.record(stepIdempotencyKey, notifyOutput);
-              stepResults.push({ step, status: "executed", output: notifyOutput });
-              break;
-            }
-
-            case "spawn_agent": {
-              if (context.spawn === undefined) {
-                return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
-              }
-              const claim = await context.executionLog.claim(stepIdempotencyKey);
-              if (claim.kind === "complete") {
-                stepResults.push({ step, status: "executed", output: claim.output });
-                break;
-              }
-              if (claim.kind === "pending") {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: {
-                    code: "STEP_FAILED",
-                    message:
-                      "Previous spawn_agent attempt is in indeterminate state " +
-                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
-                    stepKind: "spawn_agent",
-                    idempotencyKey: stepIdempotencyKey,
-                  },
-                });
-              }
-              claimedKey = stepIdempotencyKey;
-              const output = await context.spawn({
-                agentType: step.agentType,
-                input: step.input,
-                delivery: step.delivery,
-                idempotencyKey: stepIdempotencyKey,
-              });
-              await context.executionLog.record(stepIdempotencyKey, output);
-              stepResults.push({ step, status: "executed", output });
-              break;
-            }
-
-            case "forge_skill": {
-              if (context.forge === undefined) {
-                return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
-              }
-              const claim = await context.executionLog.claim(stepIdempotencyKey);
-              if (claim.kind === "complete") {
-                stepResults.push({ step, status: "executed", output: claim.output });
-                break;
-              }
-              if (claim.kind === "pending") {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: {
-                    code: "STEP_FAILED",
-                    message:
-                      "Previous forge_skill attempt is in indeterminate state " +
-                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
-                    stepKind: "forge_skill",
-                    idempotencyKey: stepIdempotencyKey,
-                  },
-                });
-              }
-              claimedKey = stepIdempotencyKey;
-              const output = await context.forge({
-                demand: step.demand,
-                idempotencyKey: stepIdempotencyKey,
-              });
-              await context.executionLog.record(stepIdempotencyKey, output);
-              stepResults.push({ step, status: "executed", output });
-              break;
-            }
-
-            case "tool_call": {
-              if (context.toolCall === undefined) {
-                return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
-              }
-              const claim = await context.executionLog.claim(stepIdempotencyKey);
-              if (claim.kind === "complete") {
-                stepResults.push({ step, status: "executed", output: claim.output });
-                break;
-              }
-              if (claim.kind === "pending") {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: {
-                    code: "STEP_FAILED",
-                    message:
-                      "Previous tool_call attempt is in indeterminate state " +
-                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
-                    stepKind: "tool_call",
-                    idempotencyKey: stepIdempotencyKey,
-                  },
-                });
-              }
-              claimedKey = stepIdempotencyKey;
-              const output = await context.toolCall({
-                toolName: step.toolName,
-                input: step.input,
-                idempotencyKey: stepIdempotencyKey,
-              });
-              await context.executionLog.record(stepIdempotencyKey, output);
-              stepResults.push({ step, status: "executed", output });
-              break;
-            }
-          }
-        } catch (cause) {
-          if (claimedKey !== undefined) {
-            if (isPreCommitRejection(cause)) {
-              // Caller proved no durable side effect committed; release the
-              // claim so an ordinary retry with corrected input succeeds.
-              // A release() failure must NOT abort execute() — the original
-              // pre-commit error is still the actionable failure for the
-              // caller, and a degraded log backend should not turn a
-              // structured rejection into an uncaught throw. Compose the
-              // release error into the message so operators see both.
-              try {
-                await context.executionLog.release(claimedKey);
-              } catch (releaseCause) {
-                const original = cause instanceof Error ? cause.message : String(cause);
-                const releaseMsg =
-                  releaseCause instanceof Error ? releaseCause.message : String(releaseCause);
-                return failedResult(
-                  trigger.id,
-                  stepResults,
-                  stepFailed(
-                    step,
-                    new Error(
-                      `${original} (release() also failed for key ${claimedKey}: ${releaseMsg})`,
-                    ),
-                    claimedKey,
-                  ),
-                );
-              }
-            }
-            // For ambiguous throws, leave the claim pending and surface the
-            // idempotency key so operators can reconcile from this failure.
-            return failedResult(trigger.id, stepResults, stepFailed(step, cause, claimedKey));
-          }
-          return failedResult(trigger.id, stepResults, stepFailed(step, cause));
-        }
-      }
-
-      return {
-        triggerId: trigger.id,
-        status: "executed",
-        stepResults,
-        executedCount: stepResults.length,
-      };
+      const result = await runPlan(trigger, plan);
+      return finalize(trigger, plan, result);
     },
   };
 }

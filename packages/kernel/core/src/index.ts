@@ -243,6 +243,7 @@ export type {
   CompositionExecutionError,
   CompositionExecutionResult,
   CompositionExecutor,
+  CompositionGap,
   CompositionPreCommitRejection,
   CompositionStepResult,
   SuccessfulCompositionStepResult,

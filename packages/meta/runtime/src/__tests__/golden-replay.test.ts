@@ -18909,4 +18909,206 @@ describe("Golden: @koi/proactive", () => {
     expect(isPreCommitRejection(new Error("plain"))).toBe(false);
     expect(isPreCommitRejection(undefined)).toBe(false);
   });
+
+  test("governance gate: low-confidence plan returns requires_approval with reason", async () => {
+    const { createCompositionExecutor, inMemoryCompositionExecutionLog } = await import(
+      "@koi/proactive"
+    );
+    const { agentId, scheduleId, taskId } = await import("@koi/core");
+
+    const scheduler: import("@koi/core").SchedulerComponent = {
+      submit: async () => taskId("noop"),
+      cancel: async () => true,
+      schedule: async () => scheduleId("noop"),
+      unschedule: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      query: async () => [],
+      stats: async () => ({
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        deadLettered: 0,
+        activeSchedules: 0,
+        pausedSchedules: 0,
+      }),
+      history: async () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("gov-agent" as import("@koi/core").AgentId),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryCompositionExecutionLog(),
+      governance: {
+        autoApproveConfidenceThreshold: 0.9,
+        novelPatternRequiresApproval: false,
+      },
+    });
+    const result = await executor.execute(
+      {
+        id: "trig-gov",
+        source: "golden",
+        confidence: 0.1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      {
+        triggerId: "trig-gov",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+        estimatedCost: 0,
+        requiresApproval: false,
+      },
+    );
+    expect(result.status).toBe("requires_approval");
+    if (result.status === "requires_approval") {
+      expect(result.error.message).toMatch(/confidence/);
+    }
+  });
+
+  test("outcomeRecorder.recordGap fires CompositionGap when handler missing for tool_call", async () => {
+    const { createCompositionExecutor, inMemoryCompositionExecutionLog } = await import(
+      "@koi/proactive"
+    );
+    const { agentId, scheduleId, taskId } = await import("@koi/core");
+
+    const gaps: import("@koi/core").CompositionGap[] = [];
+    const scheduler: import("@koi/core").SchedulerComponent = {
+      submit: async () => taskId("noop"),
+      cancel: async () => true,
+      schedule: async () => scheduleId("noop"),
+      unschedule: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      query: async () => [],
+      stats: async () => ({
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        deadLettered: 0,
+        activeSchedules: 0,
+        pausedSchedules: 0,
+      }),
+      history: async () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("gap-agent" as import("@koi/core").AgentId),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryCompositionExecutionLog(),
+      outcomeRecorder: { recordGap: (g) => void gaps.push(g) },
+    });
+    const result = await executor.execute(
+      {
+        id: "trig-gap",
+        source: "golden",
+        confidence: 1,
+        moment: { kind: "capability_gap", missing: "summarize" },
+        suggestedCapabilities: ["summarize"],
+        context: {},
+        emittedAt: 1,
+      },
+      {
+        triggerId: "trig-gap",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "tool_call", toolName: "summarize", input: {} }],
+        estimatedCost: 0,
+        requiresApproval: false,
+      },
+    );
+    expect(result.status).toBe("unsupported");
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]?.missingCapabilities).toEqual(["tool:summarize"]);
+    expect(gaps[0]?.triggerId).toBe("trig-gap");
+  });
+
+  test("session rate limit: 3rd execute past max=2 short-circuits with requires_approval", async () => {
+    const {
+      createCompositionExecutor,
+      inMemoryCompositionExecutionLog,
+      inMemorySessionRateTracker,
+    } = await import("@koi/proactive");
+    const { agentId, scheduleId, taskId } = await import("@koi/core");
+
+    const scheduler: import("@koi/core").SchedulerComponent = {
+      submit: async () => taskId("noop"),
+      cancel: async () => true,
+      schedule: async () => scheduleId("noop"),
+      unschedule: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      query: async () => [],
+      stats: async () => ({
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        deadLettered: 0,
+        activeSchedules: 0,
+        pausedSchedules: 0,
+      }),
+      history: async () => [],
+    };
+    const sessionRate = inMemorySessionRateTracker();
+    const executor = createCompositionExecutor({
+      agentId: agentId("rate-agent" as import("@koi/core").AgentId),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryCompositionExecutionLog(),
+      sessionId: "sess-1",
+      sessionRate,
+      governance: {
+        maxCompositionsPerSession: 2,
+        autoApproveConfidenceThreshold: 0,
+        novelPatternRequiresApproval: false,
+      },
+    });
+    for (let i = 0; i < 2; i += 1) {
+      const r = await executor.execute(
+        {
+          id: `t-${i}`,
+          source: "golden",
+          confidence: 1,
+          moment: { kind: "external_event", source: "x", eventType: "y" },
+          suggestedCapabilities: [],
+          context: {},
+          emittedAt: i + 1,
+        },
+        {
+          triggerId: `t-${i}`,
+          triggerEmittedAt: i + 1,
+          steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+          estimatedCost: 0,
+          requiresApproval: false,
+        },
+      );
+      expect(r.status).toBe("executed");
+    }
+    const blocked = await executor.execute(
+      {
+        id: "t-3",
+        source: "golden",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 3,
+      },
+      {
+        triggerId: "t-3",
+        triggerEmittedAt: 3,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+        estimatedCost: 0,
+        requiresApproval: false,
+      },
+    );
+    expect(blocked.status).toBe("requires_approval");
+    if (blocked.status === "requires_approval") {
+      expect(blocked.error.message).toMatch(/maxCompositionsPerSession/);
+    }
+  });
 });

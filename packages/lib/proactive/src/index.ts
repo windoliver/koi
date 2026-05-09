@@ -28,6 +28,20 @@ export {
   isPreCommitRejection,
   preCommitRejection,
 } from "./composition-executor.js";
+export {
+  type CompositionGovernance,
+  DEFAULT_COMPOSITION_GOVERNANCE,
+  defaultPatternKey,
+  evaluateCompositionGate,
+  type GateDecision,
+  inferCompositionGap,
+  inferMissingCapabilities,
+  inMemoryNoveltyTracker,
+  inMemorySessionRateTracker,
+  type NoveltyTracker,
+  type OutcomeRecorder,
+  type SessionRateTracker,
+} from "./composition-governance.js";
 export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
 export {

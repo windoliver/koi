@@ -1,4 +1,5 @@
 import type {
+  CompositionMoment,
   CompositionPlan,
   CompositionStep,
   CompositionTrigger,
@@ -133,6 +134,22 @@ export function isPreCommitRejection(value: unknown): value is CompositionPreCom
   return (
     (value as { [COMPOSITION_PRE_COMMIT_BRAND]?: unknown })[COMPOSITION_PRE_COMMIT_BRAND] === true
   );
+}
+
+// ---------------------------------------------------------------------------
+// Composition gap — emitted when the executor cannot dispatch a step because
+// the host has not wired a handler for that step kind. Forms the basis of the
+// pull-based ForgeDemand feedback loop: each gap names the missing capability
+// and the trigger context that surfaced it.
+// ---------------------------------------------------------------------------
+
+export interface CompositionGap {
+  readonly triggerId: string;
+  readonly moment: CompositionMoment;
+  readonly missingCapabilities: readonly string[];
+  readonly firstSeen: number;
+  readonly lastSeen: number;
+  readonly frequency: number;
 }
 
 export type CompositionExecutionResult =
