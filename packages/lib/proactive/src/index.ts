@@ -1,8 +1,8 @@
 /**
  * @koi/proactive — proactive/autonomous tool surfaces.
  *
- * Phase 3a (issue #1195): sleep + cron-facing tools layered over the L0
- * SchedulerComponent. Channel/webhook/monitor surfaces ship in later phases.
+ * Phase 3a (issue #1195): sleep, cron, and monitor-facing tools layered over
+ * the L0 SchedulerComponent. Channel/webhook surfaces ship in later phases.
  */
 
 export {
@@ -66,6 +66,16 @@ export {
   createLlmCompositionPlanner,
   type LlmCompositionPlannerConfig,
 } from "./llm-composition-planner.js";
+export {
+  createCancelMonitorTool,
+  createCreateMonitorTool,
+  createListMonitorsTool,
+  createMonitorToolState,
+  createUpdateMonitorTool,
+  formatMonitorWakeMessage,
+  type MonitorRecord,
+  type MonitorToolState,
+} from "./monitor-tools.js";
 export {
   createProactiveDelivery,
   type DeliveryFailure,

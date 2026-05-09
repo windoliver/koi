@@ -34,6 +34,14 @@ import {
   createCronToolState,
   createScheduleCronTool,
 } from "./cron-tools.js";
+import {
+  createCancelMonitorTool,
+  createCreateMonitorTool,
+  createListMonitorsTool,
+  createMonitorToolState,
+  createUpdateMonitorTool,
+  type MonitorToolState,
+} from "./monitor-tools.js";
 import { createSleepTool, createSleepToolState, type SleepToolState } from "./sleep-tool.js";
 import type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types.js";
 
@@ -56,12 +64,17 @@ export function createProactiveToolsProvider(
     toolConfig: ProactiveToolsConfig,
     sleepState: SleepToolState,
     cronState: CronToolState,
+    monitorState: MonitorToolState,
   ): readonly Tool[] {
     return [
       createSleepTool(toolConfig, sleepState),
       createCancelSleepTool(toolConfig, sleepState),
       createScheduleCronTool(toolConfig, cronState),
       createCancelScheduleTool(toolConfig, cronState),
+      createCreateMonitorTool(toolConfig, monitorState),
+      createListMonitorsTool(monitorState),
+      createUpdateMonitorTool(toolConfig, monitorState),
+      createCancelMonitorTool(toolConfig, monitorState),
     ];
   }
 
@@ -108,7 +121,10 @@ export function createProactiveToolsProvider(
       // submissions from a previous attach land on the prior, now-detached
       // state object and have no observable effect on the new attach.
       const cronState = createCronToolState();
-      const tools = buildTools(toolConfig, sleepState, cronState);
+      // Monitor state is also intentionally per-attach: monitor metadata is
+      // process-local and should reset when the agent is reassembled.
+      const monitorState = createMonitorToolState();
+      const tools = buildTools(toolConfig, sleepState, cronState, monitorState);
       const entries: (readonly [string, Tool])[] = tools.map(
         (t) => [toolToken(t.descriptor.name) as string, t] as const,
       );

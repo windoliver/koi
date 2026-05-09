@@ -3,7 +3,7 @@ import { createProactiveTools } from "./create-proactive-tools.js";
 import { createSchedulerStub } from "./test-helpers.js";
 
 describe("createProactiveTools", () => {
-  test("returns sleep, cancel_sleep, schedule_cron, cancel_schedule in that order", () => {
+  test("returns sleep, cron, and monitor tools in stable order", () => {
     const stub = createSchedulerStub();
     const tools = createProactiveTools({ scheduler: stub.component });
     expect(tools.map((t) => t.descriptor.name)).toEqual([
@@ -11,6 +11,10 @@ describe("createProactiveTools", () => {
       "cancel_sleep",
       "schedule_cron",
       "cancel_schedule",
+      "create_monitor",
+      "list_monitors",
+      "update_monitor",
+      "cancel_monitor",
     ]);
   });
 

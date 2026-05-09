@@ -56,14 +56,23 @@ describe("createProactiveToolsProvider", () => {
     expect(provider.priority).toBe(999);
   });
 
-  test("attach resolves SCHEDULER from the agent and registers four tools", async () => {
+  test("attach resolves SCHEDULER from the agent and registers eight tools", async () => {
     const stub = createSchedulerStub();
     const agent = makeAgent(stub.component);
     const provider = createProactiveToolsProvider();
 
     const result = await provider.attach(agent);
     const components = "components" in result ? result.components : result;
-    const toolNames = ["sleep", "cancel_sleep", "schedule_cron", "cancel_schedule"] as const;
+    const toolNames = [
+      "sleep",
+      "cancel_sleep",
+      "schedule_cron",
+      "cancel_schedule",
+      "create_monitor",
+      "list_monitors",
+      "update_monitor",
+      "cancel_monitor",
+    ] as const;
     for (const n of toolNames) {
       expect(components.has(toolToken(n) as string)).toBe(true);
     }
@@ -262,5 +271,42 @@ describe("createProactiveToolsProvider", () => {
 
     expect(stubB.scheduleCalls).toHaveLength(1);
     expect(r2.deduped).toBeUndefined();
+  });
+
+  test("monitor state resets on reattach so a new attach starts with an empty monitor list", async () => {
+    const stub = createSchedulerStub();
+    const agent = makeAgent(stub.component, "agent-monitor");
+    const provider = createProactiveToolsProvider();
+
+    const createKey = toolToken("create_monitor") as string;
+    const listKey = toolToken("list_monitors") as string;
+
+    const first = await provider.attach(agent);
+    const firstComponents = "components" in first ? first.components : first;
+    const createMonitor = firstComponents.get(createKey) as {
+      execute: (args: object) => Promise<unknown>;
+    };
+    const listFirst = firstComponents.get(listKey) as {
+      execute: (args: object) => Promise<unknown>;
+    };
+
+    await createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1301 is unblocked",
+      check_prompt: "Check issue status and summarize what changed.",
+      expression: "0 9 * * *",
+    });
+
+    const firstList = (await listFirst.execute({})) as { monitors: unknown[] };
+    expect(firstList.monitors).toHaveLength(1);
+
+    const second = await provider.attach(agent);
+    const secondComponents = "components" in second ? second.components : second;
+    const listSecond = secondComponents.get(listKey) as {
+      execute: (args: object) => Promise<unknown>;
+    };
+
+    const secondList = (await listSecond.execute({})) as { monitors: unknown[] };
+    expect(secondList.monitors).toHaveLength(0);
   });
 });
