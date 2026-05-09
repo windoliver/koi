@@ -578,7 +578,15 @@ export async function resolveFileSystemAsync(
       // stale path. Only when the operator opted in to namespace-root
       // (explicit empty mountPoint) or set an explicit mountPoint can we
       // safely allow runtime mutations.
-      mutationsSupported = options.mountPoint !== undefined || transportMounts.length !== 1;
+      // Runtime mount mutations are only safe when the backend addresses
+      // mounts via the namespace root. createNexusFileSystem() bakes
+      // `effectiveMountPoint` into basePath and rewrites every fs op
+      // under that prefix, so a session pinned at e.g. `/gmail/work`
+      // would advertise a freshly added `/local/tmp` to the model but
+      // every read/write would still resolve under `/gmail/work/local/tmp`.
+      // Only allow runtime mounts when the effective mount point is the
+      // namespace root (explicit `""` or inferred from multi-mount).
+      mutationsSupported = effectiveMountPoint === "";
       // Policy gate: a session whose filesystem operations are read-only
       // must not be able to add or remove mounts, since /mount can attach
       // new connectors that widen what data becomes readable through

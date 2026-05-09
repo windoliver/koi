@@ -175,22 +175,44 @@ function escapeXmlAttr(value: string): string {
  * via tool output or a dedicated lower-trust context channel instead.
  */
 /**
- * Replace any character outside the prompt-safe allowlist with `_`. Used
- * in strict mode so a mounted connector whose identifier contains common
- * characters like `@` or spaces (real-world OAuth account names, display
- * names) is still surfaced to the model — just with non-allowlist
- * characters replaced. This preserves model-visible existence of the
- * mount while preventing untrusted text from carrying instruction-bearing
- * characters into the highest-trust prompt layer.
+ * Percent-encode any character outside the prompt-safe allowlist. Used in
+ * strict mode so identifiers stay reversibly unique (no two different
+ * paths can collapse to the same rendered string) while still preventing
+ * untrusted text from carrying structural punctuation into the highest-
+ * trust prompt layer.
  *
- * Path: keeps `/` segment separators; replaces other unsafe chars with
- * `_`. Connector: replaces unsafe chars with `_` (no separators allowed).
+ * Path: keeps `/` segment separators; percent-encodes everything else
+ * outside [A-Za-z0-9._-]. Connector: same allowlist without separators.
+ *
+ * The encoding is the standard %HH form, so `@` -> `%40`, ` ` -> `%20`,
+ * `+` -> `%2B`. Operators and the model can decode back to the canonical
+ * mount path with URL-decoding semantics.
  */
+function percentEncodeSegment(segment: string): string {
+  let out = "";
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment.charAt(i);
+    if (/[A-Za-z0-9._-]/.test(ch)) {
+      out += ch;
+    } else {
+      const bytes = new TextEncoder().encode(ch);
+      for (const b of bytes) {
+        out += `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
+      }
+    }
+  }
+  return out;
+}
 function sanitizePromptPath(value: string): string {
-  return value.replace(/[^A-Za-z0-9._\-/]/g, "_");
+  // Encode each `/`-separated segment independently so segment
+  // boundaries stay visible to the model.
+  return value
+    .split("/")
+    .map((seg) => percentEncodeSegment(seg))
+    .join("/");
 }
 function sanitizePromptConnector(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]/g, "_");
+  return percentEncodeSegment(value);
 }
 
 function renderBlock(
