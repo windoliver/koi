@@ -601,7 +601,7 @@ describe("createAutoHarnessStack", () => {
     const registered: unknown[] = [];
     const artifact = makeArtifact();
     const policyEntry = {
-      brickId: "brick-policy-1",
+      brickId: "brick-1",
       toolId: "search",
       scope: "agent" as const,
       agentId: "agent-test",
@@ -657,7 +657,7 @@ describe("createAutoHarnessStack", () => {
         ok: true,
         artifact,
         policyEntry: {
-          brickId: "brick-policy-2",
+          brickId: "brick-1",
           toolId: "search",
           scope: "agent" as const,
           agentId: "agent-test",

@@ -529,6 +529,37 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return nonRetriable();
     }
 
+    // Reconcile the pre-deploy draft when deployCandidate rewrote the
+    // artifact id. Without this, the store keeps both the old draft and
+    // the new deployed artifact, so inspection/rollback flows can act on
+    // stale state or duplicate the harness because there's no single
+    // durable source of truth. Best-effort: surface a reconciliation
+    // error rather than failing the whole pipeline — the live deploy is
+    // already committed and the new record is durable.
+    if (deployedArtifact.id !== artifact.id) {
+      try {
+        const removeResult = await config.forgeStore.remove(artifact.id);
+        if (!removeResult.ok) {
+          reportError({
+            stage: "deploy",
+            message:
+              `forgeStore.remove (draft reconciliation) failed: ${removeResult.error.message}. ` +
+              `Both draft (${artifact.id}) and deployed (${deployedArtifact.id}) ` +
+              "records exist; manual cleanup required.",
+            koiError: removeResult.error,
+          });
+        }
+      } catch (cause: unknown) {
+        reportError({
+          stage: "deploy",
+          message:
+            `forgeStore.remove (draft reconciliation) threw for ${artifact.id}. ` +
+            "Stale draft record may persist alongside deployed artifact; manual cleanup required.",
+          cause,
+        });
+      }
+    }
+
     // Deployment side effects are now committed AND durably recorded; emit
     // success BEFORE the cache write. Policy-cache registration is a
     // follow-on optimization — its failure must not be reported as a
@@ -573,6 +604,24 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
           "auto-harness refused to register policyEntry with no agentId; " +
           "agent-scoped entries must identify the owning agent so cache " +
           "lookups cannot match other agents' traffic.",
+      });
+      return { kind: "success", artifact: deployedArtifact };
+    }
+    // Bind the policy entry to the artifact we actually deployed. A buggy
+    // or compromised deployCandidate could otherwise hand back an entry
+    // for a different brickId — already-verified artifact B — and the
+    // cache would short-circuit traffic with the wrong policy. The
+    // verifier alone cannot catch this since it sees only the supplied
+    // entry, not the deployed-artifact context.
+    if (entry !== undefined && entry.brickId !== deployedArtifact.id) {
+      reportError({
+        stage: "register-policy",
+        message:
+          `auto-harness refused to register policyEntry whose brickId (${entry.brickId}) ` +
+          `does not match the deployed artifact id (${deployedArtifact.id}). ` +
+          "Cache entries must be bound to the specific artifact that was " +
+          "approved and deployed; cross-artifact registration would let one " +
+          "deployment promote enforcement for an unrelated brick.",
       });
       return { kind: "success", artifact: deployedArtifact };
     }
