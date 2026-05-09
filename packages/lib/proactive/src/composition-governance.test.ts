@@ -749,6 +749,139 @@ describe("createCompositionExecutor governance integration", () => {
     expect(k2.startsWith("agent:b|")).toBe(true);
   });
 
+  test("confidence exactly at threshold is allowed (>= boundary)", async () => {
+    const d = await evaluateCompositionGate({
+      trigger: trig({ confidence: 0.85 }),
+      plan: notifyPlan(),
+      agentId: aid,
+      governance: {
+        autoApproveConfidenceThreshold: 0.85,
+        novelPatternRequiresApproval: false,
+      },
+    });
+    expect(d.allowed).toBe(true);
+  });
+
+  test("estimatedCost exactly at cap is allowed (<= boundary)", async () => {
+    const d = await evaluateCompositionGate({
+      trigger: trig(),
+      plan: notifyPlan({ estimatedCost: 1.0 }),
+      agentId: aid,
+      governance: {
+        maxCostPerComposition: 1.0,
+        autoApproveConfidenceThreshold: 0,
+        novelPatternRequiresApproval: false,
+      },
+    });
+    expect(d.allowed).toBe(true);
+  });
+
+  test("plan with 0 steps is rejected as INVALID_PLAN and consumes no counters", async () => {
+    const sessionRate = inMemorySessionRateTracker();
+    const novelty = inMemoryNoveltyTracker();
+    const exec = createCompositionExecutor(
+      ctxBase({
+        sessionId: "empty-s",
+        sessionRate,
+        novelty,
+        governance: {
+          autoApproveConfidenceThreshold: 0,
+          novelPatternRequiresApproval: false,
+        },
+      }),
+    );
+    const empty: CompositionPlan = {
+      triggerId: "trig-1",
+      triggerEmittedAt: 1000,
+      estimatedCost: 0,
+      requiresApproval: false,
+      steps: [],
+    };
+    const r = await exec.execute(trig(), empty);
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") {
+      expect(r.error.code).toBe("INVALID_PLAN");
+      expect(r.error.message).toMatch(/zero steps/);
+    }
+    // Refusal is pre-claim → no budget consumed.
+    expect(await sessionRate.count("empty-s")).toBe(0);
+    expect(await novelty.successCount(defaultPatternKey(trig(), empty, aid))).toBe(0);
+  });
+
+  test("allowedToolNames=[] rejects every tool_call (empty allowlist denies all)", async () => {
+    let toolCalled = false;
+    const exec = createCompositionExecutor(
+      ctxBase({
+        toolCall: async () => {
+          toolCalled = true;
+          return {};
+        },
+        allowedToolNames: [],
+      }),
+    );
+    const plan: CompositionPlan = {
+      triggerId: "trig-1",
+      triggerEmittedAt: 1000,
+      estimatedCost: 0,
+      requiresApproval: false,
+      steps: [{ kind: "tool_call", toolName: "anything", input: {} }],
+    };
+    const r = await exec.execute(trig(), plan);
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") expect(r.error.code).toBe("INVALID_PLAN");
+    expect(toolCalled).toBe(false);
+  });
+
+  test("allowedAgentTypes=[] rejects every spawn_agent (empty allowlist denies all)", async () => {
+    let spawned = false;
+    const exec = createCompositionExecutor(
+      ctxBase({
+        spawn: async () => {
+          spawned = true;
+          return {};
+        },
+        allowedAgentTypes: [],
+      }),
+    );
+    const plan: CompositionPlan = {
+      triggerId: "trig-1",
+      triggerEmittedAt: 1000,
+      estimatedCost: 0,
+      requiresApproval: false,
+      steps: [
+        {
+          kind: "spawn_agent",
+          agentType: "researcher",
+          input: {} as never,
+          delivery: "fire_and_forget" as never,
+        },
+      ],
+    };
+    const r = await exec.execute(trig(), plan);
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") expect(r.error.code).toBe("INVALID_PLAN");
+    expect(spawned).toBe(false);
+  });
+
+  test("novelty key is order-sensitive: reordered steps hash differently", () => {
+    const t = trig();
+    const stepA = {
+      kind: "notify_user" as const,
+      channel: "inbox",
+      message: "a",
+      priority: "normal" as const,
+    };
+    const stepB = {
+      kind: "notify_user" as const,
+      channel: "inbox",
+      message: "b",
+      priority: "normal" as const,
+    };
+    const planAB = notifyPlan({ steps: [stepA, stepB] });
+    const planBA = notifyPlan({ steps: [stepB, stepA] });
+    expect(defaultPatternKey(t, planAB, aid)).not.toBe(defaultPatternKey(t, planBA, aid));
+  });
+
   test("ambiguous executionLog handler short-circuits when claim returns 'pending'", async () => {
     const log: CompositionExecutionLog = {
       claim: (): CompositionExecutionStatus => ({ kind: "pending" }),
