@@ -90,15 +90,17 @@ type MonitorCreateEntry =
 
 export interface MonitorToolState {
   readonly monitorsById: Map<string, MonitorRecord>;
-  readonly idempotencyMap: Map<string, MonitorCreateEntry>;
-  nextMonitorNumber: number;
+  readonly monitorIdByIdempotencyKey: Map<string, string>;
+  readonly createEntryByIdempotencyKey: Map<string, MonitorCreateEntry>;
+  nextMonitorOrdinal: number;
 }
 
 export function createMonitorToolState(): MonitorToolState {
   return {
     monitorsById: new Map<string, MonitorRecord>(),
-    idempotencyMap: new Map<string, MonitorCreateEntry>(),
-    nextMonitorNumber: 1,
+    monitorIdByIdempotencyKey: new Map<string, string>(),
+    createEntryByIdempotencyKey: new Map<string, MonitorCreateEntry>(),
+    nextMonitorOrdinal: 1,
   };
 }
 
@@ -174,8 +176,8 @@ function buildMonitorRecord(
 }
 
 function createMonitorId(state: MonitorToolState): string {
-  const id = `monitor-${state.nextMonitorNumber}`;
-  state.nextMonitorNumber += 1;
+  const id = `monitor-${state.nextMonitorOrdinal}`;
+  state.nextMonitorOrdinal += 1;
   return id;
 }
 
@@ -228,7 +230,7 @@ export function createCreateMonitorTool(
       const fingerprint = buildCreateFingerprint(parsed.data);
 
       if (idempotency_key !== undefined) {
-        const existing = state.idempotencyMap.get(idempotency_key);
+        const existing = state.createEntryByIdempotencyKey.get(idempotency_key);
         if (existing !== undefined) {
           try {
             const record = existing.kind === "settled" ? existing.record : await existing.promise;
@@ -286,20 +288,22 @@ export function createCreateMonitorTool(
           });
           state.monitorsById.set(record.monitorId, record);
           if (idempotency_key !== undefined) {
-            state.idempotencyMap.set(idempotency_key, { kind: "settled", record });
+            state.monitorIdByIdempotencyKey.set(idempotency_key, record.monitorId);
+            state.createEntryByIdempotencyKey.set(idempotency_key, { kind: "settled", record });
           }
           return record;
         });
 
       const trackedSubmission = submission.catch((err: unknown): never => {
         if (idempotency_key !== undefined) {
-          state.idempotencyMap.delete(idempotency_key);
+          state.createEntryByIdempotencyKey.delete(idempotency_key);
+          state.monitorIdByIdempotencyKey.delete(idempotency_key);
         }
         throw err;
       });
 
       if (idempotency_key !== undefined) {
-        state.idempotencyMap.set(idempotency_key, {
+        state.createEntryByIdempotencyKey.set(idempotency_key, {
           kind: "pending",
           promise: trackedSubmission,
         });
@@ -407,7 +411,13 @@ export function createUpdateMonitorTool(
       }
 
       try {
-        await scheduler.unschedule(scheduleId(current.scheduleId));
+        const removed = await scheduler.unschedule(scheduleId(current.scheduleId));
+        if (!removed) {
+          return {
+            ok: false,
+            error: `Failed to retire previous monitor schedule: removed:false for '${current.scheduleId}'`,
+          };
+        }
       } catch (e: unknown) {
         return {
           ok: false,
@@ -422,7 +432,11 @@ export function createUpdateMonitorTool(
 
       state.monitorsById.set(updated.monitorId, updated);
       if (updated.idempotencyKey !== undefined) {
-        state.idempotencyMap.set(updated.idempotencyKey, { kind: "settled", record: updated });
+        state.monitorIdByIdempotencyKey.set(updated.idempotencyKey, updated.monitorId);
+        state.createEntryByIdempotencyKey.set(updated.idempotencyKey, {
+          kind: "settled",
+          record: updated,
+        });
       }
 
       return {
@@ -471,7 +485,8 @@ export function createCancelMonitorTool(
 
       state.monitorsById.delete(record.monitorId);
       if (record.idempotencyKey !== undefined) {
-        state.idempotencyMap.delete(record.idempotencyKey);
+        state.monitorIdByIdempotencyKey.delete(record.idempotencyKey);
+        state.createEntryByIdempotencyKey.delete(record.idempotencyKey);
       }
 
       return { ok: true, removed: true };
