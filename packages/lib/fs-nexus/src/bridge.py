@@ -60,7 +60,23 @@ class ConflictError(Exception):
     """Raised when if_match fails (optimistic concurrency violation)."""
 
 
+# Authoritative connector identity for paths the current bridge process
+# committed via add_mount. Populated from the source URI's scheme at
+# add_mount time so subsequent describe_mount can return the correct
+# connector type for aliased mounts (e.g. `gdrive://x` at `/team/docs`
+# preserves connector "gdrive" instead of guessing "team" from the path).
+# Best-effort only — paths committed before this process started, or by
+# another process, fall back to the path-prefix heuristic which may lie
+# for aliased mounts. Operators should treat the connector field as
+# advisory unless the path clearly carries the scheme as its first
+# segment.
+_SESSION_MOUNT_CONNECTORS: dict[str, str] = {}
+
+
 def _mount_connector_from_path(path: str) -> str:
+    cached = _SESSION_MOUNT_CONNECTORS.get(path)
+    if cached is not None:
+        return cached
     parts = [part for part in path.split("/") if part]
     return parts[0] if parts else "unknown"
 
@@ -808,9 +824,18 @@ async def dispatch(fs, method, params):
         # surfacing a timeout error to the caller would invite a retry against
         # a non-idempotent mutation. Return the minimal canonical payload now;
         # callers refresh enriched descriptions on demand via describe_mount.
+        # Use the URI scheme as the canonical connector identity instead of
+        # guessing from the resolved path. An aliased mount like
+        # `gdrive://foo` at `/team/docs` would otherwise be reported as
+        # connector "team", which lies about the connector type to both
+        # the model and the operator. Track URI -> connector for any later
+        # describe_mount lookup against this path so the bridge can return
+        # the same authoritative value without re-deriving from the path.
+        connector_scheme = uri.split("://", 1)[0] if "://" in uri else "unknown"
+        _SESSION_MOUNT_CONNECTORS[resolved_path] = connector_scheme
         return {
             "path": resolved_path,
-            "connector": _mount_connector_from_path(resolved_path),
+            "connector": connector_scheme,
         }
 
     if method == "remove_mount":
@@ -871,6 +896,11 @@ async def dispatch(fs, method, params):
                 resolved_path = removed[0]
         except Exception:
             pass
+        # Drop the URI-scheme cache for the removed path so a future
+        # add_mount at the same path with a different connector cannot
+        # carry stale identity from the previous mount.
+        _SESSION_MOUNT_CONNECTORS.pop(mount_path, None)
+        _SESSION_MOUNT_CONNECTORS.pop(resolved_path, None)
         return {"path": resolved_path, "removed": True}
 
     raise NotImplementedError(f"Unknown method: {method}")
