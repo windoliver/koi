@@ -199,7 +199,11 @@ describe("createKoiRuntime — assembly", () => {
       stacks: [],
       approvalHandler: async () => ({ kind: "deny", reason: "no" }),
       autoHarness: {
-        forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+        forgeStore: {
+          save: async () => ({ ok: true as const, value: undefined }),
+          exists: async () => ({ ok: true as const, value: false }),
+          remove: async () => ({ ok: true as const, value: undefined }),
+        } as never,
         policyVerifier: ((_e: unknown) => true) as never,
         notifier: { notify: () => {}, subscribe: () => () => {} },
         generate: async () => "candidate-code",
@@ -230,7 +234,11 @@ describe("createKoiRuntime — assembly", () => {
         stacks: [],
         extraMiddleware: [providedPolicyCache],
         autoHarness: {
-          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          forgeStore: {
+            save: async () => ({ ok: true as const, value: undefined }),
+            exists: async () => ({ ok: true as const, value: false }),
+            remove: async () => ({ ok: true as const, value: undefined }),
+          } as never,
           policyVerifier: ((_e: unknown) => true) as never,
           notifier: { notify: () => {}, subscribe: () => () => {} },
           generate: async () => "candidate-code",
@@ -251,7 +259,11 @@ describe("createKoiRuntime — assembly", () => {
         // not activate the conflicting preset.
         stacks: ["forge"],
         autoHarness: {
-          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          forgeStore: {
+            save: async () => ({ ok: true as const, value: undefined }),
+            exists: async () => ({ ok: true as const, value: false }),
+            remove: async () => ({ ok: true as const, value: undefined }),
+          } as never,
           policyVerifier: ((_e: unknown) => true) as never,
           notifier: { notify: () => {}, subscribe: () => () => {} },
           generate: async () => "candidate-code",

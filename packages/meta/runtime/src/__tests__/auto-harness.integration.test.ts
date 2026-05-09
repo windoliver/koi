@@ -27,7 +27,11 @@ describe("createRuntime autoHarness wiring", () => {
         middleware: [providedPolicyCache],
         requestApproval: async () => ({ kind: "allow" }),
         autoHarness: {
-          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          forgeStore: {
+            save: async () => ({ ok: true as const, value: undefined }),
+            exists: async () => ({ ok: true as const, value: false }),
+            remove: async () => ({ ok: true as const, value: undefined }),
+          } as never,
           policyVerifier: permissiveVerifier,
           generate: async () => "candidate-code",
           verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-0" } as never }),
@@ -43,7 +47,11 @@ describe("createRuntime autoHarness wiring", () => {
       createRuntime({
         requestApproval: async () => ({ kind: "allow" }),
         autoHarness: {
-          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          forgeStore: {
+            save: async () => ({ ok: true as const, value: undefined }),
+            exists: async () => ({ ok: true as const, value: false }),
+            remove: async () => ({ ok: true as const, value: undefined }),
+          } as never,
           notifier: { notify: () => {}, subscribe: () => () => {} },
           generate: async () => "candidate-code",
           verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-x" } as never }),
@@ -59,7 +67,11 @@ describe("createRuntime autoHarness wiring", () => {
       createRuntime({
         requestApproval: async () => ({ kind: "allow" }),
         autoHarness: {
-          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          forgeStore: {
+            save: async () => ({ ok: true as const, value: undefined }),
+            exists: async () => ({ ok: true as const, value: false }),
+            remove: async () => ({ ok: true as const, value: undefined }),
+          } as never,
           policyVerifier: permissiveVerifier,
           generate: async () => "candidate-code",
           verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-x" } as never }),
@@ -79,7 +91,11 @@ describe("createRuntime autoHarness wiring", () => {
     const runtime = createRuntime({
       requestApproval: async () => ({ kind: "allow" }),
       autoHarness: {
-        forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+        forgeStore: {
+          save: async () => ({ ok: true as const, value: undefined }),
+          exists: async () => ({ ok: true as const, value: false }),
+          remove: async () => ({ ok: true as const, value: undefined }),
+        } as never,
         policyVerifier: permissiveVerifier,
         notifier: { notify: () => {}, subscribe: () => () => {} },
         generate: async () => "candidate-code",
@@ -99,7 +115,11 @@ describe("createRuntime autoHarness wiring", () => {
     const runtime = createRuntime({
       requestApproval: async () => ({ kind: "deny", reason: "no" }),
       autoHarness: {
-        forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+        forgeStore: {
+          save: async () => ({ ok: true as const, value: undefined }),
+          exists: async () => ({ ok: true as const, value: false }),
+          remove: async () => ({ ok: true as const, value: undefined }),
+        } as never,
         policyVerifier: permissiveVerifier,
         notifier: { notify: () => {}, subscribe: () => () => {} },
         generate: async () => "candidate-code",

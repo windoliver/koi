@@ -124,6 +124,11 @@ interface AutoHarnessSessionEntry {
    *  concurrent streams that share one logical sessionId, and lets
    *  onSessionEnd remove all aliases of one logical attachment. */
   readonly runId: string;
+  /** Owning agent id from SessionContext.agentId. Threaded into
+   *  AutoHarnessSessionContext.ownerAgentId so the synthesis pipeline
+   *  can reject any policyEntry whose agentId doesn't match the agent
+   *  that produced the demand signal (R5 round 19 finding). */
+  readonly agentId: string;
   readonly scoped: {
     readonly getSignals: () => readonly { readonly id: string }[];
     readonly dismiss: (signalId: string) => void;
@@ -146,7 +151,11 @@ export function wrapOnDemandWithAutoHarness(
   stack: {
     readonly synthesizeHarness: (
       signal: ForgeDemandSignal,
-      session?: { readonly sessionId: string; readonly dismiss?: () => void },
+      session?: {
+        readonly sessionId: string;
+        readonly ownerAgentId?: string | undefined;
+        readonly dismiss?: () => void;
+      },
     ) => Promise<unknown>;
   },
   sessionLookup?: () => readonly AutoHarnessSessionEntry[],
@@ -193,6 +202,7 @@ export function wrapOnDemandWithAutoHarness(
       owner !== undefined
         ? {
             sessionId: owner.sessionId,
+            ownerAgentId: owner.agentId,
             dismiss: () => {
               try {
                 owner.scoped.dismiss(signal.id);
@@ -659,6 +669,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 autoHarnessSessionEntries.add({
                   sessionId: sessionContext.sessionId,
                   runId: sessionContext.runId,
+                  agentId: sessionContext.agentId,
                   scoped,
                 });
               },

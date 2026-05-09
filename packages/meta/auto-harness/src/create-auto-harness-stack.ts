@@ -85,7 +85,11 @@ function triggerIdentity(signal: ForgeDemandSignal): string {
     case "agent_capability_gap":
       return `agent_capability_gap:${t.agentType}`;
     case "agent_repeated_failure":
-      return `agent_repeated_failure:${t.agentType}`;
+      // Include brickId so distinct failing bricks for the same agentType
+      // do not share a dedupe bucket — otherwise once one signal is
+      // processed, later failures from another brick are silently
+      // suppressed as "already handled" (R5 round 19 finding).
+      return `agent_repeated_failure:${t.agentType}:${t.brickId}`;
     default: {
       // Exhaustive fallback for any future trigger kinds added to the L0 union.
       const exhaustive: Record<string, string> = t as never;
@@ -231,6 +235,22 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     completedTriggers: Set<string>;
   }
   const sessionState = new Map<string, SessionState>();
+  // Subscribe to store change events to invalidate completedTriggers.
+  // Without this, a session-long dedupe persists across artifact
+  // updates/removals/quarantines — operators recovering from a bad
+  // deployment would find the same demand signal still suppressed as
+  // "already processed" until the entire session is reset (R5 round 18
+  // finding). Clearing completedTriggers across all sessions on any
+  // store change is conservative but bounded: in-flight pipelines are
+  // unaffected, and the next signal for a previously-handled trigger
+  // gets a fresh attempt — exactly the recovery scenario operators need.
+  // The session synthesis budget is preserved so a single change cannot
+  // induce runaway re-synthesis.
+  config.notifier?.subscribe(() => {
+    for (const s of sessionState.values()) {
+      s.completedTriggers.clear();
+    }
+  });
   const getOrCreateSession = (id: string): SessionState => {
     let s = sessionState.get(id);
     if (s === undefined) {
@@ -311,7 +331,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     state.count += 1;
     emitEvent({ kind: "synthesis.started", signalId: signal.id });
     try {
-      const outcome = await runPipeline(signal);
+      const outcome = await runPipeline(signal, session);
       // Acknowledge the signal ONLY for non-transient terminal outcomes
       // (success, verification fail, policy block, approval denial). For
       // transient infrastructure failures, do NOT dismiss: the
@@ -343,7 +363,10 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
   const transient = (): PipelineOutcome => ({ kind: "transient", artifact: null });
   const nonRetriable = (): PipelineOutcome => ({ kind: "non_retriable", artifact: null });
 
-  const runPipeline = async (signal: ForgeDemandSignal): Promise<PipelineOutcome> => {
+  const runPipeline = async (
+    signal: ForgeDemandSignal,
+    session: AutoHarnessSessionContext | undefined,
+  ): Promise<PipelineOutcome> => {
     let code: string;
     try {
       code = await config.generate(formatGeneratePrompt(signal));
@@ -380,6 +403,45 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     // deploy stage is responsible for promoting the lifecycle once the
     // artifact is actually live.
     const artifact = { ...verification.artifact, lifecycle: "draft" as const };
+
+    // Refuse to save a pre-deploy draft under an id that already exists in
+    // the store. A buggy or compromised verifier could otherwise hand back
+    // an existing live brickId, and `forgeStore.save` would overwrite that
+    // record with our pre-approval draft. Later id-rewrite reconciliation
+    // would then delete the unrelated brick — a real data-loss path. Use
+    // `exists()` as a CAS-shaped check: if the id is already taken,
+    // surface as transient (the verifier can retry with a fresh id) and
+    // do not touch the store (R5 round 18 finding).
+    try {
+      const existsResult = await config.forgeStore.exists(artifact.id);
+      if (!existsResult.ok) {
+        reportError({
+          stage: "verify",
+          message: `forgeStore.exists check failed: ${existsResult.error.message}`,
+          koiError: existsResult.error,
+        });
+        return transient();
+      }
+      if (existsResult.value) {
+        reportError({
+          stage: "verify",
+          message:
+            `auto-harness refused pre-deploy save: artifact id ${artifact.id} ` +
+            "is already present in the forge store. Verifier must mint a fresh " +
+            "id (or a dedicated draft-namespace id) per synthesis run; reusing " +
+            "an existing id would overwrite the live record with a pre-approval " +
+            "draft and risk data loss on later id-rewrite reconciliation.",
+        });
+        return transient();
+      }
+    } catch (cause: unknown) {
+      reportError({
+        stage: "verify",
+        message: "forgeStore.exists threw",
+        cause,
+      });
+      return transient();
+    }
 
     // Persist the verified artifact before any policy / approval / deploy
     // decisions. Persistence is a HARD GATE: if the artifact cannot be
@@ -489,15 +551,27 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     // side effects. Mark non_retriable instead so the trigger stops
     // re-emitting; operators reconcile via the surfaced error rather than
     // re-deploy (R5 round 9 finding).
+    // After deployCandidate reports success, live side effects are
+    // committed. From this point on, downstream bookkeeping failures
+    // (missing authoritative artifact, post-deploy save failure,
+    // reconciliation failure) MUST surface as success carrying the
+    // best-known artifact — collapsing to null would tell callers
+    // "nothing deployed" while live state has changed, inviting
+    // duplicate activation on retry or rollback against stale state
+    // (R5 round 19 finding). Errors are surfaced via reportError so
+    // operators can reconcile.
     if (deployment.artifact === undefined) {
       reportError({
         stage: "deploy",
         message:
           "deployCandidate returned ok without an authoritative artifact; " +
           "live deploy may have committed but the post-deploy record cannot " +
-          "be persisted. Manual reconciliation required.",
+          "be persisted. Returning the pre-deploy draft as best-known " +
+          "artifact so callers do not retry. Manual reconciliation required.",
       });
-      return nonRetriable();
+      // Pre-deploy draft is the best identifier we have — caller knows
+      // a deployment may be live and should reconcile, not redeploy.
+      return { kind: "success", artifact };
     }
     const deployedArtifact = deployment.artifact;
 
@@ -509,20 +583,22 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
           message:
             `forgeStore.save (post-deploy) failed: ${saveResult.error.message}. ` +
             "Live deploy committed but durable record is stale; manual " +
-            "reconciliation required.",
+            "reconciliation required. Returning the deployed artifact so " +
+            "callers do not retry against an already-live state.",
           koiError: saveResult.error,
         });
-        return nonRetriable();
+        return { kind: "success", artifact: deployedArtifact };
       }
     } catch (cause: unknown) {
       reportError({
         stage: "deploy",
         message:
           "forgeStore.save (post-deploy) threw. Live deploy committed but " +
-          "durable record is stale; manual reconciliation required.",
+          "durable record is stale; manual reconciliation required. " +
+          "Returning the deployed artifact so callers do not retry.",
         cause,
       });
-      return nonRetriable();
+      return { kind: "success", artifact: deployedArtifact };
     }
 
     // Reconcile the pre-deploy draft when deployCandidate rewrote the
@@ -600,6 +676,30 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
           "auto-harness refused to register policyEntry with no agentId; " +
           "agent-scoped entries must identify the owning agent so cache " +
           "lookups cannot match other agents' traffic.",
+      });
+      return { kind: "success", artifact: deployedArtifact };
+    }
+    // Bind the policy entry to the agent that owns the demand-producing
+    // session. Without this, deployCandidate could hand back an entry for
+    // an unrelated agentId and the cache would short-circuit traffic for
+    // an agent that never authorized this synthesis — a cross-agent
+    // trust-boundary violation. When the host doesn't supply
+    // `ownerAgentId` (out-of-band callers, stub adapters), the looser
+    // non-empty-string check above stands; multi-tenant runtimes thread
+    // the owner via runtime onSessionAttached (R5 round 19 finding).
+    if (
+      entry !== undefined &&
+      session?.ownerAgentId !== undefined &&
+      entry.agentId !== session.ownerAgentId
+    ) {
+      reportError({
+        stage: "register-policy",
+        message:
+          `auto-harness refused to register policyEntry whose agentId (${entry.agentId}) ` +
+          `does not match the owning agent (${session.ownerAgentId}). ` +
+          "Cache entries must enforce only against the agent whose session " +
+          "produced the demand signal; cross-agent registration would let " +
+          "one agent's deployment change enforcement for an unrelated agent.",
       });
       return { kind: "success", artifact: deployedArtifact };
     }

@@ -127,6 +127,15 @@ export type AutoHarnessSynthesisResult = BrickArtifact | null;
  */
 export interface AutoHarnessSessionContext {
   readonly sessionId: string;
+  /**
+   * Owning agent identity for the session that produced the demand signal.
+   * When supplied, the pipeline rejects any policyEntry whose `agentId`
+   * does not exactly match — otherwise a buggy or compromised
+   * `deployCandidate` could register an agent-scoped cache entry against
+   * an unrelated agent, silently changing enforcement for a tenant that
+   * never authorized the synthesis (R5 round 19 finding).
+   */
+  readonly ownerAgentId?: string | undefined;
   readonly dismiss?: (() => void) | undefined;
 }
 

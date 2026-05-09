@@ -68,6 +68,8 @@ describe("createAutoHarnessStack", () => {
     const stack = createAutoHarnessStack({
       forgeStore: {
         save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
       } as never,
       notifier: {
         notify: () => {},
@@ -96,10 +98,14 @@ describe("createAutoHarnessStack", () => {
 
     expect(stack.policyCacheMiddleware.name).toBe("policy-cache");
     expect(stack.policyCacheHandle.middleware).toBe(stack.policyCacheMiddleware);
-    expect(subscribed).toBe(1);
+    // Two subscriptions: one from createPolicyCacheMiddleware, one from
+    // createAutoHarnessStack's completedTriggers invalidation listener.
+    expect(subscribed).toBe(2);
     expect(stack.policyCacheHandle.size()).toBe(0);
     expect(stack.policyCacheHandle.evict("brick-1" as never)).toBeUndefined();
     stack.policyCacheHandle.dispose();
+    // Only the policy-cache subscription unsubscribes via dispose; the
+    // completedTriggers listener stays for the lifetime of the stack.
     expect(unsubscribed).toBe(1);
     expect(typeof stack.synthesizeHarness).toBe("function");
     expect(typeof stack.resetSession).toBe("function");
@@ -111,6 +117,8 @@ describe("createAutoHarnessStack", () => {
     const stack = createAutoHarnessStack({
       forgeStore: {
         save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
       } as never,
       generate: async () => "export function createMiddleware() {}",
       verifyCandidate: async (_signal, _code): Promise<AutoHarnessVerificationResult> => ({
@@ -138,6 +146,8 @@ describe("createAutoHarnessStack", () => {
     const stack = createAutoHarnessStack({
       forgeStore: {
         save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
       } as never,
       notifier: makeNotifier(),
       generate: async () => "export function createMiddleware() {}",
@@ -181,6 +191,8 @@ describe("createAutoHarnessStack", () => {
     const stack = createAutoHarnessStack({
       forgeStore: {
         save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
       } as never,
       notifier: makeNotifier(),
       generate: async (prompt) => {
@@ -227,6 +239,8 @@ describe("createAutoHarnessStack", () => {
     const stack = createAutoHarnessStack({
       forgeStore: {
         save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
       } as never,
       notifier: makeNotifier(),
       generate: async () => {
@@ -292,7 +306,11 @@ describe("createAutoHarnessStack", () => {
     let policyCalls = 0;
     let approvalCalls = 0;
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => {
         verifyCalls += 1;
@@ -331,7 +349,11 @@ describe("createAutoHarnessStack", () => {
     let approvalCalls = 0;
     const artifact = { id: "brick-1", kind: "middleware" } as never;
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => {
         verifyCalls += 1;
@@ -370,7 +392,11 @@ describe("createAutoHarnessStack", () => {
     let approvalCalls = 0;
     const artifact = { id: "brick-2", kind: "middleware" } as never;
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => {
         verifyCalls += 1;
@@ -401,7 +427,11 @@ describe("createAutoHarnessStack", () => {
   test("reports generate failures and returns null", async () => {
     const errors: AutoHarnessError[] = [];
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => {
         throw new Error("generator offline");
       },
@@ -424,7 +454,11 @@ describe("createAutoHarnessStack", () => {
   test("reports thrown verifier failures and returns null", async () => {
     const errors: AutoHarnessError[] = [];
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => {
         throw new Error("verifier crashed");
@@ -445,7 +479,11 @@ describe("createAutoHarnessStack", () => {
     const errors: AutoHarnessError[] = [];
     const artifact = makeArtifact();
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -467,7 +505,11 @@ describe("createAutoHarnessStack", () => {
     const artifact = makeArtifact();
     let deploymentAttempts = 0;
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -507,7 +549,11 @@ describe("createAutoHarnessStack", () => {
     // does not error during a normal deployment path.
     const verifierCalls: unknown[] = [];
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       notifier: makeNotifier(),
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact: makeArtifact() }),
@@ -537,7 +583,11 @@ describe("createAutoHarnessStack", () => {
   test("verification, policy, and approval failures all consume the session budget", async () => {
     let generateCalls = 0;
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => {
         generateCalls += 1;
         return "candidate-code";
@@ -575,7 +625,11 @@ describe("createAutoHarnessStack", () => {
   test("derives the generation prompt from the demand signal", async () => {
     const prompts: string[] = [];
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async (prompt) => {
         prompts.push(prompt);
         return "candidate-code";
@@ -608,7 +662,11 @@ describe("createAutoHarnessStack", () => {
       execute: () => ({ action: "allow" as const }),
     };
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
       notifier: makeNotifier(),
       generate: async () => "candidate-code",
@@ -646,7 +704,11 @@ describe("createAutoHarnessStack", () => {
     const events: AutoHarnessEvent[] = [];
     const artifact = makeArtifact();
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
       notifier: makeNotifier(),
       generate: async () => "candidate-code",
@@ -704,7 +766,11 @@ describe("createAutoHarnessStack", () => {
     const events: AutoHarnessEvent[] = [];
     const artifact = makeArtifact();
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => {
         generateCalls += 1;
         await gate;
@@ -736,7 +802,11 @@ describe("createAutoHarnessStack", () => {
   test("partitions per-session synthesis budgets — one session cannot exhaust another's", async () => {
     let generateCalls = 0;
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => {
         generateCalls += 1;
         return "candidate-code";
@@ -775,7 +845,11 @@ describe("createAutoHarnessStack", () => {
     const dismiss = (label: string) => () => dismissed.push(label);
 
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async () => "candidate-code",
       verifyCandidate: async (signal) =>
         signal.id === "sig-fail"
@@ -800,7 +874,11 @@ describe("createAutoHarnessStack", () => {
   test("sanitizes secret-shaped tokens out of the generation prompt", async () => {
     const prompts: string[] = [];
     const stack = createAutoHarnessStack({
-      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
       generate: async (prompt) => {
         prompts.push(prompt);
         return "candidate-code";
@@ -852,13 +930,18 @@ describe("createAutoHarnessStack", () => {
           saved.push(brick);
           return { ok: true as const, value: undefined };
         },
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
       } as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => {
         policyCalls += 1;
         // Save must have happened before any further pipeline stage runs.
-        expect(saved).toContain(artifact);
+        // The pre-deploy artifact is a structural clone with lifecycle
+        // forced to "draft", not the same reference returned from
+        // verifyCandidate, so compare structurally.
+        expect(saved.some((b) => b.id === artifact.id)).toBe(true);
         return { ok: true, action: "allow" };
       },
       requestDeploymentApproval: async () => true,
@@ -867,7 +950,14 @@ describe("createAutoHarnessStack", () => {
 
     await stack.synthesizeHarness(makeSignal());
 
-    expect(saved).toEqual([artifact]);
+    // Two saves: pre-deploy draft and post-deploy authoritative artifact.
+    // Both have the same id and content here (deployCandidate echoes the
+    // input artifact), but the pipeline persists both calls so the
+    // durable record reflects the live activation distinct from the
+    // pre-approval draft.
+    expect(saved).toHaveLength(2);
+    expect(saved[0]).toEqual(artifact);
+    expect(saved[1]).toEqual(artifact);
     expect(policyCalls).toBe(1);
   });
 
@@ -881,6 +971,8 @@ describe("createAutoHarnessStack", () => {
           ok: false as const,
           error: { code: "IO_ERROR", message: "disk full", retryable: true },
         }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
       } as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact }),
