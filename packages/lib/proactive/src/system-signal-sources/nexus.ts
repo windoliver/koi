@@ -76,10 +76,13 @@ function isTransitionReason(value: unknown): value is TransitionReason {
     case "inbox_wake":
       return true;
     case "error":
-      return !("cause" in reason) || reason.cause !== undefined;
+      return true;
     case "restarted":
       return (
-        typeof reason.attempt === "number" && typeof reason.strategy === "string"
+        typeof reason.attempt === "number" &&
+        Number.isFinite(reason.attempt) &&
+        Number.isInteger(reason.attempt) &&
+        typeof reason.strategy === "string"
       );
     case "escalated":
       return typeof reason.cause === "string";
@@ -183,6 +186,8 @@ export function createNexusSignalSource(
               isTransitionReason(record.reason) &&
               typeof record.generation === "number" &&
               Number.isFinite(record.generation) &&
+              Number.isInteger(record.generation) &&
+              record.generation >= 0 &&
               typeof record.emittedAt === "number"
               && Number.isFinite(record.emittedAt)
             ) {

@@ -82,6 +82,43 @@ describe("createNexusSignalSource", () => {
     ]);
   });
 
+  test("accepts error transition reasons when cause is explicitly undefined", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const source = createNexusSignalSource({
+      subscribe: (_channels, next) => {
+        listener = next;
+        return () => {};
+      },
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "running",
+      to: "terminated",
+      reason: { kind: "error", cause: undefined },
+      generation: 2,
+      emittedAt: 2,
+    });
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen).toEqual([
+      {
+        kind: "agent_lifecycle",
+        agentId: "agent-1",
+        from: "running",
+        to: "terminated",
+        reason: { kind: "error", cause: undefined },
+        generation: 2,
+        emittedAt: 2,
+      },
+    ]);
+  });
+
   test("drops lifecycle transitions with invalid contract shapes", async () => {
     let listener: ((event: unknown) => void) | undefined;
     const source = createNexusSignalSource({
@@ -155,6 +192,63 @@ describe("createNexusSignalSource", () => {
       event: "write",
       path: "/tmp/non-finite.txt",
       emittedAt: Number.POSITIVE_INFINITY,
+    });
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen).toEqual([]);
+  });
+
+  test("drops lifecycle transitions with non-integer or negative generation and restarted attempts", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const source = createNexusSignalSource({
+      subscribe: (_channels, next) => {
+        listener = next;
+        return () => {};
+      },
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "running",
+      to: "terminated",
+      reason: { kind: "completed" },
+      generation: -1,
+      emittedAt: 6,
+    });
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "running",
+      to: "terminated",
+      reason: { kind: "completed" },
+      generation: 1.5,
+      emittedAt: 7,
+    });
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "suspended",
+      to: "running",
+      reason: { kind: "restarted", attempt: 1.25, strategy: "retry" },
+      generation: 3,
+      emittedAt: 8,
+    });
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "suspended",
+      to: "running",
+      reason: { kind: "restarted", attempt: Number.POSITIVE_INFINITY, strategy: "retry" },
+      generation: 4,
+      emittedAt: 9,
     });
     await new Promise((resolve) => queueMicrotask(resolve));
     stop();
