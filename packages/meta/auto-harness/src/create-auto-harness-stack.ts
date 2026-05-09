@@ -169,9 +169,43 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
         "forge store's lifecycle events.",
     );
   }
+  // Wrap the verifier with a runtime check that the result is a strict
+  // boolean. The TS type prevents async verifiers at compile time, but
+  // hosts that pass through `as never` (or untyped JS) can otherwise leak
+  // an async function in. An unresolved Promise is truthy in JS, so an
+  // accidentally-async verifier would silently approve every register —
+  // an authorization/integrity failure, not a perf miss (R5 round 11
+  // finding).
+  const wrappedVerifier =
+    config.policyVerifier !== undefined
+      ? (entry: Parameters<NonNullable<typeof config.policyVerifier>>[0]) => {
+          const result = (config.policyVerifier as (e: unknown) => unknown)(entry);
+          if (
+            result !== null &&
+            typeof result === "object" &&
+            typeof (result as { then?: unknown }).then === "function"
+          ) {
+            throw new Error(
+              "@koi/auto-harness: policyVerifier must return boolean synchronously. " +
+                "An async verifier returns a Promise, which is truthy and would silently " +
+                "approve every policy-cache registration — a trust-boundary failure. " +
+                "Use a synchronous predicate; if verification needs I/O, perform it " +
+                "before deploy and pass the resulting boolean.",
+            );
+          }
+          if (typeof result !== "boolean") {
+            throw new Error(
+              `@koi/auto-harness: policyVerifier must return boolean, got ${typeof result}. ` +
+                "Strict boolean is required so a non-boolean truthy value cannot " +
+                "silently approve a registration.",
+            );
+          }
+          return result;
+        }
+      : undefined;
   const policyCacheHandle = createPolicyCacheMiddleware({
     notifier: config.notifier,
-    ...(config.policyVerifier !== undefined && { verifier: config.policyVerifier }),
+    ...(wrappedVerifier !== undefined && { verifier: wrappedVerifier }),
   });
   const { middleware: policyCacheMiddleware } = policyCacheHandle;
   const maxSynthesesPerSession = resolveMaxSynthesesPerSession(config.maxSynthesesPerSession);

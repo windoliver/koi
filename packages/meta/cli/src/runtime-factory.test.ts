@@ -193,17 +193,21 @@ describe("createKoiRuntime — assembly", () => {
     let deployed = false;
     runtimeHandle = await createKoiRuntime({
       ...makeConfig(),
+      // Disable the forge preset so auto-harness's caller-supplied store
+      // is the single source of truth (otherwise CLI fails closed on
+      // split-brain).
+      stacks: [],
       approvalHandler: async () => ({ kind: "deny", reason: "no" }),
       autoHarness: {
         forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
-        policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
+        policyVerifier: ((_e: unknown) => true) as never,
         notifier: { notify: () => {}, subscribe: () => () => {} },
         generate: async () => "candidate-code",
         verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-5" } as never }),
         evaluatePolicy: async () => ({ ok: true, action: "allow" }),
-        deployCandidate: async () => {
+        deployCandidate: async (artifact) => {
           deployed = true;
-          return { ok: true };
+          return { ok: true, artifact };
         },
       },
     });
@@ -223,17 +227,36 @@ describe("createKoiRuntime — assembly", () => {
     await expect(
       createKoiRuntime({
         ...makeConfig(),
+        stacks: [],
         extraMiddleware: [providedPolicyCache],
         autoHarness: {
           forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
-          policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
+          policyVerifier: ((_e: unknown) => true) as never,
+          notifier: { notify: () => {}, subscribe: () => () => {} },
           generate: async () => "candidate-code",
           verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-6" } as never }),
           evaluatePolicy: async () => ({ ok: true, action: "allow" }),
-          deployCandidate: async () => ({ ok: true }),
+          deployCandidate: async (artifact) => ({ ok: true, artifact }),
         },
       }),
     ).rejects.toThrow(/policy-cache/);
+  });
+
+  test("rejects autoHarness when the forge preset is active (split-brain forge store)", async () => {
+    await expect(
+      createKoiRuntime({
+        ...makeConfig(),
+        autoHarness: {
+          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          policyVerifier: ((_e: unknown) => true) as never,
+          notifier: { notify: () => {}, subscribe: () => () => {} },
+          generate: async () => "candidate-code",
+          verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-7" } as never }),
+          evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+          deployCandidate: async (artifact) => ({ ok: true, artifact }),
+        },
+      }),
+    ).rejects.toThrow(/forge/);
   });
 
   test("returns a mutable transcript array", async () => {

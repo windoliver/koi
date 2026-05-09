@@ -4060,6 +4060,29 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           : config.forgeDemand
         : undefined;
 
+    // Fail closed when autoHarness is enabled alongside the forge preset:
+    // the forge preset creates its own private in-memory ForgeStore that is
+    // not exposed to the host, while autoHarness saves/deploys into the
+    // caller-supplied store. The two paths would diverge — `forge_list` /
+    // `forge_inspect` would read one store while auto-harness deployments
+    // land in another, and cache invalidation would follow only one
+    // notifier. Until the forge preset exposes its store/notifier for
+    // sharing, refuse the combined configuration so operators can't end up
+    // with split-brain state (R5 round 11 finding).
+    const forgeStackActive = enabledStackIds === undefined || enabledStackIds.has("forge");
+    if (config.autoHarness !== undefined && forgeStackActive) {
+      throw new Error(
+        "createKoiRuntime: cannot enable `autoHarness` together with the " +
+          "`forge` preset stack. The forge preset owns a private in-memory " +
+          "ForgeStore that is not exposed for sharing, while auto-harness " +
+          "uses the caller-supplied store; combining them produces a " +
+          "split-brain configuration where forge_list/forge_inspect read " +
+          "one store and auto-harness deploys land in another. Either " +
+          "disable the forge preset (config.stacks) or run auto-harness " +
+          "out-of-band until the preset surfaces a shared store.",
+      );
+    }
+
     sharedRuntimeHandle =
       config.autoHarness !== undefined
         ? createRuntime({
