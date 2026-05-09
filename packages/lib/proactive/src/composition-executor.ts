@@ -46,6 +46,12 @@ export interface CompositionForgeRequest {
   readonly demand: ForgeDemandSignal;
 }
 
+export interface CompositionToolCallRequest {
+  readonly toolName: string;
+  readonly input: unknown;
+  readonly idempotencyKey: string;
+}
+
 export type CompositionExecutionStatus =
   | { readonly kind: "claimed" }
   | { readonly kind: "pending" }
@@ -105,8 +111,28 @@ export interface CompositionExecutionContext {
    * claim pending — see `executionLog` semantics for reconciliation.
    */
   readonly notify: (notification: CompositionNotification) => Promise<unknown>;
-  readonly spawn?: ((request: CompositionSpawnRequest) => Promise<unknown>) | undefined;
-  readonly forge?: ((request: CompositionForgeRequest) => Promise<unknown>) | undefined;
+  /**
+   * Optional handler for `spawn_agent` steps. When provided, the executor
+   * routes spawn_agent through the same executionLog claim/record path used
+   * for create_schedule and notify_user — including pre-commit rejection
+   * release. When omitted, spawn_agent steps return `unsupported` (existing
+   * fail-closed behavior).
+   */
+  readonly spawn?:
+    | ((request: CompositionSpawnRequest & { readonly idempotencyKey: string }) => Promise<unknown>)
+    | undefined;
+  /**
+   * Optional handler for `forge_skill` steps. Same executionLog semantics as
+   * `spawn`. Omitted → `unsupported`.
+   */
+  readonly forge?:
+    | ((request: CompositionForgeRequest & { readonly idempotencyKey: string }) => Promise<unknown>)
+    | undefined;
+  /**
+   * Optional handler for `tool_call` steps. Same executionLog semantics as
+   * `spawn`. Omitted → `unsupported`.
+   */
+  readonly toolCall?: ((request: CompositionToolCallRequest) => Promise<unknown>) | undefined;
   /**
    * MANDATORY. Required to execute `create_schedule` and `notify_user`
    * safely. Required at the type boundary so callers cannot accidentally
@@ -650,15 +676,107 @@ export function createCompositionExecutor(
               break;
             }
 
-            case "spawn_agent":
-            case "forge_skill":
-            case "tool_call":
-              // Fail-closed per documented contract (docs/L2/proactive.md):
-              // execution stops on the first unsupported step. Continuing
-              // could fire later side effects whose preconditions were
-              // skipped (e.g. notify_user "diagnosis complete" when the
-              // diagnostic spawn_agent never ran).
-              return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+            case "spawn_agent": {
+              if (context.spawn === undefined) {
+                return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+              }
+              const claim = await context.executionLog.claim(stepIdempotencyKey);
+              if (claim.kind === "complete") {
+                stepResults.push({ step, status: "executed", output: claim.output });
+                break;
+              }
+              if (claim.kind === "pending") {
+                return failedResult(trigger.id, stepResults, {
+                  step,
+                  status: "failed",
+                  error: {
+                    code: "STEP_FAILED",
+                    message:
+                      "Previous spawn_agent attempt is in indeterminate state " +
+                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                    stepKind: "spawn_agent",
+                    idempotencyKey: stepIdempotencyKey,
+                  },
+                });
+              }
+              claimedKey = stepIdempotencyKey;
+              const output = await context.spawn({
+                agentType: step.agentType,
+                input: step.input,
+                delivery: step.delivery,
+                idempotencyKey: stepIdempotencyKey,
+              });
+              await context.executionLog.record(stepIdempotencyKey, output);
+              stepResults.push({ step, status: "executed", output });
+              break;
+            }
+
+            case "forge_skill": {
+              if (context.forge === undefined) {
+                return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+              }
+              const claim = await context.executionLog.claim(stepIdempotencyKey);
+              if (claim.kind === "complete") {
+                stepResults.push({ step, status: "executed", output: claim.output });
+                break;
+              }
+              if (claim.kind === "pending") {
+                return failedResult(trigger.id, stepResults, {
+                  step,
+                  status: "failed",
+                  error: {
+                    code: "STEP_FAILED",
+                    message:
+                      "Previous forge_skill attempt is in indeterminate state " +
+                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                    stepKind: "forge_skill",
+                    idempotencyKey: stepIdempotencyKey,
+                  },
+                });
+              }
+              claimedKey = stepIdempotencyKey;
+              const output = await context.forge({
+                demand: step.demand,
+                idempotencyKey: stepIdempotencyKey,
+              });
+              await context.executionLog.record(stepIdempotencyKey, output);
+              stepResults.push({ step, status: "executed", output });
+              break;
+            }
+
+            case "tool_call": {
+              if (context.toolCall === undefined) {
+                return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+              }
+              const claim = await context.executionLog.claim(stepIdempotencyKey);
+              if (claim.kind === "complete") {
+                stepResults.push({ step, status: "executed", output: claim.output });
+                break;
+              }
+              if (claim.kind === "pending") {
+                return failedResult(trigger.id, stepResults, {
+                  step,
+                  status: "failed",
+                  error: {
+                    code: "STEP_FAILED",
+                    message:
+                      "Previous tool_call attempt is in indeterminate state " +
+                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                    stepKind: "tool_call",
+                    idempotencyKey: stepIdempotencyKey,
+                  },
+                });
+              }
+              claimedKey = stepIdempotencyKey;
+              const output = await context.toolCall({
+                toolName: step.toolName,
+                input: step.input,
+                idempotencyKey: stepIdempotencyKey,
+              });
+              await context.executionLog.record(stepIdempotencyKey, output);
+              stepResults.push({ step, status: "executed", output });
+              break;
+            }
           }
         } catch (cause) {
           if (claimedKey !== undefined) {

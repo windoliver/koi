@@ -3,7 +3,6 @@ import {
   type AgentDefinition,
   agentId,
   type CompositionTrigger,
-  DEFAULT_DELIVERY_POLICY,
 } from "@koi/core";
 import { createLlmCompositionPlanner } from "./llm-composition-planner.js";
 import { createRuleBasedCompositionPlanner } from "./rule-based-composition-planner.js";
@@ -26,7 +25,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "gov-1",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "notify_user",
@@ -164,9 +163,7 @@ describe("createLlmCompositionPlanner", () => {
           return JSON.stringify({
             triggerId: "trigger-channel",
             triggerEmittedAt: 1,
-            steps: [
-              { kind: "notify_user", channel: "slack", message: "hi", priority: "normal" },
-            ],
+            steps: [{ kind: "notify_user", channel: "slack", message: "hi", priority: "normal" }],
             estimatedCost: 1,
           });
         },
@@ -199,9 +196,7 @@ describe("createLlmCompositionPlanner", () => {
             // is emittedAt=2 (below). Without validation, the planner
             // would relabel this as current and silently execute stale work.
             triggerEmittedAt: 1,
-            steps: [
-              { kind: "notify_user", channel: "inbox", message: "x", priority: "normal" },
-            ],
+            steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
             estimatedCost: 1,
           });
         },
@@ -222,6 +217,36 @@ describe("createLlmCompositionPlanner", () => {
         { tools: [], agents: [], schedules: [] },
       ),
     ).rejects.toThrow(/triggerEmittedAt mismatch/);
+  });
+
+  test("LLM plan without triggerEmittedAt back-compat: synthesize from current trigger", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          // Pre-emittedAt adapter contract: no triggerEmittedAt field.
+          return JSON.stringify({
+            triggerId: "trigger-legacy",
+            steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-legacy",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 42,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.triggerEmittedAt).toBe(42);
   });
 
   test("planner config can disable Temporal-style gating for non-Temporal backends", async () => {
@@ -397,7 +422,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "wrong-id",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: [],
             estimatedCost: 0,
           });
@@ -441,7 +466,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "event-2",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: "not-an-array",
             estimatedCost: 0,
           });
@@ -485,7 +510,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "event-3",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: [],
             estimatedCost: -1,
           });
@@ -589,7 +614,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "bad-nested-1",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "spawn_agent",
@@ -642,7 +667,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "low-1",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "notify_user",
@@ -691,7 +716,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "tc-1",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "tool_call",
@@ -727,7 +752,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "st-1",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "submit_task",
@@ -772,7 +797,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "cs-1",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "create_schedule",
@@ -867,7 +892,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "local-bug-1",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 1,
             steps: [],
             estimatedCost: 0,
           });

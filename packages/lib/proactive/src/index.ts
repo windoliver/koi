@@ -10,6 +10,11 @@ export {
   DEFAULT_COMPOSITION_APPROVAL_POLICY,
 } from "./composition-approval.js";
 export {
+  type SqliteDatabaseLike,
+  type SqliteStatementLike,
+  sqliteCompositionExecutionLog,
+} from "./composition-execution-log-sqlite.js";
+export {
   type CompositionExecutionContext,
   type CompositionExecutionLog,
   type CompositionExecutionStatus,
@@ -17,6 +22,7 @@ export {
   type CompositionNotification,
   type CompositionPreCommitRejection,
   type CompositionSpawnRequest,
+  type CompositionToolCallRequest,
   createCompositionExecutor,
   inMemoryCompositionExecutionLog,
   isPreCommitRejection,

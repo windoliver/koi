@@ -311,7 +311,11 @@ const compositionStepSchema = z.discriminatedUnion("kind", [
 const llmPlanSchema = z
   .object({
     triggerId: z.string(),
-    triggerEmittedAt: z.number(),
+    // Optional for back-compat with pre-emittedAt adapters. When omitted, the
+    // parser defaults to the current trigger.emittedAt (no relabeling risk
+    // because there is nothing to compare against). When present, the parser
+    // rejects mismatched values — that is the anti-relabeling guard.
+    triggerEmittedAt: z.number().optional(),
     steps: z.array(compositionStepSchema),
     estimatedCost: z.number().finite().nonnegative(),
   })
@@ -319,11 +323,7 @@ const llmPlanSchema = z
 
 // Step kinds the executor currently does not run; the executor fail-closes
 // on the first such step.
-const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>([
-  "spawn_agent",
-  "forge_skill",
-  "tool_call",
-]);
+const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>(["spawn_agent", "forge_skill", "tool_call"]);
 
 // True when ANY step in the plan is a kind the executor cannot run.
 // The executor fail-closes on the first such step, so a plan containing
@@ -364,10 +364,7 @@ const TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS: readonly string[] = [
 // submit() throws synchronously on these option combinations (see
 // temporal-scheduler.ts submit()). Auto-approving plans that hit them
 // would deterministically fail at execute time.
-const TEMPORAL_UNSUPPORTED_SUBMIT_OPTION_KEYS: readonly string[] = [
-  "timeoutMs",
-  "maxRetries",
-];
+const TEMPORAL_UNSUPPORTED_SUBMIT_OPTION_KEYS: readonly string[] = ["timeoutMs", "maxRetries"];
 
 function planUsesUnsafeChannel(
   steps: readonly CompositionStep[],
@@ -436,12 +433,12 @@ function parseAdapterResponse(
       );
     }
 
-    // The adapter MUST authentically declare which emission of the
-    // trigger it planned against. Synthesizing this from the current
-    // trigger.emittedAt would defeat the executor's stale-plan guard:
-    // a cached/replayed adapter response for a prior emission would be
-    // silently relabeled as current and execute against the wrong run.
-    if (plan.triggerEmittedAt !== trigger.emittedAt) {
+    // Anti-relabeling guard: if the adapter declared an emittedAt, it MUST
+    // match the current trigger.emittedAt. A cached/replayed adapter response
+    // for a prior emission must not be silently relabeled as current.
+    // Adapters that omit the field (back-compat) get the current emittedAt
+    // synthesized — there is no stale value to mistakenly trust.
+    if (plan.triggerEmittedAt !== undefined && plan.triggerEmittedAt !== trigger.emittedAt) {
       throw new AdapterPlanParseError(
         `planner triggerEmittedAt mismatch: expected ${trigger.emittedAt}, got ${plan.triggerEmittedAt} ` +
           `(adapter likely returned a stale plan for a reused trigger id)`,
@@ -450,7 +447,7 @@ function parseAdapterResponse(
 
     return {
       triggerId: plan.triggerId,
-      triggerEmittedAt: plan.triggerEmittedAt,
+      triggerEmittedAt: plan.triggerEmittedAt ?? trigger.emittedAt,
       steps: plan.steps as readonly CompositionStep[],
       estimatedCost: plan.estimatedCost,
     };
@@ -520,7 +517,8 @@ export function createLlmCompositionPlanner(
   const guards: ApprovalGuards = {
     safeChannels: config.safeNotifyChannels ?? DEFAULT_PLANNER_SAFE_CHANNELS,
     unsafeSubmitKeys: config.unsafeSubmitOptionKeys ?? TEMPORAL_UNSUPPORTED_SUBMIT_OPTION_KEYS,
-    unsafeScheduleKeys: config.unsafeScheduleOptionKeys ?? TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS,
+    unsafeScheduleKeys:
+      config.unsafeScheduleOptionKeys ?? TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS,
   };
 
   return {

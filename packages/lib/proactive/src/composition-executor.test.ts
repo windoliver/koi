@@ -496,6 +496,78 @@ describe("createCompositionExecutor", () => {
     expect(notifications).toHaveLength(1);
   });
 
+  test("executes spawn_agent through injected handler with executionLog dedupe", async () => {
+    const { scheduler } = schedulerStub();
+    const spawnCalls: { request: unknown }[] = [];
+    const { log, store } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+      spawn: async (request) => {
+        spawnCalls.push({ request });
+        return { spawnedId: "spawn-1" };
+      },
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        {
+          kind: "spawn_agent",
+          agentType: "researcher",
+          input: { kind: "text", text: "investigate" },
+          delivery: { kind: "deferred" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const first = await executor.execute(trigger(), plan);
+    expect(first.status).toBe("executed");
+    expect(first.stepResults[0]?.output).toEqual({ spawnedId: "spawn-1" });
+    expect(spawnCalls).toHaveLength(1);
+    expect((spawnCalls[0]?.request as { idempotencyKey?: string })?.idempotencyKey).toMatch(
+      /^cmp-[0-9a-f]{32}$/,
+    );
+
+    // Replay short-circuits via executionLog.
+    const second = await executor.execute(trigger(), plan);
+    expect(second.status).toBe("executed");
+    expect(spawnCalls).toHaveLength(1);
+    expect(store.size).toBe(1);
+  });
+
+  test("executes tool_call through injected handler", async () => {
+    const { scheduler } = schedulerStub();
+    const toolCalls: { name: string; input: unknown; key: string }[] = [];
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      toolCall: async (req) => {
+        toolCalls.push({ name: req.toolName, input: req.input, key: req.idempotencyKey });
+        return { result: 42 };
+      },
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "tool_call", toolName: "calc.add", input: { a: 1, b: 2 } }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+    expect(result.status).toBe("executed");
+    expect(result.stepResults[0]?.output).toEqual({ result: 42 });
+    expect(toolCalls[0]?.name).toBe("calc.add");
+    expect(toolCalls[0]?.key).toMatch(/^cmp-[0-9a-f]{32}$/);
+  });
+
   test("stops on unsupported forge_skill", async () => {
     const { scheduler } = schedulerStub();
     const executor = createCompositionExecutor({
