@@ -205,17 +205,26 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
         gatewayUrl: result.spawnChild.childConfig.gatewayUrl ?? config.gatewayUrl,
       };
 
-      await startChild("workerWorkflow", {
-        args: [childConfig],
-        workflowId: buildChildWorkflowId(
-          effectiveSessionId,
-          result.spawnChild.childAgentId,
-          result.turnId,
-        ),
-        // ABANDON: parent may continueAsNew immediately after spawning;
-        // default TERMINATE would kill an in-flight child mid-turn.
-        parentClosePolicy: "ABANDON",
-      });
+      // Skip spawning if the parent's deadline has already elapsed by the
+      // time we get here (queue, retry, or worker delay between spawn
+      // capture and child start). Mirrors the in-process spawn fast-path
+      // rejection so expired children never consume worker capacity.
+      const deadlineExpired =
+        childConfig.absoluteDeadlineMs !== undefined &&
+        childConfig.absoluteDeadlineMs <= Date.now();
+      if (!deadlineExpired) {
+        await startChild("workerWorkflow", {
+          args: [childConfig],
+          workflowId: buildChildWorkflowId(
+            effectiveSessionId,
+            result.spawnChild.childAgentId,
+            result.turnId,
+          ),
+          // ABANDON: parent may continueAsNew immediately after spawning;
+          // default TERMINATE would kill an in-flight child mid-turn.
+          parentClosePolicy: "ABANDON",
+        });
+      }
     }
 
     // Cap workflow history before Temporal forces a hard failure. Roll over
@@ -275,6 +284,10 @@ export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<Agen
     ...(config.toolDenylist !== undefined ? { toolDenylist: config.toolDenylist } : {}),
     ...(config.fork !== undefined ? { fork: config.fork } : {}),
     ...(config.allowNestedSpawn !== undefined ? { allowNestedSpawn: config.allowNestedSpawn } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+    ...(config.absoluteDeadlineMs !== undefined
+      ? { absoluteDeadlineMs: config.absoluteDeadlineMs }
+      : {}),
   });
 }
 

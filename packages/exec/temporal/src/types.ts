@@ -64,6 +64,8 @@ export interface AgentTurnInput {
   readonly toolDenylist?: readonly string[] | undefined;
   readonly fork?: boolean | undefined;
   readonly allowNestedSpawn?: boolean | undefined;
+  readonly timeoutMs?: number | undefined;
+  readonly absoluteDeadlineMs?: number | undefined;
 }
 
 export interface SpawnChildRequest {
@@ -84,6 +86,8 @@ export interface SpawnChildRequest {
         readonly toolDenylist?: readonly string[] | undefined;
         readonly fork?: boolean | undefined;
         readonly allowNestedSpawn?: boolean | undefined;
+        readonly timeoutMs?: number | undefined;
+        readonly absoluteDeadlineMs?: number | undefined;
       }
     | undefined;
 }
@@ -143,6 +147,8 @@ export interface WorkerWorkflowConfig {
   readonly toolDenylist?: readonly string[] | undefined;
   readonly fork?: boolean | undefined;
   readonly allowNestedSpawn?: boolean | undefined;
+  readonly timeoutMs?: number | undefined;
+  readonly absoluteDeadlineMs?: number | undefined;
 }
 
 export interface TemporalConfig {

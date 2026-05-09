@@ -119,6 +119,16 @@ export function createActivities(deps: ActivityDeps): {
               readonly toolDenylist?: unknown;
               readonly fork?: unknown;
               readonly allowNestedSpawn?: unknown;
+              readonly timeoutMs?: unknown;
+              readonly absoluteDeadlineMs?: unknown;
+              readonly outputSchema?: unknown;
+              readonly requiredOutputToolName?: unknown;
+              readonly additionalTools?: unknown;
+              readonly manifest?: unknown;
+              readonly delivery?: unknown;
+              readonly taskIndex?: unknown;
+              readonly taskId?: unknown;
+              readonly agentName?: unknown;
             };
           };
 
@@ -283,6 +293,79 @@ export function createActivities(deps: ActivityDeps): {
               }
               return v;
             };
+            // Reject SpawnRequest fields the durable Temporal path cannot
+            // safely preserve. Carrying these silently would let a turn
+            // spawn a child that runs with weaker/different limits than
+            // the parent intended.
+            // Only reject fields that materially change child execution
+            // and that the Temporal path cannot carry. agentName/agentId/
+            // taskIndex/taskId are correlation/identity hints already
+            // resolved (childAgentId is set after AgentResolver runs); we
+            // accept them but don't propagate. additionalTools/manifest/
+            // delivery would change child semantics and aren't carried.
+            // outputSchema/requiredOutputToolName depend on a paired
+            // additionalTools injection (the verdict tool) that the Temporal
+            // path cannot serialize; reject the structured-output trio
+            // together until the spawn contract can carry the verdict tool.
+            // Detect unsupported spawn fields. Drop the spawn (no startChild)
+            // and emit an observable gateway frame instead of throwing —
+            // text deltas may have already streamed to the gateway, and a
+            // post-hoc throw would either lose them or replay them on retry.
+            // The parent turn commits normally; operators see the dropped
+            // delegation via the spawn_dropped frame.
+            const unsupportedFields = [
+              "manifest",
+              "delivery",
+              "outputSchema",
+              "requiredOutputToolName",
+            ] as const;
+            const additionalTools = req?.additionalTools;
+            const additionalToolsRequested =
+              Array.isArray(additionalTools) && additionalTools.length > 0;
+            const presentUnsupported = unsupportedFields.find(
+              (f) => req !== undefined && (req as Record<string, unknown>)[f] !== undefined,
+            );
+            if (presentUnsupported !== undefined || additionalToolsRequested) {
+              const fieldName = presentUnsupported ?? "additionalTools";
+              await deps.sendGatewayFrame(input.agentId, {
+                kind: "agent:spawn_dropped",
+                sessionId: input.sessionId,
+                turnId,
+                frameIndex: frameIndex++,
+                reason: `unsupported-spawn-field:${fieldName}`,
+                childAgentId: String(record.childAgentId ?? ""),
+              });
+              continue;
+            }
+            const nonNegativeNumber = (v: unknown, field: string): number | undefined => {
+              if (v === undefined) return undefined;
+              if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+                throw ApplicationFailure.create({
+                  message: `spawn_requested.${field} must be a non-negative finite number`,
+                  type: "InvalidSpawnRequest",
+                  nonRetryable: true,
+                });
+              }
+              return v;
+            };
+            const rawTimeoutMs = nonNegativeNumber(req?.timeoutMs, "timeoutMs");
+            const rawAbsoluteDeadlineMs = nonNegativeNumber(
+              req?.absoluteDeadlineMs,
+              "absoluteDeadlineMs",
+            );
+            // Snapshot the deadline at spawn capture time so any delay
+            // before the child workflow actually starts (queue, retries,
+            // worker scheduling) is charged against the caller's budget.
+            // This matches the in-process spawn path which captures an
+            // effective deadline immediately rather than letting the child
+            // restart its full timer on every attempt. timeoutMs: 0 is the
+            // documented "disable timeout" signal — preserve that by only
+            // deriving an absolute deadline when timeoutMs > 0.
+            const effectiveDeadlineMs =
+              rawAbsoluteDeadlineMs ??
+              (rawTimeoutMs !== undefined && rawTimeoutMs > 0
+                ? Date.now() + rawTimeoutMs
+                : undefined);
             const constraints = {
               maxTurns: positiveInt(req?.maxTurns, "maxTurns"),
               maxTokens: positiveInt(req?.maxTokens, "maxTokens"),
@@ -291,6 +374,8 @@ export function createActivities(deps: ActivityDeps): {
               toolDenylist: stringArray(req?.toolDenylist, "toolDenylist"),
               fork: boolField(req?.fork, "fork"),
               allowNestedSpawn: boolField(req?.allowNestedSpawn, "allowNestedSpawn"),
+              timeoutMs: rawTimeoutMs,
+              absoluteDeadlineMs: effectiveDeadlineMs,
             };
             // toolAllowlist and toolDenylist are mutually exclusive per SpawnRequest contract.
             if (constraints.toolAllowlist !== undefined && constraints.toolDenylist !== undefined) {
@@ -314,6 +399,13 @@ export function createActivities(deps: ActivityDeps): {
               childConfig: {
                 stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
                 ...(initialMessage !== undefined ? { initialMessage } : {}),
+                // Do NOT propagate the parent's nexusApiKey/delegationId.
+                // The in-process spawn path mints child-scoped credentials
+                // (see kernel/engine/spawn-child.ts) so each child runs
+                // with attenuated authority, not the parent's full scope.
+                // Until the Temporal spawn path issues its own attenuated
+                // child credentials, fail closed: the child starts without
+                // delegated auth rather than widening the parent's grant.
                 ...(constraints.maxTurns !== undefined ? { maxTurns: constraints.maxTurns } : {}),
                 ...(constraints.maxTokens !== undefined
                   ? { maxTokens: constraints.maxTokens }
@@ -330,6 +422,12 @@ export function createActivities(deps: ActivityDeps): {
                 ...(constraints.fork !== undefined ? { fork: constraints.fork } : {}),
                 ...(constraints.allowNestedSpawn !== undefined
                   ? { allowNestedSpawn: constraints.allowNestedSpawn }
+                  : {}),
+                ...(constraints.timeoutMs !== undefined
+                  ? { timeoutMs: constraints.timeoutMs }
+                  : {}),
+                ...(constraints.absoluteDeadlineMs !== undefined
+                  ? { absoluteDeadlineMs: constraints.absoluteDeadlineMs }
                   : {}),
               },
               ...(hasAnyConstraint ? { constraints } : {}),
