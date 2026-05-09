@@ -87,7 +87,7 @@ export function createGovernanceSignalSource(
             if (closed) return;
             if (pollRequestId !== nextPollRequestId) continue;
 
-            for (const threshold of thresholds) {
+            for (const [thresholdIndex, threshold] of thresholds.entries()) {
               if (closed || pollRequestId !== nextPollRequestId) return;
 
               const reading = selectAlertingReading(
@@ -95,7 +95,7 @@ export function createGovernanceSignalSource(
                 threshold,
               );
               const nextAlerting = isAlerting(reading, threshold);
-              const key = `${threshold.sensor}:${threshold.direction}:${threshold.limit}`;
+              const key = `${thresholdIndex}:${threshold.sensor}:${threshold.direction}:${threshold.limit}:${threshold.cooldownMs ?? 0}`;
               const previous = state.get(key) ?? { alerting: false, lastEmittedAt: -Infinity };
 
               if (

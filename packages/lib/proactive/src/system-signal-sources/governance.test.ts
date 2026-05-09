@@ -183,6 +183,76 @@ describe("createGovernanceSignalSource", () => {
     ]);
   });
 
+  test("tracks thresholds with different cooldowns independently", async () => {
+    let now = 100;
+    let current = 0.1;
+    const controller = createController([
+      { name: "error_rate", current, limit: 1, utilization: current },
+    ]);
+    controller.snapshot = async () => ({
+      timestamp: now,
+      readings: [{ name: "error_rate", current, limit: 1, utilization: current }],
+      healthy: true,
+      violations: [],
+    });
+
+    const source = createGovernanceSignalSource(
+      controller,
+      [
+        { sensor: "error_rate", limit: 0.3, direction: "above", cooldownMs: 0 },
+        { sensor: "error_rate", limit: 0.3, direction: "above", cooldownMs: 100 },
+      ],
+      { pollIntervalMs: 1, now: () => now },
+    );
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    now = 110;
+    current = 0.4;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    now = 120;
+    current = 0.1;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    now = 150;
+    current = 0.45;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    stop();
+    expect(seen).toEqual([
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.4,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 110,
+      },
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.4,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 110,
+      },
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.45,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 150,
+      },
+    ]);
+  });
+
   test("unsubscribe clears polling and disconnects only once", async () => {
     const snapshot = mock(async () => ({
       timestamp: 100,
@@ -268,10 +338,22 @@ describe("createGovernanceSignalSource", () => {
   test("ignores stale overlapping poll completions", async () => {
     const first = createDeferred<GovernanceSnapshot>();
     const snapshots = [
+      Promise.resolve({
+        timestamp: 390,
+        readings: [{ name: "error_rate", current: 0.4, limit: 1, utilization: 0.4 }],
+        healthy: true,
+        violations: [],
+      }),
       first.promise,
       Promise.resolve({
         timestamp: 401,
         readings: [{ name: "error_rate", current: 0.1, limit: 1, utilization: 0.1 }],
+        healthy: true,
+        violations: [],
+      }),
+      Promise.resolve({
+        timestamp: 402,
+        readings: [{ name: "error_rate", current: 0.45, limit: 1, utilization: 0.45 }],
         healthy: true,
         violations: [],
       }),
@@ -289,6 +371,7 @@ describe("createGovernanceSignalSource", () => {
 
     const seen: SystemSignal[] = [];
     const stop = source.watch((signal) => seen.push(signal), { replay: true });
+    await new Promise((resolve) => queueMicrotask(resolve));
 
     await new Promise((resolve) => setTimeout(resolve, 5));
     first.resolve({
@@ -299,9 +382,28 @@ describe("createGovernanceSignalSource", () => {
     });
     await first.promise;
     await new Promise((resolve) => queueMicrotask(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => queueMicrotask(resolve));
 
     stop();
-    expect(seen).toEqual([]);
+    expect(seen).toEqual([
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.4,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 450,
+      },
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.45,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 450,
+      },
+    ]);
   });
 
   test("does not re-enter snapshot while a poll is already in flight", async () => {
@@ -385,6 +487,35 @@ describe("createGovernanceSignalSource", () => {
         limit: 0.3,
         direction: "above",
         emittedAt: 275,
+      },
+    ]);
+  });
+
+  test("below-direction wildcard thresholds choose the lowest alerting match", async () => {
+    const controller = createController([
+      { name: "context_occupancy_api", current: 0.4, limit: 1, utilization: 0.4 },
+      { name: "context_occupancy_worker", current: 0.2, limit: 1, utilization: 0.2 },
+      { name: "context_occupancy_cache", current: 0.7, limit: 1, utilization: 0.7 },
+    ]);
+    const source = createGovernanceSignalSource(
+      controller,
+      [{ sensor: "context_occupancy_*", limit: 0.5, direction: "below" }],
+      { now: () => 610 },
+    );
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal), { replay: true });
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    stop();
+    expect(seen).toEqual([
+      {
+        kind: "governance",
+        sensor: "context_occupancy_*",
+        value: 0.2,
+        limit: 0.5,
+        direction: "below",
+        emittedAt: 610,
       },
     ]);
   });
