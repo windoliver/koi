@@ -922,10 +922,20 @@ async function runStructuredPipeline(
 
   const idGen = pipe.idGenerator ?? defaultIdGenerator;
   const now = clock();
+  // Derive range from actual step coordinates (turnIndex), not array length.
+  // entries.length conflates physical row count with logical step indexing,
+  // which would let watermarks advance past real steps for sessions with
+  // multiple entries per turn.
+  let minTurn = entries[0]!.turnIndex;
+  let maxTurn = minTurn;
+  for (const e of entries) {
+    if (e.turnIndex < minTurn) minTurn = e.turnIndex;
+    if (e.turnIndex > maxTurn) maxTurn = e.turnIndex;
+  }
   const sourceTrajectoryRange: TrajectoryRange = {
     sessionId,
-    fromStepIndex: 0,
-    toStepIndex: entries.length,
+    fromStepIndex: minTurn,
+    toStepIndex: maxTurn + 1,
   };
 
   const proposal: PlaybookProposal = {

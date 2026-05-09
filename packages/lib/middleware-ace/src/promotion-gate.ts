@@ -480,6 +480,24 @@ function highestReflectedStepIndex(
   return candidate > prior ? candidate : prior;
 }
 
+/**
+ * Compare two structured playbooks by content (ignoring version, updatedAt,
+ * and provenance, which are necessarily different on a rollback-restored
+ * head vs the historical snapshot). Used to verify that an idempotent
+ * rollback retry actually restored the requested targetVersion.
+ */
+function structuredContentEquals(a: StructuredPlaybook, b: StructuredPlaybook): boolean {
+  if (a.id !== b.id) return false;
+  if (a.title !== b.title) return false;
+  if (a.source !== b.source) return false;
+  if (a.sessionCount !== b.sessionCount) return false;
+  if (a.tags.length !== b.tags.length) return false;
+  for (let i = 0; i < a.tags.length; i++) {
+    if (a.tags[i] !== b.tags[i]) return false;
+  }
+  return JSON.stringify(a.sections) === JSON.stringify(b.sections);
+}
+
 export async function rollbackPromotion(
   deps: PromotionGateDeps,
   proposal: PlaybookProposal,
@@ -519,11 +537,26 @@ export async function rollbackPromotion(
 
   // Idempotent-retry detection: if the current head's provenance already
   // names this proposal+evaluation, a previous rollback already committed
-  // and the caller is retrying after a lost ack. Return the prior success.
+  // and the caller is retrying after a lost ack. targetVersion is not
+  // persisted in provenance, so before returning success we must verify the
+  // current head's content matches the requested targetVersion's snapshot —
+  // otherwise a retry naming a different target would falsely succeed even
+  // if the head was restored from a different version.
   if (
     current.provenance?.proposalId === proposal.id &&
     current.provenance.evaluationId === evaluation.id
   ) {
+    const priorTarget = await deps.structuredStore.getVersion(proposal.playbookId, targetVersion);
+    if (priorTarget === undefined) {
+      throw new Error(
+        `ACE promotion gate: idempotent rollback retry references missing target version ${proposal.playbookId}@${targetVersion}`,
+      );
+    }
+    if (!structuredContentEquals(current, priorTarget)) {
+      throw new Error(
+        `ACE promotion gate: idempotent rollback retry for proposal ${proposal.id} on ${proposal.playbookId} requested target version ${targetVersion}, but current head content does not match that snapshot. Prior rollback may have restored a different version`,
+      );
+    }
     return {
       outcome: "rolled_back",
       playbookId: proposal.playbookId,
