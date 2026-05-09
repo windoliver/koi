@@ -353,12 +353,22 @@ export async function commitPromotion(
 
   // Idempotent-retry detection: if the current head's provenance already
   // names this proposal+evaluation, a previous call already committed and
-  // the caller is retrying after a lost ack. Return the prior success
-  // instead of throwing on the version-advanced check below.
+  // the caller is retrying after a lost ack. Before returning success,
+  // verify the persisted proposal/evaluation byte-equal the retry payload —
+  // ID-only matching would falsely acknowledge a retry that reused the same
+  // IDs with different operations or metrics, leaving the audit trail tied
+  // to the *older* committed payload while the caller believes its newer
+  // payload was applied.
   if (
     current.provenance?.proposalId === proposal.id &&
     current.provenance.evaluationId === evaluation.id
   ) {
+    const priorProposal = await deps.proposalStore.getProposal(proposal.id);
+    if (priorProposal === undefined || !proposalsEqual(priorProposal, proposal)) {
+      throw new Error(
+        `ACE promotion gate: idempotent commit retry for proposal ${proposal.id} reuses the same ID but the persisted payload differs from the retry payload. ID collision or mutated retry — refusing false-success acknowledgment`,
+      );
+    }
     return {
       outcome: "promoted",
       playbookId: proposal.playbookId,
@@ -478,6 +488,35 @@ function highestReflectedStepIndex(
   if (priorSessionId !== range.sessionId) return candidate;
   // Same session: monotonic clamp.
   return candidate > prior ? candidate : prior;
+}
+
+/**
+ * Compare two proposals for byte-equivalence on the fields that drive a
+ * commit's audit trail. Used to reject false-success on idempotent retries
+ * that reuse the same proposal.id with mutated operations or scope.
+ */
+/** Stable JSON: keys sorted recursively so adapter round-trips that
+ * canonicalize key order (e.g. sqlite serializing through JSON.stringify
+ * with sorted keys) compare equal to the original literal. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  }
+  const obj = value as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+}
+
+function proposalsEqual(a: PlaybookProposal, b: PlaybookProposal): boolean {
+  if (a.id !== b.id) return false;
+  if (a.playbookId !== b.playbookId) return false;
+  if (a.baseVersion !== b.baseVersion) return false;
+  if (a.createdAt !== b.createdAt) return false;
+  if (a.sourceTrajectoryRange.sessionId !== b.sourceTrajectoryRange.sessionId) return false;
+  if (a.sourceTrajectoryRange.fromStepIndex !== b.sourceTrajectoryRange.fromStepIndex) return false;
+  if (a.sourceTrajectoryRange.toStepIndex !== b.sourceTrajectoryRange.toStepIndex) return false;
+  return stableStringify(a.operations) === stableStringify(b.operations);
 }
 
 /**

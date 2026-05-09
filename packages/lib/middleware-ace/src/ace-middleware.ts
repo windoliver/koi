@@ -582,11 +582,17 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
         return next(request);
       }
       const startedAt = clock();
+      // Snapshot turnIndex from the immutable ctx at invocation time. Reading
+      // state.turnIndex when the tool resolves would attribute a tool that
+      // started on turn N but completed after onBeforeTurn for turn N+1 to
+      // the wrong (newer) turn, advancing the reflection watermark past
+      // work that was never part of any evaluated window.
+      const callTurnIndex = ctx.turnIndex;
       const inner = (async (): Promise<ToolResponse> => {
         const outcome = await runWithOutcome(() => next(request));
         const durationMs = clock() - startedAt;
         recordEntry(state, {
-          turnIndex: state?.turnIndex ?? 0,
+          turnIndex: callTurnIndex,
           timestamp: startedAt,
           kind: "tool_call",
           identifier: request.toolId,
