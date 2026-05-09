@@ -61,8 +61,8 @@ describe("createNexusSignalSource", () => {
       event: "transition",
       agentId: "agent-1",
       from: "running",
-      to: "failed",
-      reason: "error",
+      to: "terminated",
+      reason: { kind: "error" },
       generation: 2,
       emittedAt: 2,
     });
@@ -74,12 +74,49 @@ describe("createNexusSignalSource", () => {
         kind: "agent_lifecycle",
         agentId: "agent-1",
         from: "running",
-        to: "failed",
-        reason: "error",
+        to: "terminated",
+        reason: { kind: "error" },
         generation: 2,
         emittedAt: 2,
       },
     ]);
+  });
+
+  test("drops lifecycle transitions with invalid contract shapes", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const source = createNexusSignalSource({
+      subscribe: (_channels, next) => {
+        listener = next;
+        return () => {};
+      },
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "running",
+      to: "failed",
+      reason: { kind: "error" },
+      generation: 2,
+      emittedAt: 2,
+    });
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "running",
+      to: "terminated",
+      reason: "error",
+      generation: 2,
+      emittedAt: 3,
+    });
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen).toEqual([]);
   });
 
   test("maps delete events into vfs signals", async () => {
@@ -130,7 +167,6 @@ describe("createNexusSignalSource", () => {
     listener?.({
       channel: "vfs",
       event: "rename",
-      path: "/tmp/ignored.txt",
       from: "/tmp/old.txt",
       to: "/tmp/new.txt",
       zoneId: "zone-1",
@@ -148,6 +184,47 @@ describe("createNexusSignalSource", () => {
         to: "/tmp/new.txt",
         zoneId: "zone-1",
         emittedAt: 11,
+      },
+    ]);
+  });
+
+  test("filters rename events using from/to instead of a synthetic path field", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const source = createNexusSignalSource({
+      pathFilters: ["/workspace/docs/*"],
+      subscribe: (_channels, next) => {
+        listener = next;
+        return () => {};
+      },
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    listener?.({
+      channel: "vfs",
+      event: "rename",
+      from: "/workspace/docs/old.md",
+      to: "/workspace/docs/new.md",
+      emittedAt: 14,
+    });
+    listener?.({
+      channel: "vfs",
+      event: "rename",
+      from: "/workspace/src/old.ts",
+      to: "/workspace/src/new.ts",
+      emittedAt: 15,
+    });
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen).toEqual([
+      {
+        kind: "vfs",
+        event: "rename",
+        path: "/workspace/docs/old.md",
+        from: "/workspace/docs/old.md",
+        to: "/workspace/docs/new.md",
+        emittedAt: 14,
       },
     ]);
   });

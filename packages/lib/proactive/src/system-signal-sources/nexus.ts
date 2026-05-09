@@ -23,6 +23,67 @@ export interface NexusSignalSourceConfig {
   readonly subscribe?: NexusSubscribeFn | undefined;
 }
 
+const VALID_PROCESS_STATES: ReadonlySet<ProcessState> = new Set([
+  "created",
+  "running",
+  "waiting",
+  "suspended",
+  "idle",
+  "terminated",
+]);
+
+function isProcessState(value: string): value is ProcessState {
+  return VALID_PROCESS_STATES.has(value as ProcessState);
+}
+
+function isTransitionReason(value: unknown): value is TransitionReason {
+  if (typeof value !== "object" || value === null) return false;
+
+  const reason = value as Record<string, unknown>;
+  if (typeof reason.kind !== "string") return false;
+
+  switch (reason.kind) {
+    case "assembly_complete":
+    case "awaiting_response":
+    case "response_received":
+    case "hitl_pause":
+    case "budget_exceeded":
+    case "governance_block":
+    case "human_approval":
+    case "budget_replenished":
+    case "completed":
+    case "iteration_limit":
+    case "timeout":
+    case "evicted":
+    case "stale":
+    case "signal_stop":
+    case "signal_cont":
+    case "task_completed_idle":
+    case "inbox_wake":
+      return true;
+    case "error":
+      return !("cause" in reason) || reason.cause !== undefined;
+    case "restarted":
+      return (
+        typeof reason.attempt === "number" && typeof reason.strategy === "string"
+      );
+    case "escalated":
+      return typeof reason.cause === "string";
+    default:
+      return false;
+  }
+}
+
+function matchesRenamePathFilter(
+  from: string,
+  to: string,
+  filters: readonly string[] | undefined,
+): boolean {
+  return (
+    matchesAnyPathFilter(from, filters) || matchesAnyPathFilter(to, filters)
+  );
+}
+
 export function createNexusSignalSource(
   config: NexusSignalSourceConfig,
 ): SystemSignalSource {
@@ -39,12 +100,16 @@ export function createNexusSignalSource(
               typeof record.event === "string" &&
               typeof record.emittedAt === "number"
             ) {
-              const path = typeof record.path === "string" ? record.path : undefined;
-              if (path === undefined || !matchesAnyPathFilter(path, config.pathFilters)) {
-                return;
-              }
-
               if (record.event === "write" || record.event === "delete") {
+                const path =
+                  typeof record.path === "string" ? record.path : undefined;
+                if (
+                  path === undefined ||
+                  !matchesAnyPathFilter(path, config.pathFilters)
+                ) {
+                  return;
+                }
+
                 emitter.emit({
                   kind: "vfs",
                   event: record.event,
@@ -60,6 +125,16 @@ export function createNexusSignalSource(
                 typeof record.from === "string" &&
                 typeof record.to === "string"
               ) {
+                if (
+                  !matchesRenamePathFilter(
+                    record.from,
+                    record.to,
+                    config.pathFilters,
+                  )
+                ) {
+                  return;
+                }
+
                 emitter.emit({
                   kind: "vfs",
                   event: "rename",
@@ -81,16 +156,18 @@ export function createNexusSignalSource(
               typeof record.agentId === "string" &&
               typeof record.from === "string" &&
               typeof record.to === "string" &&
-              typeof record.reason === "string" &&
+              isProcessState(record.from) &&
+              isProcessState(record.to) &&
+              isTransitionReason(record.reason) &&
               typeof record.generation === "number" &&
               typeof record.emittedAt === "number"
             ) {
               emitter.emit({
                 kind: "agent_lifecycle",
                 agentId: record.agentId,
-                from: record.from as ProcessState,
-                to: record.to as ProcessState,
-                reason: record.reason as TransitionReason,
+                from: record.from,
+                to: record.to,
+                reason: record.reason,
                 generation: record.generation,
                 emittedAt: record.emittedAt,
               } satisfies SystemSignal);
