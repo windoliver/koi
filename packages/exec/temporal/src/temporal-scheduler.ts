@@ -12,22 +12,23 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname } from "node:path";
-import type {
-  AgentId,
-  CronSchedule,
-  EngineInput,
-  KoiError,
-  ScheduledTask,
-  ScheduledTaskStatus,
-  ScheduleId,
-  SchedulerEvent,
-  SchedulerStats,
-  TaskFilter,
-  TaskHistoryFilter,
-  TaskId,
-  TaskOptions,
-  TaskRunRecord,
-  TaskScheduler,
+import {
+  preCommitRejection,
+  type AgentId,
+  type CronSchedule,
+  type EngineInput,
+  type KoiError,
+  type ScheduledTask,
+  type ScheduledTaskStatus,
+  type ScheduleId,
+  type SchedulerEvent,
+  type SchedulerStats,
+  type TaskFilter,
+  type TaskHistoryFilter,
+  type TaskId,
+  type TaskOptions,
+  type TaskRunRecord,
+  type TaskScheduler,
 } from "@koi/core";
 import type { IncomingMessage, ScheduledInputPayload, ScheduledTaskWorkflowArgs } from "./types.js";
 import { AGENT_WORKFLOW_NAME, SCHEDULED_TASK_WORKFLOW_NAME } from "./workflows/index.js";
@@ -1815,7 +1816,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         options?.metadata !== undefined ||
         options?.idempotencyKey !== undefined
       ) {
-        throw new Error(
+        // Branded as a composition pre-commit rejection: this is a
+        // deterministic validation failure with no side effect, so any
+        // composition executor reservation can be released and the
+        // caller can retry with corrected input.
+        throw preCommitRejection(
           "schedule() does not support timeoutMs, maxRetries, delayMs, priority, metadata, " +
             "or idempotencyKey — these options cannot be persisted or enforced by Temporal " +
             "schedule policies. Remove them or implement the constraints inside the target workflow.",
@@ -1826,8 +1831,19 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
       // Strip non-serializable EngineInput fields and deep-validate JSON safety.
       // Done before building the schedule object so the snapshot is validated.
-      const scheduledPayload = mapEngineInputToScheduledPayload(input);
-      assertJsonSerializable(scheduledPayload);
+      // Both calls can throw plain Errors on bad input — wrap them as
+      // composition pre-commit rejections since no remote side effect has
+      // been initiated yet.
+      let scheduledPayload: EngineInput;
+      try {
+        scheduledPayload = mapEngineInputToScheduledPayload(input);
+        assertJsonSerializable(scheduledPayload);
+      } catch (e) {
+        throw preCommitRejection(
+          e instanceof Error ? e.message : String(e),
+          e,
+        );
+      }
       // Deep-clone via JSON round-trip to prevent caller mutations from poisoning future
       // persist() calls. Already validated as JSON-serializable above.
       const snapshotPayload = JSON.parse(JSON.stringify(scheduledPayload)) as EngineInput;

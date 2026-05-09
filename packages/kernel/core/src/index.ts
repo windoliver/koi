@@ -243,8 +243,15 @@ export type {
   CompositionExecutionError,
   CompositionExecutionResult,
   CompositionExecutor,
+  CompositionPreCommitRejection,
   CompositionStepResult,
   SuccessfulCompositionStepResult,
+} from "./composition-executor.js";
+export {
+  COMPOSITION_PRE_COMMIT_BRAND,
+  COMPOSITION_PRE_COMMIT_BRAND_KEY,
+  isPreCommitRejection,
+  preCommitRejection,
 } from "./composition-executor.js";
 // composition planner — trigger and planning contracts
 export type {

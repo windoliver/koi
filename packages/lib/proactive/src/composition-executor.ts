@@ -1,17 +1,27 @@
-import type {
-  AgentId,
-  CompositionExecutionError,
-  CompositionExecutionResult,
-  CompositionExecutor,
-  CompositionPlan,
-  CompositionStep,
-  CompositionStepResult,
-  CompositionTrigger,
-  DeliveryPolicy,
-  EngineInput,
-  ForgeDemandSignal,
-  SchedulerComponent,
+import {
+  isPreCommitRejection,
+  preCommitRejection,
+  type AgentId,
+  type CompositionExecutionError,
+  type CompositionExecutionResult,
+  type CompositionExecutor,
+  type CompositionPlan,
+  type CompositionPreCommitRejection,
+  type CompositionStep,
+  type CompositionStepResult,
+  type CompositionTrigger,
+  type DeliveryPolicy,
+  type EngineInput,
+  type ForgeDemandSignal,
+  type SchedulerComponent,
 } from "@koi/core";
+
+// Re-export the L0 brand surface so consumers of @koi/proactive that
+// already import from this package continue to work; the canonical
+// definition now lives in @koi/core so any package can opt into the
+// contract without an L2-to-L2 import.
+export { isPreCommitRejection, preCommitRejection };
+export type { CompositionPreCommitRejection };
 
 export interface CompositionNotification {
   readonly channel: string;
@@ -120,58 +130,10 @@ const DEFAULT_ALLOWED_NOTIFY_CHANNELS: readonly string[] = ["inbox"];
 
 type ExecutedStepResult = Extract<CompositionStepResult, { status: "executed" }>;
 
-/**
- * Branded error indicating a pre-commit validation rejection — no durable
- * side effect was produced. Scheduler/notify implementations throw this
- * (via `preCommitRejection(...)`) to let the executor release the claimed
- * key, so ordinary callers can fix the input and retry without manual
- * reconciliation. Plain `Error` throws are treated as ambiguous and leave
- * the claim pending.
- */
-// Cross-realm brand keyed by a well-known string. Symbol.for() returns the
-// same symbol across module/bundle/version-skew copies, so a rejection
-// thrown by another instance of @koi/proactive (or any package that
-// imports preCommitRejection() from any copy of this module) is still
-// recognized. Plain Error objects cannot accidentally carry this key —
-// they would have to call Symbol.for("@koi/proactive/preCommitRejection")
-// explicitly, which is treated as opt-in to the contract.
-const PRE_COMMIT_BRAND_KEY = "@koi/proactive/preCommitRejection" as const;
-const PRE_COMMIT_BRAND: unique symbol = Symbol.for(PRE_COMMIT_BRAND_KEY) as never;
-
-// Opaque exported type — produced only by `preCommitRejection(...)` and
-// recognized only by `isPreCommitRejection(...)`. Consumers cannot
-// synthesize one from a plain Error.
-export interface CompositionPreCommitRejection extends Error {
-  readonly [PRE_COMMIT_BRAND]: true;
-}
-
-export function preCommitRejection(
-  message: string,
-  cause?: unknown,
-): CompositionPreCommitRejection {
-  const error = new Error(message, cause === undefined ? undefined : { cause });
-  Object.defineProperty(error, PRE_COMMIT_BRAND, {
-    value: true,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
-  return error as CompositionPreCommitRejection;
-}
-
-export function isPreCommitRejection(value: unknown): value is CompositionPreCommitRejection {
-  // Detect the brand structurally, not via `instanceof Error`. Errors
-  // crossing realm/bundle boundaries (worker threads, vm contexts,
-  // duplicate-loaded modules) can fail same-realm `instanceof` checks
-  // even when they carry the shared `Symbol.for()` brand. The brand
-  // itself is unforgeable enough to rely on alone — synthesizing it
-  // requires an explicit `Symbol.for("@koi/proactive/preCommitRejection")`
-  // lookup, which is treated as opt-in to the contract.
-  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
-    return false;
-  }
-  return (value as { [PRE_COMMIT_BRAND]?: unknown })[PRE_COMMIT_BRAND] === true;
-}
+// Brand definitions live in @koi/core (re-exported above). Scheduler/notify
+// implementations across any package can `throw preCommitRejection(...)`
+// for proven pre-commit failures so the executor releases its claim and
+// callers retry without operator intervention.
 
 /**
  * Process-local CompositionExecutionLog backed by a Map. Suitable for
@@ -277,29 +239,6 @@ function deriveStepIdempotencyKey(
     }),
   );
   return `cmp-${hasher.digest("hex").slice(0, 32)}`;
-}
-
-// Options that scheduler.schedule() backends (notably Temporal) reject as
-// pre-commit validation errors. Validate in the executor before claiming the
-// log key so a malformed plan surfaces as INVALID_PLAN (re-plannable) rather
-// than wedging the log with a pending claim from a deterministic failure.
-const UNSUPPORTED_SCHEDULE_OPTION_KEYS = [
-  "timeoutMs",
-  "maxRetries",
-  "delayMs",
-  "priority",
-  "metadata",
-  "idempotencyKey",
-] as const;
-
-function unsupportedScheduleOption(
-  step: Extract<CompositionStep, { kind: "create_schedule" }>,
-): string | undefined {
-  if (step.taskOptions === undefined) return undefined;
-  for (const key of UNSUPPORTED_SCHEDULE_OPTION_KEYS) {
-    if (step.taskOptions[key] !== undefined) return key;
-  }
-  return undefined;
 }
 
 // Cheap pre-commit syntactic check. Intentionally permissive: it only
@@ -438,26 +377,10 @@ export function createCompositionExecutor(
       }
 
       // Bind plan to the exact trigger emission, not just `trigger.id`.
-      // Trigger ids are not guaranteed unique across emissions in the public
-      // CompositionTrigger contract, so a stale plan from emission A could
-      // otherwise execute against emission B. The executor enforces emission
-      // binding even though the L0 CompositionPlan field is optional — older
-      // planners that omit it cannot safely run on this executor.
-      if (plan.triggerEmittedAt === undefined) {
-        return {
-          triggerId: trigger.id,
-          status: "failed",
-          stepResults: [],
-          executedCount: 0,
-          error: {
-            code: "INVALID_PLAN",
-            message:
-              "plan.triggerEmittedAt is required by this executor — planners must " +
-              "bind plans to a specific trigger emission so reused trigger ids cannot " +
-              "execute the wrong plan",
-          },
-        };
-      }
+      // Trigger ids are not guaranteed unique across emissions, so a
+      // stale plan from emission A could otherwise execute against
+      // emission B. `triggerEmittedAt` is required by the L0
+      // CompositionPlan contract.
       if (plan.triggerEmittedAt !== trigger.emittedAt) {
         return {
           triggerId: trigger.id,
@@ -546,25 +469,6 @@ export function createCompositionExecutor(
                 });
               }
 
-              // Reject options that scheduler.schedule() backends deterministically
-              // throw on (e.g. Temporal rejects timeoutMs/maxRetries/delayMs/
-              // priority/metadata/idempotencyKey). Surfacing this BEFORE the
-              // execution-log claim keeps the log clean — otherwise the
-              // deterministic throw would leave the claim pending and require
-              // operator reconciliation.
-              const unsupported = unsupportedScheduleOption(step);
-              if (unsupported !== undefined) {
-                return failedResult(trigger.id, stepResults, {
-                  step,
-                  status: "failed",
-                  error: {
-                    code: "INVALID_PLAN",
-                    message: `create_schedule taskOptions.${unsupported} is not supported — scheduler backends cannot persist or enforce it on cron firings`,
-                    stepKind: "create_schedule",
-                  },
-                });
-              }
-
               // Cheap cron syntax pre-check before claim so an obviously
               // malformed expression surfaces as INVALID_PLAN (re-plannable)
               // instead of wedging the execution log on a deterministic
@@ -610,18 +514,25 @@ export function createCompositionExecutor(
 
               claimedKey = stepIdempotencyKey;
 
-              // Forward only `timezone` to schedule(). All other taskOptions
-              // were either rejected upstream by `unsupportedScheduleOption`
-              // or are not enforceable on scheduled firings.
-              // Throw handling past this point: pre-commit rejections release
-              // the claim (caller can fix and retry without operator
-              // intervention); other throws leave the claim pending and
-              // surface the key for operator reconciliation.
+              // Forward all taskOptions plus optional timezone to the
+              // scheduler. Backend-specific option support is the
+              // scheduler's responsibility: implementations that cannot
+              // honor a given option MUST throw `preCommitRejection(...)`
+              // (no side effect committed) so the executor releases the
+              // claim and the caller can retry with corrected input.
+              // Plain `Error` throws remain ambiguous and leave the claim
+              // pending for operator reconciliation.
+              const scheduleOptions: Record<string, unknown> = {
+                ...(step.taskOptions ?? {}),
+                ...(step.timezone === undefined ? {} : { timezone: step.timezone }),
+              };
               const output = await context.scheduler.schedule(
                 step.expression,
                 step.input,
                 step.mode,
-                step.timezone === undefined ? undefined : { timezone: step.timezone },
+                Object.keys(scheduleOptions).length === 0
+                  ? undefined
+                  : (scheduleOptions as Parameters<typeof context.scheduler.schedule>[3]),
               );
               await context.executionLog.record(stepIdempotencyKey, output);
               stepResults.push({ step, status: "executed", output });

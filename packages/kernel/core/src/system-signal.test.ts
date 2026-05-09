@@ -270,6 +270,7 @@ const _plannerConformance: CompositionPlanner = {
 
     return {
       triggerId: trigger.id,
+      triggerEmittedAt: trigger.emittedAt,
       steps: [step],
       estimatedCost: 0,
       requiresApproval: false,

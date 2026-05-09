@@ -703,9 +703,9 @@ describe("createCompositionExecutor", () => {
     expect(notifications).toHaveLength(1);
   });
 
-  test("create_schedule rejects unsupported taskOptions as INVALID_PLAN before claiming", async () => {
+  test("create_schedule forwards taskOptions to the scheduler verbatim", async () => {
     const { scheduler, calls } = schedulerStub();
-    const { log, store } = inMemoryExecutionLog();
+    const { log } = inMemoryExecutionLog();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
@@ -722,7 +722,51 @@ describe("createCompositionExecutor", () => {
           agentId: agentId("agent-1"),
           mode: "spawn",
           input: { kind: "text", text: "daily" },
-          taskOptions: { idempotencyKey: "planner-supplied", maxRetries: 2 },
+          taskOptions: { maxRetries: 2, priority: 5 },
+          timezone: "UTC",
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    // Backend-specific option support is the scheduler's responsibility,
+    // not the executor's. Schedulers that cannot honor an option must
+    // throw preCommitRejection() (covered by the next test).
+    expect(result.status).toBe("executed");
+    expect(calls.schedule).toHaveLength(1);
+    const opts = (calls.schedule[0] as readonly unknown[])[3] as Record<string, unknown>;
+    expect(opts).toMatchObject({ maxRetries: 2, priority: 5, timezone: "UTC" });
+  });
+
+  test("scheduler preCommitRejection releases the claim so retries are unblocked", async () => {
+    const { scheduler: base } = schedulerStub();
+    const rejecting: SchedulerComponent = {
+      ...base,
+      async schedule() {
+        throw preCommitRejection("backend cannot honor maxRetries on schedule()");
+      },
+    };
+    const { log, store } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler: rejecting,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        {
+          kind: "create_schedule",
+          expression: "0 9 * * *",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "daily" },
+          taskOptions: { maxRetries: 2 },
         },
       ],
       estimatedCost: 1,
@@ -732,10 +776,9 @@ describe("createCompositionExecutor", () => {
     const result = await executor.execute(trigger(), plan);
 
     expect(result.status).toBe("failed");
-    expect(result.error?.code).toBe("INVALID_PLAN");
-    expect(calls.schedule).toHaveLength(0);
-    // Pre-commit validation must NOT poison the execution log with a
-    // pending claim — deterministic failures stay re-plannable.
+    // Claim was released because the scheduler signaled pre-commit
+    // rejection — the log is clean and an operator/caller can retry
+    // without manual reconciliation.
     expect(store.size).toBe(0);
   });
 
@@ -1413,31 +1456,8 @@ describe("createCompositionExecutor", () => {
     expect(notifsB).toHaveLength(1);
   });
 
-  test("plan without triggerEmittedAt is rejected as INVALID_PLAN", async () => {
-    const { scheduler, calls } = schedulerStub();
-    const { log } = inMemoryExecutionLog();
-    const executor = createCompositionExecutor({
-      agentId: agentId("agent-1"),
-      scheduler,
-      notify: async () => ({ delivered: true }),
-      executionLog: log,
-    });
-    const plan: CompositionPlan = {
-      triggerId: "trigger-1",
-      // triggerEmittedAt deliberately omitted
-      steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
-      estimatedCost: 1,
-      requiresApproval: false,
-    };
-
-    const result = await executor.execute(trigger(), plan);
-
-    expect(result.status).toBe("failed");
-    expect(result.error?.code).toBe("INVALID_PLAN");
-    expect(result.error?.message).toMatch(/triggerEmittedAt is required/);
-    expect(calls.submit).toHaveLength(0);
-    expect(calls.schedule).toHaveLength(0);
-  });
+  // Note: a plan without triggerEmittedAt is now a TypeScript-level error
+  // — the L0 CompositionPlan contract requires it. No runtime test needed.
 
   test("empty plan with requiresApproval=false fails as INVALID_PLAN", async () => {
     const { scheduler } = schedulerStub();
