@@ -18,17 +18,50 @@ export interface GroveSignalSourceConfig {
   readonly eventSourceFactory?: ((url: string) => GroveEventSourceLike) | undefined;
 }
 
+export function shouldAcceptGroveFrontierEvent(
+  metric: string | undefined,
+  improvement: number | undefined,
+  config: Pick<GroveSignalSourceConfig, "metrics" | "minImprovement">,
+): boolean {
+  if (metric === undefined) return false;
+  if (config.metrics !== undefined && !config.metrics.includes(metric)) return false;
+  if (
+    config.minImprovement !== undefined &&
+    (improvement === undefined || improvement < config.minImprovement)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export function createClosedAwareGroveHandler<T>(
+  handler: (value: T) => void,
+  isClosed: () => boolean,
+): (value: T) => void {
+  return (value) => {
+    if (isClosed()) return;
+    handler(value);
+  };
+}
+
 export function createGroveSignalSource(
   config: GroveSignalSourceConfig,
 ): SystemSignalSource {
   return {
     name: "grove",
     watch(handler, options) {
-      const emitter = createAsyncEmitter(handler, options);
+      let closed = false;
+      const emitter = createAsyncEmitter(
+        createClosedAwareGroveHandler(handler, () => closed),
+        options,
+      );
       const eventSource = config.eventSourceFactory?.(config.groveUrl);
       if (eventSource === undefined) return () => {};
 
       eventSource.onmessage = (event) => {
+        if (closed) return;
+
         try {
           const payload = JSON.parse(event.data) as Record<string, unknown>;
           if (payload.type !== "frontier_changed") return;
@@ -40,12 +73,7 @@ export function createGroveSignalSource(
               ? payload.improvement
               : undefined;
 
-          if (metric === undefined) return;
-          if (config.metrics !== undefined && !config.metrics.includes(metric)) return;
-          if (
-            config.minImprovement !== undefined &&
-            (improvement === undefined || improvement < config.minImprovement)
-          ) {
+          if (!shouldAcceptGroveFrontierEvent(metric, improvement, config)) {
             return;
           }
 
@@ -57,10 +85,12 @@ export function createGroveSignalSource(
       };
 
       eventSource.onerror = (error) => {
+        if (closed) return;
         safeCall(options?.onError, error);
       };
 
       const subscription = createSubscriptionController(() => {
+        closed = true;
         eventSource.close();
         safeCall(options?.onDisconnect);
       });

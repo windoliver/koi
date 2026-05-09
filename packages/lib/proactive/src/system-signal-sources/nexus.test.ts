@@ -231,15 +231,22 @@ describe("createNexusSignalSource", () => {
       channel: "vfs",
       event: "rename",
       from: "/workspace/docs/old.md",
-      to: "/workspace/docs/new.md",
+      to: "/workspace/src/new.md",
       emittedAt: 14,
     });
     listener?.({
       channel: "vfs",
       event: "rename",
       from: "/workspace/src/old.ts",
-      to: "/workspace/src/new.ts",
+      to: "/workspace/docs/new.ts",
       emittedAt: 15,
+    });
+    listener?.({
+      channel: "vfs",
+      event: "rename",
+      from: "/workspace/src/old.ts",
+      to: "/workspace/src/new.ts",
+      emittedAt: 16,
     });
     await new Promise((resolve) => queueMicrotask(resolve));
     stop();
@@ -250,8 +257,16 @@ describe("createNexusSignalSource", () => {
         event: "rename",
         path: "/workspace/docs/old.md",
         from: "/workspace/docs/old.md",
-        to: "/workspace/docs/new.md",
+        to: "/workspace/src/new.md",
         emittedAt: 14,
+      },
+      {
+        kind: "vfs",
+        event: "rename",
+        path: "/workspace/src/old.ts",
+        from: "/workspace/src/old.ts",
+        to: "/workspace/docs/new.ts",
+        emittedAt: 15,
       },
     ]);
   });

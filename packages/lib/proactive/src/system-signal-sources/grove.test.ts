@@ -1,6 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { SystemSignal } from "@koi/core";
-import { createGroveSignalSource } from "./grove.js";
+import {
+  createClosedAwareGroveHandler,
+  createGroveSignalSource,
+  shouldAcceptGroveFrontierEvent,
+} from "./grove.js";
 
 describe("createGroveSignalSource", () => {
   test("uses groveUrl as the transport target passed to the event source factory", () => {
@@ -78,7 +82,37 @@ describe("createGroveSignalSource", () => {
   });
 
   test("filters frontier updates below the configured minImprovement", async () => {
+    expect(
+      shouldAcceptGroveFrontierEvent("retrieval_quality", 0.22, {
+        minImprovement: 0.5,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAcceptGroveFrontierEvent("retrieval_quality", 0.5, {
+        minImprovement: 0.5,
+      }),
+    ).toBe(true);
+  });
+
+  test("closed-aware grove handler suppresses buffered delivery after unsubscribe", () => {
+    const seen: string[] = [];
+    let closed = false;
+    const handler = createClosedAwareGroveHandler(
+      (value: string) => seen.push(value),
+      () => closed,
+    );
+
+    closed = true;
+    handler("ignored");
+    closed = false;
+    handler("delivered");
+
+    expect(seen).toEqual(["delivered"]);
+  });
+
+  test("stop prevents buffered grove callbacks from reaching subscribers", async () => {
     let onMessage: ((event: MessageEvent<string>) => void) | undefined;
+    let onErrorEvent: ((event: unknown) => void) | undefined;
     const source = createGroveSignalSource({
       groveUrl: "http://localhost:4515",
       minImprovement: 0.5,
@@ -88,25 +122,21 @@ describe("createGroveSignalSource", () => {
           set onmessage(fn) {
             onMessage = fn ?? undefined;
           },
-          set onerror(_fn) {},
+          set onerror(fn) {
+            onErrorEvent = fn ?? undefined;
+          },
         }) as never,
     });
 
-    const seen: SystemSignal[] = [];
-    const stop = source.watch((signal) => seen.push(signal));
-    onMessage?.(
-      new MessageEvent("message", {
-        data: JSON.stringify({
-          type: "frontier_changed",
-          metric: "retrieval_quality",
-          improvement: 0.22,
-        }),
-      }),
-    );
-    await new Promise((resolve) => queueMicrotask(resolve));
+    const onError = mock(() => {});
+    const stop = source.watch(() => {}, { onError });
     stop();
 
-    expect(seen).toEqual([]);
+    onMessage?.(new MessageEvent("message", { data: "not json" }));
+    onErrorEvent?.(new Error("socket dropped"));
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    expect(onError).toHaveBeenCalledTimes(0);
   });
 
   test("forwards upstream errors and disconnects cleanly", () => {
