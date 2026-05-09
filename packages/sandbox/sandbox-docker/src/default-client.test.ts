@@ -964,6 +964,29 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
+  // Persistence: a transient docker daemon failure (NOT a "no such object"
+  // miss) MUST throw — silently returning undefined would let the adapter
+  // forget the registry entry and wedge the scope on the deterministic name.
+  test("inspectContainer: throws on transient docker errors instead of returning undefined", async () => {
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({
+        stdout: "",
+        stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+        exitCode: 1,
+      }),
+    );
+    try {
+      const client = createDefaultDockerClient();
+      if (client.inspectContainer === undefined) {
+        throw new Error("inspectContainer must exist");
+      }
+      await expect(client.inspectContainer("c1")).rejects.toThrow(/docker inspect failed/);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
   // Persistence: malformed labels JSON is treated as empty (won't crash adapter).
   test("inspectContainer: malformed label JSON parses as empty record", async () => {
     // @ts-expect-error — test stub

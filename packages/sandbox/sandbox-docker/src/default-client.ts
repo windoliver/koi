@@ -479,9 +479,22 @@ export function createDefaultDockerClient(config?: DefaultDockerClientConfig): D
         undefined,
         env,
       );
-      // Container removed between find and inspect → return undefined so the
-      // adapter falls through to a fresh create rather than throwing.
-      if (r.exitCode !== 0) return undefined;
+      if (r.exitCode !== 0) {
+        // Distinguish "container truly gone" from "transient daemon hiccup".
+        // The adapter forgets the registry entry on undefined, so collapsing
+        // every failure into undefined would let a momentary docker outage
+        // erase ownership for a container that still exists. Only the
+        // "No such container/object" case (Docker's stable not-found phrase
+        // for `docker inspect`) returns undefined; anything else throws so
+        // the caller surfaces the real fault instead of dropping ownership.
+        const blob = `${r.stderr}\n${r.stdout}`.toLowerCase();
+        if (blob.includes("no such container") || blob.includes("no such object")) {
+          return undefined;
+        }
+        throw new Error(`docker inspect failed for ${id}: ${r.stderr.trim() || r.stdout.trim()}`, {
+          cause: r,
+        });
+      }
       const tab = r.stdout.indexOf("\t");
       if (tab === -1) {
         return { state: mapInspectStatus(r.stdout), labels: {} };

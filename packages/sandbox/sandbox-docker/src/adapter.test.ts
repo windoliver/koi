@@ -923,4 +923,61 @@ describe("createDockerAdapter", () => {
     // First call (pre-create) + retries until winner's record landed.
     expect(lookups).toBeGreaterThanOrEqual(3);
   });
+
+  // Persistence (destroyScope partial failure): if any container.remove()
+  // throws, the registry entry MUST be preserved so a later destroyScope
+  // (or `findOrCreate` after operator cleanup) can still trust the survivor.
+  // Forgetting before remove succeeded would classify the survivor as a
+  // stranger and permanently wedge the scope.
+  test("destroyScope preserves registry entry when a container.remove fails", async () => {
+    const a = fakeContainer("rm-ok");
+    const bFails: DockerContainer = {
+      ...fakeContainer("rm-fail"),
+      remove: async () => {
+        throw new Error("docker rm failed");
+      },
+    };
+    const reg = createInMemoryScopeRegistry();
+    void reg.record("scope-PARTIAL", a.id);
+    const client: DockerClient = {
+      createContainer: async () => fakeContainer("never"),
+      findContainers: async () => [a, bFails],
+      inspectContainer: async () => ({ state: "running", labels: {} }),
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
+    await expect(r.value.destroyScope("scope-PARTIAL")).rejects.toThrow("docker rm failed");
+    // Critical: registry still holds the original ownership so the survivor
+    // is not classified as a stranger by a future findOrCreate.
+    expect(await reg.lookup("scope-PARTIAL")).toBe(a.id);
+  });
+
+  // Persistence (transient inspect failure): a thrown inspectContainer must
+  // propagate, NOT be silently treated as "container vanished". Otherwise a
+  // momentary daemon hiccup would erase ownership for a still-existing
+  // container and wedge the scope on the deterministic --name.
+  test("findOrCreate propagates a transient inspectContainer error and keeps the registry", async () => {
+    const existing = fakeContainer("transient-c1");
+    const reg = createInMemoryScopeRegistry();
+    void reg.record("scope-TRANSIENT", existing.id);
+    const client: DockerClient = {
+      createContainer: async () => fakeContainer("never"),
+      findContainers: async () => [existing],
+      inspectContainer: async () => {
+        throw new Error("Cannot connect to the Docker daemon");
+      },
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    await expect(r.value.findOrCreate("scope-TRANSIENT", PROFILE)).rejects.toThrow(
+      "Cannot connect to the Docker daemon",
+    );
+    // Registry MUST still hold the recorded ID — the next attempt should
+    // be able to reattach once the daemon is healthy.
+    expect(await reg.lookup("scope-TRANSIENT")).toBe(existing.id);
+  });
 });

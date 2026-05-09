@@ -496,13 +496,17 @@ async function doDestroyScope(
   const findContainers = client.findContainers;
   if (findContainers === undefined) return false;
   const matches = await findContainers({ [SCOPE_LABEL]: scope });
-  // Always forget the registry entry on a destroy attempt — even if no
-  // containers exist (idempotent cleanup of a stale registry record).
-  await scopeRegistry.forget(scope);
-  if (matches.length === 0) return false;
+  if (matches.length === 0) {
+    // Nothing to clean up on the daemon side; idempotently drop any stale
+    // registry entry so the next findOrCreate starts from a clean slate.
+    await scopeRegistry.forget(scope);
+    return false;
+  }
 
   // `let` justified: capture the first failure across the loop so we attempt
-  // every cleanup before surfacing.
+  // every cleanup before surfacing. Ownership is preserved if any remove
+  // fails — losing the registry entry while a container still exists would
+  // wedge findOrCreate (the survivor would be classified as a stranger).
   let firstError: unknown;
   for (const c of matches) {
     try {
@@ -511,6 +515,12 @@ async function doDestroyScope(
       if (firstError === undefined) firstError = e;
     }
   }
-  if (firstError !== undefined) throw firstError;
+  if (firstError !== undefined) {
+    // Partial failure: keep the registry entry so a future destroyScope
+    // (or operator-driven cleanup) can still trust the surviving container.
+    throw firstError;
+  }
+  // Full success: drop ownership now that no containers remain.
+  await scopeRegistry.forget(scope);
   return true;
 }
