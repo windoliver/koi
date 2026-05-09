@@ -411,6 +411,7 @@ export async function commitPromotion(
   const newWatermark = highestReflectedStepIndex(
     current.lastReflectedStepIndex,
     proposal.sourceTrajectoryRange,
+    current.provenance?.sourceTrajectoryRange.sessionId,
   );
   const next: StructuredPlaybook = {
     ...nextBody,
@@ -453,15 +454,29 @@ export async function commitPromotion(
  * step index is `to - 1`. Empty ranges (`to === from`) contribute no new
  * coverage and must not regress the prior watermark.
  *
- * The watermark is monotonic across all commit paths; never regress.
+ * Session-aware: trajectory step indexes are session-scoped, so comparing
+ * across sessions is meaningless. When the proposal's session matches the
+ * prior watermark's session (recorded in the head's provenance), clamp
+ * monotonically. When it differs, take the proposal's value directly —
+ * the prior watermark belongs to an unrelated trajectory stream and
+ * cannot suppress fresh work.
  */
 function highestReflectedStepIndex(
   prior: number | undefined,
-  range: { readonly fromStepIndex: number; readonly toStepIndex: number },
+  range: {
+    readonly sessionId: string;
+    readonly fromStepIndex: number;
+    readonly toStepIndex: number;
+  },
+  priorSessionId: string | undefined,
 ): number | undefined {
   if (range.toStepIndex <= range.fromStepIndex) return prior; // empty window
   const candidate = range.toStepIndex - 1;
   if (prior === undefined) return candidate;
+  // Cross-session: prior is from a different trajectory stream. Reset to
+  // candidate so new-session work is not suppressed by old-session indexes.
+  if (priorSessionId !== range.sessionId) return candidate;
+  // Same session: monotonic clamp.
   return candidate > prior ? candidate : prior;
 }
 
@@ -558,6 +573,7 @@ export async function rollbackPromotion(
   const rollbackWatermark = highestReflectedStepIndex(
     current.lastReflectedStepIndex,
     proposal.sourceTrajectoryRange,
+    current.provenance?.sourceTrajectoryRange.sessionId,
   );
   const restored: StructuredPlaybook = {
     ...target,
