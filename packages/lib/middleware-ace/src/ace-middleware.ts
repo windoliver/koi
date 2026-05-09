@@ -355,8 +355,10 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
           // Bounded extra drain we can use multiple times to chase late
           // entries that arrive between phases. Each call refreshes the
           // remaining budget so persistence + pipelines + delta drain are
-          // never individually unbounded.
-          const drainOnce = async (): Promise<void> => {
+          // never individually unbounded. Returns true on timeout so the
+          // caller can fold that into drainTimedOut and skip the learning
+          // pipelines — the same safety contract as the initial drain.
+          const drainOnce = async (): Promise<boolean> => {
             const deadline =
               drainTimeoutMs === Number.POSITIVE_INFINITY
                 ? Number.POSITIVE_INFINITY
@@ -366,7 +368,7 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
                 deadline === Number.POSITIVE_INFINITY
                   ? Number.POSITIVE_INFINITY
                   : deadline - Date.now();
-              if (remaining !== Number.POSITIVE_INFINITY && remaining <= 0) break;
+              if (remaining !== Number.POSITIVE_INFINITY && remaining <= 0) return true;
               const snap = [...state.inFlight, ...state.shutdownInFlight];
               if (remaining === Number.POSITIVE_INFINITY) {
                 await Promise.allSettled(snap);
@@ -378,8 +380,18 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
                   Promise.allSettled(snap).then(() => "ok" as const),
                   t,
                 ]);
-                if (o === "timeout") break;
+                if (o === "timeout") return true;
               }
+            }
+            return false;
+          };
+          const logDrainTimeout = (phase: string): void => {
+            try {
+              console.error(
+                `[ace] session ${phase} drain timed out after ${drainTimeoutMs}ms (sessionId=${ctx.sessionId}, in-flight=${state.inFlight.size}, shutdown-pending=${state.shutdownInFlight.size}); skipping promotion pipeline to avoid baking conclusions from incomplete session`,
+              );
+            } catch {
+              // never block teardown on log failures
             }
           };
           // Phase 1: persist the trajectory we have so durable observability
@@ -398,7 +410,10 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
           // BEFORE the learning pipelines run. Late entries that arrive after
           // the first append must be visible to stats/promotion or those
           // pipelines commit verdicts on an incomplete session.
-          await drainOnce();
+          if (await drainOnce()) {
+            drainTimedOut = true;
+            logDrainTimeout("post-append");
+          }
           if (config.trajectoryStore !== undefined && state.entries.length > appendedLength) {
             await config.trajectoryStore.append(ctx.sessionId, state.entries.slice(appendedLength));
             appendedLength = state.entries.length;
@@ -445,7 +460,11 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
           // delta — pipeline output reflects the post-drain snapshot at the
           // start of phase 3, which is the strongest "stable" guarantee
           // bounded teardown can give without unbounded recursion.
-          await drainOnce();
+          if (await drainOnce()) {
+            // Phase 4 timing out doesn't affect pipelines (they already
+            // ran), but we still log so operators see the wedged wrapper.
+            logDrainTimeout("post-pipeline");
+          }
           if (config.trajectoryStore !== undefined && state.entries.length > appendedLength) {
             await config.trajectoryStore.append(ctx.sessionId, state.entries.slice(appendedLength));
           }

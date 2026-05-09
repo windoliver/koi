@@ -257,6 +257,14 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
       await expect(commitPromotion(ctx, proposal(), evaluation(), thresholds)).rejects.toThrow(
         /indeterminate retry/i,
       );
+
+      // The original evaluation MUST be durably recorded before the throw
+      // (audit lineage survives concurrent contention). Verified
+      // indirectly: re-recording the same payload is idempotent by store
+      // contract, but recording a divergent payload for the same id MUST
+      // be rejected — proving the original is in the store.
+      const divergent = evaluation({ verdict: "reject" });
+      await expect(ctx.proposalStore.recordEvaluation(divergent)).rejects.toThrow();
     } finally {
       ctx.cleanup?.();
     }

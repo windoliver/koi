@@ -384,6 +384,15 @@ export async function commitPromotion(
   if (current.version !== proposal.baseVersion) {
     const priorProposal = await deps.proposalStore.getProposal(proposal.id);
     if (priorProposal !== undefined) {
+      // Persist the evaluation before surfacing the indeterminate retry
+      // error so audit lineage is durable even when the gate cannot
+      // commit. recordEvaluation is idempotent on byte-identical retries
+      // by the proposal-store contract — safe to call here whether this
+      // is case (a) (prior commit succeeded, head later superseded) or
+      // case (b) (recordEvaluation already happened in a prior call).
+      // Without this, long-running evaluators racing other commits would
+      // lose their evaluator output exactly when ambiguity arises.
+      await deps.proposalStore.recordEvaluation(evaluation);
       throw new Error(
         `ACE promotion gate: indeterminate retry for proposal ${proposal.id} on ${proposal.playbookId}; proposal already recorded but head advanced beyond baseVersion ${String(proposal.baseVersion)} to ${String(current.version)} without naming it. Inspect structured-store lineage to determine prior commit outcome before retrying`,
       );
@@ -502,6 +511,10 @@ export async function rollbackPromotion(
   if (current.version !== proposal.baseVersion) {
     const priorProposal = await deps.proposalStore.getProposal(proposal.id);
     if (priorProposal !== undefined) {
+      // Same audit-preservation rationale as commitPromotion: record the
+      // evaluation before throwing so rollback lineage is durable even
+      // under contention. Idempotent by store contract.
+      await deps.proposalStore.recordEvaluation(evaluation);
       throw new Error(
         `ACE promotion gate: indeterminate rollback retry for proposal ${proposal.id} on ${proposal.playbookId}; proposal already recorded but head advanced beyond baseVersion ${String(proposal.baseVersion)} to ${String(current.version)} without naming it. Inspect structured-store lineage to determine prior outcome before retrying`,
       );
