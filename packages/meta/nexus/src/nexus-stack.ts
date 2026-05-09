@@ -18,7 +18,16 @@ const LIVE_AGENT_SURFACES = {
   handoffStore: "@koi/handoff",
 } as const;
 
-function buildBundle(config: {
+const OUT_OF_SCOPE_SURFACES = [
+  "@koi/nexus-store",
+  "@koi/filesystem-nexus",
+  "@koi/pay-nexus",
+  "@koi/name-service-nexus",
+] as const;
+
+void OUT_OF_SCOPE_SURFACES;
+
+export async function createNexusStack(config: {
   readonly transport: unknown;
   readonly enableScratchpad: boolean;
   readonly enableWorkspace: boolean;
@@ -29,7 +38,7 @@ function buildBundle(config: {
     readonly search?: boolean;
     readonly scheduler?: boolean;
   };
-}): NexusBundle {
+}): Promise<NexusBundle> {
   void config.transport;
   return {
     backends: {
@@ -74,39 +83,3 @@ function buildBundle(config: {
     dispose: async () => {},
   };
 }
-
-export const createNexusStack = async (config: {
-  readonly transport: unknown;
-  readonly enableScratchpad: boolean;
-  readonly enableWorkspace: boolean;
-  readonly global: {
-    readonly registry?: boolean;
-    readonly permissions?: boolean;
-    readonly audit?: boolean;
-    readonly search?: boolean;
-    readonly scheduler?: boolean;
-  };
-}) => buildBundle(config);
-
-export const computeAgentNamespace = (agentId: string) => ({
-  filesystem: `agents/${agentId}/filesystem`,
-  mailbox: `agents/${agentId}/mailbox`,
-  snapshotStore: `agents/${agentId}/snapshots`,
-  playbooks: `agents/${agentId}/playbooks`,
-  handoffs: `agents/${agentId}/handoffs`,
-});
-
-export const computeGroupNamespace = (groupId: string) => ({
-  scratchpad: `groups/${groupId}/scratchpad`,
-});
-
-void createNexusStack({
-  transport: null,
-  enableScratchpad: false,
-  enableWorkspace: false,
-  global: {},
-});
-void computeAgentNamespace("__coverage__");
-void computeGroupNamespace("__coverage__");
-
-export type { AgentNamespace, GroupNamespace, NexusBundle, NexusGlobalBackends } from "./types.js";
