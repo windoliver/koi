@@ -14,7 +14,7 @@ import { createNexusPlaybookStore } from "./playbook.js";
 import { createNexusPlaybookProposalStore } from "./proposal.js";
 import { createNexusStructuredPlaybookStore } from "./structured.js";
 import { createNexusTrajectoryStore } from "./trajectory.js";
-import type { NexusPlaybookStoreConfig } from "./types.js";
+import type { NexusStructuredStoreConfig } from "./types.js";
 
 export interface NexusPlaybookStoreBundle {
   readonly playbooks: PlaybookStore;
@@ -37,7 +37,7 @@ const noopGetVersion = async (
 ): Promise<StructuredPlaybook | undefined> => undefined;
 
 export function createPlaybookStoreNexus(
-  config: NexusPlaybookStoreConfig,
+  config: NexusStructuredStoreConfig,
 ): NexusPlaybookStoreBundle {
   const base = config.basePath ?? DEFAULT_BASE;
   const structured = createNexusStructuredPlaybookStore(config);

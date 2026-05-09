@@ -39,6 +39,19 @@ export interface NexusPlaybookStoreConfig {
    *
    * Set to `false` ONLY in single-writer deployments (CLI, tests, dev) where
    * you can guarantee no two coordinators ever attempt initial creation.
+   *
+   * Optional on this shared base config because non-structured stores
+   * (proposals, trajectories, flat playbooks) ignore it. The structured
+   * store narrows its input to `NexusStructuredStoreConfig` below, which
+   * makes the field REQUIRED — every structured-store deployment must
+   * make an explicit choice rather than rely on a default that has caused
+   * both corruption (fail-open) and outages (fail-closed) historically.
    */
   readonly requirePreProvisioned?: boolean;
+}
+
+/** Structured-store-specific config: narrows the shared base by requiring
+ *  an explicit `requirePreProvisioned` decision (no default). */
+export interface NexusStructuredStoreConfig extends NexusPlaybookStoreConfig {
+  readonly requirePreProvisioned: boolean;
 }

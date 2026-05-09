@@ -357,11 +357,14 @@ describe("createNexusStructuredPlaybookStore", () => {
   test("default config rejects initial create on empty backend (fail-closed against create-race)", async () => {
     const transport = createFakeNexusTransport();
     try {
-      // No requirePreProvisioned — default MUST be fail-closed because this
-      // transport lacks create-only CAS, and two racing initial saves can
-      // both succeed (silent payload loss). Callers must explicitly opt in
-      // to bootstrap by setting requirePreProvisioned: false.
-      const store = createNexusStructuredPlaybookStore({ transport });
+      // requirePreProvisioned: true is fail-closed — this transport lacks
+      // create-only CAS, and two racing initial saves can both succeed
+      // (silent payload loss). The flag is REQUIRED on the config (no
+      // default), so every deployment must make an explicit choice.
+      const store = createNexusStructuredPlaybookStore({
+        transport,
+        requirePreProvisioned: true,
+      });
       await expect(store.save({ ...spb("pb-default"), version: 1 })).rejects.toThrow(
         /refusing to create/,
       );

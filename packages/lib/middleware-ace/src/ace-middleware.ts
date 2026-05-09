@@ -466,12 +466,18 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
             await config.trajectoryStore.append(ctx.sessionId, state.entries.slice(appendedLength));
             appendedLength = state.entries.length;
           }
-          // Phase 3: run the learning pipelines on the now-stable snapshot.
-          // Skip downstream curation/consolidation/promotion on drain timeout:
-          // those derive learnings from what is presumed to be a complete
-          // session. Promoting playbooks from an incomplete trajectory risks
-          // baking in conclusions that the dropped suffix would have changed.
-          if (!drainTimedOut) {
+          // Phase 3+4: run the learning pipelines on the stable snapshot,
+          // then drain any wrappers that completed during the pipelines and
+          // re-run on the extended snapshot if new entries arrived. Bounded
+          // by PIPELINE_MAX_ITERATIONS so a host firing wrappers faster than
+          // pipelines complete cannot cause unbounded recursion. Skip
+          // downstream curation on drain timeout: promoting from an
+          // incomplete trajectory risks baking in conclusions the dropped
+          // suffix would have changed.
+          const PIPELINE_MAX_ITERATIONS = 3;
+          let pipelineIters = 0;
+          while (!drainTimedOut && pipelineIters < PIPELINE_MAX_ITERATIONS) {
+            const snapshotLen = state.entries.length;
             const stats = aggregateTrajectoryStats(state.entries);
             const candidates = curateTrajectorySummary(stats, 1, {
               minScore,
@@ -502,19 +508,27 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
                 }
               }
             }
+            // Drain any wrappers that completed during the pipelines.
+            if (await drainOnce()) {
+              logDrainTimeout("post-pipeline");
+              break;
+            }
+            // No new entries arrived — pipelines saw everything. Done.
+            if (state.entries.length === snapshotLen) break;
+            pipelineIters++;
           }
-          // Phase 4: drain any wrappers that arrived during the pipelines
-          // and append their delta. We do not re-run the pipelines on this
-          // delta — pipeline output reflects the post-drain snapshot at the
-          // start of phase 3, which is the strongest "stable" guarantee
-          // bounded teardown can give without unbounded recursion.
-          if (await drainOnce()) {
-            // Phase 4 timing out doesn't affect pipelines (they already
-            // ran), but we still log so operators see the wedged wrapper.
-            logDrainTimeout("post-pipeline");
+          if (
+            !drainTimedOut &&
+            pipelineIters >= PIPELINE_MAX_ITERATIONS &&
+            state.entries.length > appendedLength
+          ) {
+            // Hit the cap with new entries still arriving. Log so operators
+            // see this session's late suffix did not feed learning.
+            logDrainTimeout("pipeline-cap");
           }
           if (config.trajectoryStore !== undefined && state.entries.length > appendedLength) {
             await config.trajectoryStore.append(ctx.sessionId, state.entries.slice(appendedLength));
+            appendedLength = state.entries.length;
           }
         } finally {
           // Now seal: late wrappers from this point on hard-reject without

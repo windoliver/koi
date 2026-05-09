@@ -3,7 +3,7 @@ import { extractReadContent } from "@koi/nexus-client";
 
 import { deleteJson, encodeAceId, listChildren, readJson, validateAceId } from "./json-io.js";
 import { withPlaybookLock } from "./playbook-locks.js";
-import type { NexusPlaybookStoreConfig } from "./types.js";
+import type { NexusStructuredStoreConfig } from "./types.js";
 
 const DEFAULT_BASE = "ace";
 
@@ -25,7 +25,7 @@ function canonicalJson(value: unknown): string {
 }
 
 export function createNexusStructuredPlaybookStore(
-  config: NexusPlaybookStoreConfig,
+  config: NexusStructuredStoreConfig,
 ): StructuredPlaybookStore {
   const base = config.basePath ?? DEFAULT_BASE;
   const dir = `${base}/structured`;
@@ -34,13 +34,11 @@ export function createNexusStructuredPlaybookStore(
   // createNexusPlaybookProposalStore pointing at the same backend so that
   // save/recordProposal interleaving is serialised across instances.
   const scope = config.lockScope ?? base;
-  // Fail-closed by default: this transport lacks create-only CAS, so two
-  // racing initial saves can both succeed and silently lose one payload.
-  // Bootstrap deployments that have proven single-writer for the initial
-  // create (e.g. a coordinator-runs-first migration) can opt out via
-  // requirePreProvisioned: false. We default closed so a caller that
-  // forgets the option cannot corrupt the very first structured playbook.
-  const requirePreProvisioned = config.requirePreProvisioned ?? true;
+  // No default: requirePreProvisioned is a required field on the config.
+  // Forcing the caller to choose ensures every deployment makes an explicit
+  // decision about initial-create safety. (This transport lacks create-only
+  // CAS; two racing initial saves can both succeed and silently lose one.)
+  const requirePreProvisioned = config.requirePreProvisioned;
   const path = (id: string): string => `${dir}/${encodeAceId(id)}.json`;
 
   return {
