@@ -119,6 +119,33 @@ describe("createNexusSignalSource", () => {
     expect(seen).toEqual([]);
   });
 
+  test("drops lifecycle transitions with invalid state pairs", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const source = createNexusSignalSource({
+      subscribe: (_channels, next) => {
+        listener = next;
+        return () => {};
+      },
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "created",
+      to: "idle",
+      reason: { kind: "completed" },
+      generation: 2,
+      emittedAt: 4,
+    });
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen).toEqual([]);
+  });
+
   test("maps delete events into vfs signals", async () => {
     let listener: ((event: unknown) => void) | undefined;
     const source = createNexusSignalSource({
@@ -266,6 +293,29 @@ describe("createNexusSignalSource", () => {
         emittedAt: 13,
       },
     ]);
+  });
+
+  test("stop prevents an already-queued nexus delivery from reaching the handler", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const source = createNexusSignalSource({
+      subscribe: (_channels, next) => {
+        listener = next;
+        return () => {};
+      },
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    listener?.({
+      channel: "vfs",
+      event: "write",
+      path: "/tmp/queued.txt",
+      emittedAt: 16,
+    });
+    stop();
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    expect(seen).toEqual([]);
   });
 
   test("unsubscribe detaches the underlying listener and disconnect fires once", () => {

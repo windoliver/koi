@@ -32,8 +32,22 @@ const VALID_PROCESS_STATES: ReadonlySet<ProcessState> = new Set([
   "terminated",
 ]);
 
+const VALID_TRANSITIONS: Readonly<Record<ProcessState, readonly ProcessState[]>> =
+  Object.freeze({
+    created: ["running", "terminated"] as const,
+    running: ["waiting", "suspended", "idle", "terminated"] as const,
+    waiting: ["running", "suspended", "terminated"] as const,
+    suspended: ["running", "terminated"] as const,
+    idle: ["running", "terminated"] as const,
+    terminated: [] as const,
+  });
+
 function isProcessState(value: string): value is ProcessState {
   return VALID_PROCESS_STATES.has(value as ProcessState);
+}
+
+function isValidTransitionPair(from: ProcessState, to: ProcessState): boolean {
+  return VALID_TRANSITIONS[from].includes(to);
 }
 
 function isTransitionReason(value: unknown): value is TransitionReason {
@@ -90,9 +104,15 @@ export function createNexusSignalSource(
   return {
     name: "nexus",
     watch(handler, options) {
-      const emitter = createAsyncEmitter(handler, options);
+      let closed = false;
+      const emitter = createAsyncEmitter((signal) => {
+        if (closed) return;
+        handler(signal);
+      }, options);
       const unsubscribeUpstream =
         config.subscribe?.(config.channels, (event) => {
+          if (closed) return;
+
           try {
             const record = event as Record<string, unknown>;
             if (
@@ -158,6 +178,7 @@ export function createNexusSignalSource(
               typeof record.to === "string" &&
               isProcessState(record.from) &&
               isProcessState(record.to) &&
+              isValidTransitionPair(record.from, record.to) &&
               isTransitionReason(record.reason) &&
               typeof record.generation === "number" &&
               typeof record.emittedAt === "number"
@@ -178,6 +199,7 @@ export function createNexusSignalSource(
         }) ?? (() => {});
 
       const subscription = createSubscriptionController(() => {
+        closed = true;
         unsubscribeUpstream();
         safeCall(options?.onDisconnect);
       });
