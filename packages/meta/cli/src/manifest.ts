@@ -760,7 +760,7 @@ export async function loadManifestConfig(
       // prefix (#1777 review round 9). Validating the runtime invariant
       // at parse time turns "looks valid, fails later on startup" into a
       // clean error before any subprocess spawn.
-      if (candidates.length > 1) {
+      if (candidates.length > 1 && !(options?.allowOAuthSchemes === true)) {
         return {
           ok: false,
           error:

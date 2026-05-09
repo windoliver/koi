@@ -268,24 +268,40 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
   } else {
     // Injected transport: still validate mountPoint to prevent namespace escape.
     // Only skip URL/HTTP-specific checks.
+    //
+    // The empty string is explicitly allowed here as opt-in namespace-root
+    // semantics — multi-mount local-bridge sessions need bare `/local/foo`
+    // and `/gmail/inbox` paths to resolve through the transport without a
+    // hardcoded `fs/` prefix. Operators that omit `mountPoint` still get the
+    // `DEFAULT_MOUNT_POINT` ("fs") default; only an explicit `""` opts in.
     const mountPoint = config.mountPoint;
-    if (mountPoint !== undefined) {
-      const stripped = mountPoint.replace(/^\/+/, "").replace(/\/+$/, "");
-      if (stripped.length === 0) {
-        throw new Error(
-          "mountPoint must be a non-empty namespace prefix (e.g., 'fs', 'workspace/agent1')",
-        );
-      }
+    if (mountPoint !== undefined && mountPoint !== "") {
       if (mountPoint.includes("..")) {
         throw new Error("mountPoint must not contain '..'");
+      }
+      // Slash-only values (e.g. "/", "///") would normalize to "" via the
+      // strip-leading/trailing-slash step below and silently become the
+      // namespace-root opt-in. That is a config-typo path into Nexus-root
+      // routing — operators must opt in by passing the literal "" only.
+      // Reject slash-only mountPoint explicitly here.
+      if (/^\/+$/.test(mountPoint)) {
+        throw new Error(
+          "mountPoint must not be slash-only (e.g. '/', '///'); pass an explicit \"\" to opt into namespace-root semantics or a non-empty path.",
+        );
       }
     }
   }
 
   const transport = injectedTransport ?? createHttpTransport(config);
-  // Normalize mountPoint: strip leading slash for Nexus path convention
+  // Normalize mountPoint: strip leading and trailing slashes for Nexus path
+  // convention. The default is `DEFAULT_MOUNT_POINT` ("fs") regardless of
+  // whether the transport is HTTP or injected — callers that need
+  // namespace-root semantics (e.g. multi-mount local-bridge sessions) MUST
+  // pass `mountPoint: ""` explicitly so the silent root-rewrite is opt-in
+  // per-call rather than a default behavior change for every injected
+  // transport.
   const rawMount = config.mountPoint ?? DEFAULT_MOUNT_POINT;
-  const basePath = rawMount.startsWith("/") ? rawMount.slice(1) : rawMount;
+  const basePath = rawMount.replace(/^\/+/, "").replace(/\/+$/, "");
 
   // -------------------------------------------------------------------
   // Operations

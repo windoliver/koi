@@ -9,6 +9,10 @@
 import type { KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 
+function normalizeBasePath(basePath: string): string {
+  return basePath.replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
 /**
  * Join basePath with a user-provided path and normalize traversals.
  *
@@ -49,25 +53,42 @@ export function computeFullPath(basePath: string, userPath: string): Result<stri
     };
   }
 
+  const normalizedBasePath = normalizeBasePath(basePath);
+
   // Strip leading slash to avoid double-slash when joining
   const normalizedUser = normalized.startsWith("/") ? normalized.slice(1) : normalized;
-  const joined = `${basePath}/${normalizedUser}`;
+  const joined =
+    normalizedBasePath.length > 0 ? `${normalizedBasePath}/${normalizedUser}` : normalizedUser;
 
   // Resolve ".." segments
   const parts = joined.split("/");
   const resolved: string[] = [];
   for (const part of parts) {
     if (part === "..") {
+      if (resolved.length === 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `Path traversal rejected: '${userPath}' escapes basePath '${basePath}'`,
+            retryable: RETRYABLE_DEFAULTS.VALIDATION,
+          },
+        };
+      }
       resolved.pop();
     } else if (part !== "" && part !== ".") {
       resolved.push(part);
     }
   }
   // Nexus NFS expects paths with leading slash
-  const result = `/${resolved.join("/")}`;
+  const result = resolved.length > 0 ? `/${resolved.join("/")}` : "/";
+
+  if (normalizedBasePath.length === 0) {
+    return { ok: true, value: result };
+  }
 
   // Ensure result stays within basePath boundary
-  const normalizedBase = `/${basePath}`;
+  const normalizedBase = `/${normalizedBasePath}`;
   const baseWithSlash = normalizedBase.endsWith("/") ? normalizedBase : `${normalizedBase}/`;
   if (result !== normalizedBase && !result.startsWith(baseWithSlash)) {
     return {
@@ -87,19 +108,24 @@ export function computeFullPath(basePath: string, userPath: string): Result<stri
  * Strip basePath prefix from a full path, returning the user-relative path.
  */
 export function stripBasePath(base: string, fullPath: string): string {
+  const normalizedFullPath = fullPath.startsWith("/") ? fullPath : `/${fullPath}`;
+  const normalizedBasePath = normalizeBasePath(base);
+  if (normalizedBasePath.length === 0) {
+    return normalizedFullPath;
+  }
   // Normalize: basePath may lack leading slash but Nexus paths always have one
-  const normalizedBase = base.startsWith("/") ? base : `/${base}`;
+  const normalizedBase = `/${normalizedBasePath}`;
   // Exact match: path IS the base directory
-  if (fullPath === normalizedBase) {
+  if (normalizedFullPath === normalizedBase) {
     return "/";
   }
   // Path-boundary check: ensure base is followed by "/" to prevent
   // sibling-prefix collisions (e.g. base="/fs" must not match "/fspath/a.txt")
   const baseWithSlash = normalizedBase.endsWith("/") ? normalizedBase : `${normalizedBase}/`;
-  if (fullPath.startsWith(baseWithSlash)) {
-    return `/${fullPath.slice(baseWithSlash.length)}`;
+  if (normalizedFullPath.startsWith(baseWithSlash)) {
+    return `/${normalizedFullPath.slice(baseWithSlash.length)}`;
   }
-  return fullPath;
+  return normalizedFullPath;
 }
 
 /**

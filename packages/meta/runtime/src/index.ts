@@ -206,6 +206,14 @@ export type { McpLifecycleConfig } from "./middleware/mcp-lifecycle.js";
 export { recordMcpLifecycle } from "./middleware/mcp-lifecycle.js";
 export type { TraceWrapperConfig } from "./middleware/trace-wrapper.js";
 export { wrapMiddlewareWithTrace } from "./middleware/trace-wrapper.js";
+export type {
+  MountDescriptionsSnapshot,
+  MountDescriptionsState,
+} from "./mount-descriptions-middleware.js";
+export {
+  createMountDescriptionsMiddleware,
+  createMountDescriptionsState,
+} from "./mount-descriptions-middleware.js";
 export {
   resolveFileSystem,
   resolveFileSystemAsync,

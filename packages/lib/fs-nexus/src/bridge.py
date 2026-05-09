@@ -19,6 +19,7 @@ Usage:
 """
 
 import asyncio
+import inspect
 import json
 import os
 import re
@@ -57,6 +58,126 @@ _auth_submit_queue: asyncio.Queue[str] = asyncio.Queue()
 
 class ConflictError(Exception):
     """Raised when if_match fails (optimistic concurrency violation)."""
+
+
+# Authoritative connector identity for paths the current bridge process
+# committed via add_mount. Populated from the source URI's scheme at
+# add_mount time so subsequent describe_mount can return the correct
+# connector type for aliased mounts (e.g. `gdrive://x` at `/team/docs`
+# preserves connector "gdrive" instead of guessing "team" from the path).
+# Best-effort only — paths committed before this process started, or by
+# another process, fall back to the path-prefix heuristic which may lie
+# for aliased mounts. Operators should treat the connector field as
+# advisory unless the path clearly carries the scheme as its first
+# segment.
+_SESSION_MOUNT_CONNECTORS: dict[str, str] = {}
+
+
+def _mount_connector_from_path(path: str) -> str:
+    cached = _SESSION_MOUNT_CONNECTORS.get(path)
+    if cached is not None:
+        return cached
+    parts = [part for part in path.split("/") if part]
+    return parts[0] if parts else "unknown"
+
+
+def _parse_frontmatter_value(frontmatter: str, key: str) -> str | None:
+    pattern = re.compile(rf"^{re.escape(key)}\s*:\s*(.+)$", re.MULTILINE)
+    match = pattern.search(frontmatter)
+    if match is None:
+        return None
+    value = match.group(1).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
+def _extract_description_from_readme(readme: str) -> str | None:
+    if readme.startswith("---\n"):
+        end = readme.find("\n---\n", 4)
+        if end != -1:
+            frontmatter = readme[4:end]
+            for key in ("description", "summary", "title"):
+                value = _parse_frontmatter_value(frontmatter, key)
+                if value:
+                    return value
+    for line in readme.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:200]
+    return None
+
+
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _call_first(targets, names, *args, **kwargs):
+    for target in targets:
+        if target is None:
+            continue
+        for name in names:
+            fn = getattr(target, name, None)
+            if callable(fn):
+                return await _maybe_await(fn(*args, **kwargs))
+    raise NotImplementedError(f"Backend does not support any of: {', '.join(names)}")
+
+
+def _mount_targets(fs):
+    return (
+        fs,
+        getattr(fs, "backend", None),
+        getattr(fs, "_backend", None),
+        getattr(fs, "facade", None),
+    )
+
+
+async def _list_mounts_scoped(fs):
+    """List mounts visible through the scoped filesystem wrapper.
+
+    Critical for trust-boundary enforcement on describe_mount and
+    remove_mount: this MUST NOT walk through to inner raw backends via
+    _mount_targets(). A scoped wrapper that does not expose list_mounts
+    has no authoritative scope-aware view, so callers must fail closed
+    rather than fall through to the raw backend (which would let scoped
+    sessions describe or remove sibling/tenant mounts).
+
+    Returns the list reported by `fs.list_mounts()` itself, or None when
+    the scoped fs does not expose `list_mounts` (caller must reject).
+    """
+    list_fn = getattr(fs, "list_mounts", None)
+    if not callable(list_fn):
+        return None
+    return await _maybe_await(list_fn())
+
+
+async def _generate_mount_readme(fs, path: str) -> str | None:
+    targets = _mount_targets(fs)
+    try:
+        readme = await _call_first(targets, ("generate_readme",), path)
+    except NotImplementedError:
+        return None
+    if readme is None:
+        return None
+    if isinstance(readme, bytes):
+        return readme.decode("utf-8")
+    return str(readme)
+
+
+async def _describe_mount(fs, path: str) -> dict:
+    readme = await _generate_mount_readme(fs, path)
+    description = _extract_description_from_readme(readme) if readme is not None else None
+    result = {
+        "path": path,
+        "connector": _mount_connector_from_path(path),
+    }
+    if description:
+        result["description"] = description
+    if readme:
+        result["readme"] = readme
+    return result
 
 
 def _write(obj: dict) -> None:
@@ -571,6 +692,217 @@ async def dispatch(fs, method, params):
         await fs.mkdir(path, parents=parents)
         return {"created": True}
 
+    if method == "list_mounts":
+        # Trust-boundary enforcement: list_mounts is exposed via JSON-RPC and
+        # any scoped client could otherwise enumerate sibling/tenant mounts
+        # by reading the raw inner backend. Use _list_mounts_scoped which
+        # calls fs.list_mounts() ONLY (never walks to inner backends). If
+        # the scoped wrapper does not expose list_mounts, fail closed — we
+        # cannot prove the result respects scope.
+        scoped_live = await _list_mounts_scoped(fs)
+        if scoped_live is None:
+            raise ValueError(
+                "list_mounts refused: scoped filesystem does not expose list_mounts; "
+                "cannot return a scope-respecting mount list"
+            )
+        return {"mounts": list(scoped_live)}
+
+    if method == "describe_mount":
+        mount_path = params.get("path")
+        if not isinstance(mount_path, str) or len(mount_path) == 0:
+          raise ValueError("describe_mount requires a non-empty string path")
+        # Trust-boundary enforcement: validate `mount_path` against the
+        # scope-aware list_mounts() ONLY. Walking through to raw backends
+        # via _mount_targets() would let a scoped session describe sibling
+        # or tenant mounts that the wrapper would otherwise hide, since
+        # the underlying _describe_mount also bypasses the wrapper to
+        # invoke generate_readme().
+        try:
+            scoped_live = await _list_mounts_scoped(fs)
+        except Exception as exc:
+            raise ValueError(
+                f"describe_mount cannot verify path {mount_path!r}: list_mounts failed ({exc})"
+            ) from exc
+        if scoped_live is None:
+            raise ValueError(
+                "describe_mount refused: scoped filesystem does not expose list_mounts; "
+                "cannot prove path is in scope"
+            )
+        if mount_path not in scoped_live:
+            raise ValueError(
+                f"describe_mount refused: path {mount_path!r} is not in the scoped mount set"
+            )
+        return await _describe_mount(fs, mount_path)
+
+    if method == "add_mount":
+        uri = params.get("uri")
+        at = params.get("at")
+        if not isinstance(uri, str) or len(uri) == 0:
+            raise ValueError("add_mount requires a non-empty string uri")
+        if at is not None and (not isinstance(at, str) or len(at) == 0):
+            raise ValueError("add_mount at must be a non-empty string when provided")
+        # Snapshot mounts before mutation so we can diff to discover the
+        # resulting path when `at` was not specified. If list_mounts fails
+        # before mutation, fall back to an empty snapshot — the actual
+        # mutation can still proceed and we'll handle missing diff below.
+        # Trust-boundary enforcement: resolve add_mount against the scoped
+        # filesystem wrapper ONLY. Walking through to fs.backend / fs._backend /
+        # fs.facade would let a scoped session reach raw backend mount logic
+        # and add mounts outside its visible namespace. The wrapper either
+        # implements add_mount/mount (scope is applied inside it) or it does
+        # not (fail closed). Callers that need raw backend mutations must do
+        # so outside the scoped boundary.
+        scoped_add = getattr(fs, "add_mount", None)
+        scoped_mount = getattr(fs, "mount", None)
+        if not callable(scoped_add) and not callable(scoped_mount):
+            raise ValueError(
+                "add_mount refused: scoped filesystem does not expose add_mount/mount; "
+                "raw backend mount mutations are not reachable through this session"
+            )
+        # Use scope-aware listing for the pre-mutation snapshot so the
+        # diff that resolves the committed path stays inside the scope
+        # boundary (and matches what the runtime guard sees).
+        try:
+            before_listed = await _list_mounts_scoped(fs)
+            before = set(before_listed) if before_listed is not None else set()
+        except Exception:
+            before = set()
+        if at is None:
+            if callable(scoped_add):
+                await _maybe_await(scoped_add(uri))
+            else:
+                await _maybe_await(scoped_mount(uri))
+        else:
+            if callable(scoped_add):
+                try:
+                    await _maybe_await(scoped_add(uri, at=at))
+                except NotImplementedError:
+                    if callable(scoped_mount):
+                        await _maybe_await(scoped_mount(uri, at))
+                    else:
+                        raise
+            else:
+                await _maybe_await(scoped_mount(uri, at))
+        # The mount has now been committed. Everything below here is
+        # post-commit enrichment and MUST NOT raise — surfacing an error
+        # would trick callers into retrying a non-idempotent mutation that
+        # already succeeded. Each enrichment step is wrapped so its failure
+        # degrades the response payload rather than the call result.
+        #
+        # Resolve the committed path authoritatively from `list_mounts`,
+        # not from the caller-supplied `at`. The backend may normalize the
+        # mount target (e.g. strip trailing slash, add a leading slash, or
+        # collapse duplicate slashes), so echoing `at` verbatim would let
+        # the client cache and advertise an identifier that does not match
+        # the real live mount. A subsequent /unmount keyed off the wrong
+        # identifier would silently miss the live mount, and the prompt
+        # middleware's strict path allowlist might drop the entry entirely.
+        resolved_path: str | None = None
+        try:
+            after_listed = await _list_mounts_scoped(fs)
+            after = list(after_listed) if after_listed is not None else []
+            new_mounts = [mount for mount in after if mount not in before]
+            if len(new_mounts) == 1:
+                resolved_path = new_mounts[0]
+        except Exception:
+            resolved_path = None
+        if resolved_path is None:
+            # Mutation IS committed but the bridge cannot determine the new
+            # path. Returning the source URI as `path` would let callers treat
+            # it as canonical and call /unmount on a non-path. Surface the
+            # partial state explicitly so callers can prompt the user to run
+            # list_mounts and recover.
+            scheme = uri.split("://", 1)[0] if "://" in uri else "unknown"
+            return {
+                "path": "",
+                "connector": scheme,
+                "pathUnknown": True,
+            }
+        # Do NOT await _describe_mount here. Description / README generation
+        # may hang on slow OAuth or large remote connectors and can exceed the
+        # client's per-RPC timeout. The mount IS committed at this point, and
+        # surfacing a timeout error to the caller would invite a retry against
+        # a non-idempotent mutation. Return the minimal canonical payload now;
+        # callers refresh enriched descriptions on demand via describe_mount.
+        # Use the URI scheme as the canonical connector identity instead of
+        # guessing from the resolved path. An aliased mount like
+        # `gdrive://foo` at `/team/docs` would otherwise be reported as
+        # connector "team", which lies about the connector type to both
+        # the model and the operator. Track URI -> connector for any later
+        # describe_mount lookup against this path so the bridge can return
+        # the same authoritative value without re-deriving from the path.
+        connector_scheme = uri.split("://", 1)[0] if "://" in uri else "unknown"
+        _SESSION_MOUNT_CONNECTORS[resolved_path] = connector_scheme
+        return {
+            "path": resolved_path,
+            "connector": connector_scheme,
+        }
+
+    if method == "remove_mount":
+        mount_path = params.get("path")
+        if not isinstance(mount_path, str) or len(mount_path) == 0:
+            raise ValueError("remove_mount requires a non-empty string path")
+        # Trust-boundary enforcement: a scoped session must not be able to
+        # unmount sibling/tenant mounts outside its scope. Validate the
+        # target against the scope-aware list_mounts() ONLY (do not walk
+        # through to inner backends, which would bypass scope filtering).
+        # If the scoped fs cannot authoritatively list, fail closed.
+        try:
+            scoped_live = await _list_mounts_scoped(fs)
+        except Exception as exc:
+            raise ValueError(
+                f"remove_mount cannot verify path {mount_path!r}: list_mounts failed ({exc})"
+            ) from exc
+        if scoped_live is None:
+            raise ValueError(
+                "remove_mount refused: scoped filesystem does not expose list_mounts; "
+                "cannot prove path is in scope"
+            )
+        if mount_path not in scoped_live:
+            raise ValueError(
+                f"remove_mount refused: path {mount_path!r} is not in the scoped mount set"
+            )
+        # Snapshot before mutation so we can diff to identify the
+        # authoritative removed path. The caller-supplied `mount_path` may
+        # be a non-canonical form (trailing slash, missing leading slash);
+        # echoing it verbatim would let client caches drift from list_mounts.
+        before = set(scoped_live)
+        # Trust-boundary enforcement: route the actual removal through the
+        # scoped wrapper ONLY. Walking through to inner backends via
+        # _mount_targets would bypass scope filtering on the mutation path
+        # (the visibility check above would still pass, but the mutation
+        # itself would land on raw backend state).
+        scoped_remove = getattr(fs, "remove_mount", None)
+        scoped_unmount = getattr(fs, "unmount", None)
+        if callable(scoped_remove):
+            await _maybe_await(scoped_remove(mount_path))
+        elif callable(scoped_unmount):
+            await _maybe_await(scoped_unmount(mount_path))
+        else:
+            raise ValueError(
+                "remove_mount refused: scoped filesystem does not expose remove_mount/unmount; "
+                "raw backend mount mutations are not reachable through this session"
+            )
+        # Resolve the actual path that disappeared. If exactly one mount was
+        # removed, return its authoritative form; otherwise fall back to the
+        # caller-supplied path (best effort — the cache update on the TS
+        # side already canonicalizes via canonicalizeMountPath()).
+        resolved_path = mount_path
+        try:
+            after_listed = await _list_mounts_scoped(fs)
+            after = set(after_listed) if after_listed is not None else set()
+            removed = [m for m in before if m not in after]
+            if len(removed) == 1:
+                resolved_path = removed[0]
+        except Exception:
+            pass
+        # Drop the URI-scheme cache for the removed path so a future
+        # add_mount at the same path with a different connector cannot
+        # carry stale identity from the previous mount.
+        _SESSION_MOUNT_CONNECTORS.pop(mount_path, None)
+        _SESSION_MOUNT_CONNECTORS.pop(resolved_path, None)
+        return {"path": resolved_path, "removed": True}
+
     raise NotImplementedError(f"Unknown method: {method}")
 
 
@@ -671,11 +1003,28 @@ async def main():
     import nexus.fs
 
     mount_uris = sys.argv[1:] if len(sys.argv) > 1 else ["local://."]
-    fs = await nexus.fs.mount(*mount_uris)
-
-    # Signal ready with mount info
-    mounts = fs.list_mounts()
-    _write({"ready": True, "mounts": mounts})
+    # Mount each URI sequentially, diffing list_mounts() before/after each
+    # call so we can pin the resulting path to its source URI's scheme
+    # without trusting list-order. Positional zipping is unsafe here:
+    # nexus.fs.mount() does not promise that list_mounts() returns paths
+    # in argv order (a sorted backend would silently mislabel schemes
+    # across multi-mount sessions).
+    mount_connectors: dict[str, str] = {}
+    fs = await nexus.fs.mount()
+    for uri in mount_uris:
+        before = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
+        await _call_first(_mount_targets(fs), ("add_mount", "mount"), uri)
+        after = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
+        new_paths = [p for p in after if p not in before]
+        scheme = uri.split("://", 1)[0] if "://" in uri else "unknown"
+        if len(new_paths) == 1:
+            mount_connectors[new_paths[0]] = scheme
+            _SESSION_MOUNT_CONNECTORS[new_paths[0]] = scheme
+        # When the diff is ambiguous (zero or many new paths), leave the
+        # connector cache empty for that URI; downstream consumers fall
+        # back to deriving the scheme from the path prefix.
+    mounts = list(await _call_first(_mount_targets(fs), ("list_mounts",)))
+    _write({"ready": True, "mounts": mounts, "mount_connectors": mount_connectors})
 
     loop = asyncio.get_event_loop()
 

@@ -215,6 +215,40 @@ describe("loadManifestConfig: filesystem block", () => {
     expect(result.error).toContain("s3://bucket/key");
   });
 
+  test("allows multi-mount arrays for TUI OAuth-aware manifest loads", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        "    mountUri:",
+        '      - "local:///tmp/a"',
+        '      - "local:///tmp/b"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p, { allowOAuthSchemes: true });
+    expect(result.ok).toBe(true);
+  });
+
+  test("allows OAuth-backed mountUri schemes for TUI OAuth-aware manifest loads", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        '    mountUri: "gdrive://my-drive"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p, { allowOAuthSchemes: true });
+    expect(result.ok).toBe(true);
+  });
+
   test("rejects filesystem that is not an object", async () => {
     const p = writeManifest(
       ["model:", "  name: google/gemini-2.0-flash-001", "filesystem: nope"].join("\n"),

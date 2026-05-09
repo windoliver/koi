@@ -64,7 +64,12 @@ import {
   createFileSessionRegistry,
   createSubprocessBackend,
 } from "@koi/daemon";
-import { createAuthNotificationHandler } from "@koi/fs-nexus";
+import {
+  createAuthNotificationHandler,
+  createHttpTransport,
+  type MountDescription,
+  type NexusTransport,
+} from "@koi/fs-nexus";
 import type { PatternRule } from "@koi/governance-defaults";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore, createPatternPermissionBackend } from "@koi/middleware-permissions";
@@ -74,8 +79,12 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
-import { createHttpTransport } from "@koi/nexus-client";
-import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime";
+import {
+  createArtifactToolProvider,
+  createMountDescriptionsMiddleware,
+  createMountDescriptionsState,
+  resolveFileSystemAsync,
+} from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import {
   createProgressiveSkillProvider,
@@ -200,6 +209,109 @@ const SESSION_PREVIEW_MAX = 80;
  */
 function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
   store.dispatch({ kind: "add_info", message: text });
+}
+
+function parseMountArgs(args: string):
+  | { readonly ok: true; readonly value: { readonly uri: string; readonly at?: string } }
+  | {
+      readonly ok: false;
+      readonly error: string;
+    } {
+  const trimmed = args.trim();
+  if (trimmed.length === 0) {
+    return { ok: false, error: "Usage: /mount <uri> [as=/mount/path]" };
+  }
+  const parts = trimmed.split(/\s+/);
+  const [uri, ...rest] = parts;
+  if (uri === undefined || uri.length === 0) {
+    return { ok: false, error: "Usage: /mount <uri> [as=/mount/path]" };
+  }
+  let at: string | undefined;
+  for (const part of rest) {
+    if (part.startsWith("as=") && part.length > 3) {
+      at = part.slice(3);
+      continue;
+    }
+    return { ok: false, error: `Unrecognized /mount argument: ${part}` };
+  }
+  return {
+    ok: true,
+    value: at !== undefined ? { uri, at } : { uri },
+  };
+}
+
+/**
+ * Strip C0 controls and ANSI/CSI/OSC escape sequences from connector-supplied
+ * text before sending it to the terminal. Mount descriptions are sourced from
+ * connector READMEs (untrusted) and would otherwise let a hostile or
+ * compromised connector inject control sequences into the operator UI to
+ * spoof notices, hide output, or manipulate the cursor. Keeps tabs and
+ * newlines because they're useful in multi-line README excerpts.
+ */
+// Built via RegExp constructor + string concatenation rather than regex
+// literals so Biome's noControlCharactersInRegex lint doesn't trip on the
+// explicit control-character classes — these regexes need to match control
+// chars by definition.
+const ESC = String.fromCharCode(0x1b);
+const BEL = String.fromCharCode(0x07);
+const SANITIZE_CSI_OSC = new RegExp(`${ESC}[\\[\\]][^${BEL}${ESC}]*?(?:${BEL}|${ESC}\\\\)`, "g");
+const SANITIZE_BARE_ESC = new RegExp(`${ESC}.`, "g");
+// CR is intentionally included in the strip set: alone it rewinds to column
+// 0 and a connector-supplied "\rOK" can overwrite the start of an operator
+// notice. CRLF/CR pairs were already collapsed to \n above before this
+// strip, so legitimate line breaks survive while standalone CR cannot
+// reposition the cursor.
+const SANITIZE_C0_DEL = new RegExp(
+  `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x08)}${String.fromCharCode(0x0b)}${String.fromCharCode(0x0c)}\\r${String.fromCharCode(0x0e)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
+  "g",
+);
+function sanitizeConnectorText(value: string): string {
+  // Order matters: collapse CRLF and bare CR into \n FIRST so legitimate
+  // line breaks survive. Then drop ESC-prefixed sequences (CSI/OSC and bare
+  // ESC + next char). Finally drop remaining C0 controls (except \t and \n)
+  // and DEL. Standalone CR is in the strip set above so a connector cannot
+  // reposition the cursor inside a single rendered line.
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(SANITIZE_CSI_OSC, "")
+    .replace(SANITIZE_BARE_ESC, "")
+    .replace(SANITIZE_C0_DEL, "");
+}
+
+function formatMountedConnectors(entries: readonly MountDescription[]): string {
+  if (entries.length === 0) return "[No mounts]";
+  return entries
+    .map((entry) => {
+      // Every field is sanitized before reaching the terminal: even though
+      // path / connector look like operator-controlled identifiers, they're
+      // ultimately derived from bridge `list_mounts` / `add_mount` output,
+      // which a malicious or compromised backend can populate with control
+      // characters or ANSI escapes.
+      const path = sanitizeConnectorText(entry.path);
+      const connector = sanitizeConnectorText(entry.connector);
+      const description =
+        entry.description !== undefined && entry.description.length > 0
+          ? sanitizeConnectorText(entry.description)
+          : "";
+      const details = description.length > 0 ? ` — ${description}` : "";
+      return `${path} (${connector})${details}`;
+    })
+    .join("\n");
+}
+
+function isRpcMethodUnavailable(error: {
+  readonly context?: unknown;
+  readonly message: string;
+}): boolean {
+  if (
+    typeof error.context === "object" &&
+    error.context !== null &&
+    "rpcCode" in error.context &&
+    (error.context as { readonly rpcCode?: unknown }).rpcCode === -32601
+  ) {
+    return true;
+  }
+  return error.message.includes("Unknown method");
 }
 
 /**
@@ -2064,10 +2176,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Resolved nexus backend (if any). Passed to `createKoiRuntime` via `filesystem`.
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
+  // strictPromptIdentifiers: backend-supplied mount paths/connector names
+  // flow into the system prompt via mount-descriptions-middleware. Reject any
+  // entry that fails the strict character allowlist so a hostile or buggy
+  // bridge cannot smuggle prompt-injection text through identifiers, even
+  // after the description sanitization above.
+  const mountDescriptionsState = createMountDescriptionsState({
+    strictPromptIdentifiers: true,
+  });
+  const mountDescriptionsMiddleware = createMountDescriptionsMiddleware({
+    state: mountDescriptionsState,
+  });
 
   // let: set when nexus local-bridge transport resolves; passed to runtime for
   // permission policy sync and audit trail. Undefined for local-only sessions.
-  let nexusFilesystemTransport: import("@koi/nexus-client").NexusTransport | undefined;
+  let nexusFilesystemTransport: NexusTransport | undefined;
+  // True only when the resolved nexus backend was constructed with a stable
+  // (explicit or namespace-root) base path. False when we inferred a
+  // single-mount root for backward compat — in that mode the backend root is
+  // fixed at startup and runtime /mount /unmount mutations would point the
+  // session at a stale path. See resolveFileSystemAsync for full rationale.
+  let runtimeMountMutationsSupported = false;
+  // The mount path the backend resolves bare paths against, when one is fixed
+  // at construction time. Unmounting this path would strand the session on a
+  // dead root, so /unmount must refuse it. Undefined = namespace-root mode
+  // (no fixed root), in which case any mount can be unmounted safely.
+  let backendActiveRoot: string | undefined;
 
   // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
   // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
@@ -2088,6 +2222,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       tuiAuthNotificationHandler,
     );
     resolvedFilesystemBackend = fsResolved.backend;
+    runtimeMountMutationsSupported = fsResolved.runtimeMountMutationsSupported;
+    backendActiveRoot = fsResolved.backendActiveRoot;
+    // Apply the session disclosure scope so all subsequent /mount and
+    // /mounts updates filter sibling mounts the same way startup-seed did.
+    mountDescriptionsState.setScope(fsResolved.effectiveScopePaths);
+    mountDescriptionsState.setManifest(fsResolved.mountDescriptions);
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
     // (the two should agree, but resolveFileSystemAsync is authoritative).
     if (fsResolved.operations !== undefined) {
@@ -2579,7 +2719,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const runtimeReady =
     runtimeMode === "remote"
       ? (async (): Promise<void> => {
-          const remoteToken = process.env["KOI_GATEWAY_TOKEN"];
+          const remoteToken = process.env.KOI_GATEWAY_TOKEN;
           if (remoteToken === undefined || remoteToken.length === 0) {
             store.dispatch({
               kind: "add_info",
@@ -2933,8 +3073,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             : {}),
           extraMiddleware:
             aceMiddleware !== undefined
-              ? [securityBridge.middleware, aceMiddleware]
-              : [securityBridge.middleware],
+              ? [mountDescriptionsMiddleware, securityBridge.middleware, aceMiddleware]
+              : [mountDescriptionsMiddleware, securityBridge.middleware],
           // Bridge spawn lifecycle events into the TUI store so /agents view and
           // inline spawn_call blocks reflect real spawn state. Each spawn call
           // produces one spawn_requested + one agent_status_changed event.
@@ -6132,6 +6272,204 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           dispatchNotice(store, "zoom-info", `[Zoom level: ${next}×]`);
           break;
         }
+        case "system:mount":
+          void (async (): Promise<void> => {
+            if (nexusFilesystemTransport?.addMount === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_UNAVAILABLE",
+                message: "Runtime mount changes are unavailable in this session.",
+              });
+              return;
+            }
+            if (!runtimeMountMutationsSupported) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_UNAVAILABLE",
+                message:
+                  "Runtime /mount is disabled because this session inferred a single-mount root for backward compat. Set filesystem.options.mountPoint explicitly in the manifest to enable runtime mount changes.",
+              });
+              return;
+            }
+            const parsed = parseMountArgs(args);
+            if (!parsed.ok) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_INVALID_ARGS",
+                message: parsed.error,
+              });
+              return;
+            }
+            const result = await nexusFilesystemTransport.addMount(
+              parsed.value.uri,
+              parsed.value.at,
+            );
+            if (!result.ok) {
+              const message = isRpcMethodUnavailable(result.error)
+                ? "Mount add/remove requires a newer Nexus build with add_mount/remove_mount support."
+                : `Mount failed: ${sanitizeConnectorText(result.error.message)}`;
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_FAILED",
+                message,
+              });
+              return;
+            }
+            // pathUnknown: bridge committed the mount but couldn't isolate the
+            // resulting path. Don't treat the empty path as canonical (would
+            // make /unmount and state tracking incorrect); surface partial
+            // state and prompt the operator to refresh via /mounts.
+            if (result.value.pathUnknown === true || result.value.path === "") {
+              dispatchNotice(
+                store,
+                "mount-info",
+                `[Mounted ${sanitizeConnectorText(parsed.value.uri)} but path discovery failed; run /mounts to refresh]`,
+              );
+              return;
+            }
+            mountDescriptionsState.addRuntime(result.value);
+            dispatchNotice(
+              store,
+              "mount-info",
+              `[Mounted ${sanitizeConnectorText(parsed.value.uri)} at ${sanitizeConnectorText(result.value.path)}]`,
+            );
+          })();
+          break;
+        case "system:unmount":
+          void (async (): Promise<void> => {
+            const path = args.trim();
+            if (path.length === 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_INVALID_ARGS",
+                message: "Usage: /unmount <mount-path>",
+              });
+              return;
+            }
+            if (nexusFilesystemTransport?.removeMount === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_UNAVAILABLE",
+                message: "Runtime mount changes are unavailable in this session.",
+              });
+              return;
+            }
+            if (!runtimeMountMutationsSupported) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_UNAVAILABLE",
+                message:
+                  "Runtime /unmount is disabled because this session inferred a single-mount root for backward compat. Set filesystem.options.mountPoint explicitly in the manifest to enable runtime mount changes.",
+              });
+              return;
+            }
+            // Refuse to unmount the path the backend resolves bare paths
+            // against — removing it leaves all subsequent fs operations
+            // pointing at a dead root with no way to recover short of restart.
+            if (backendActiveRoot !== undefined && path === backendActiveRoot) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_ACTIVE_ROOT",
+                message: `Cannot /unmount ${path}: it is the active backend root for this session. Restart with a different filesystem.options.mountPoint to remove it.`,
+              });
+              return;
+            }
+            const result = await nexusFilesystemTransport.removeMount(path);
+            if (!result.ok) {
+              const message = isRpcMethodUnavailable(result.error)
+                ? "Mount add/remove requires a newer Nexus build with add_mount/remove_mount support."
+                : `Unmount failed: ${sanitizeConnectorText(result.error.message)}`;
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_FAILED",
+                message,
+              });
+              return;
+            }
+            // Use the bridge's authoritative removed path: the operator
+            // may have typed a non-canonical form ("/foo/bar/" vs the live
+            // mount "/foo/bar"), and the bridge's list_mounts diff returns
+            // the canonical identifier. Removing by raw `path` from
+            // mountDescriptionsState would leave a stale entry behind.
+            const removedPath =
+              result.value.path !== undefined && result.value.path.length > 0
+                ? result.value.path
+                : path;
+            mountDescriptionsState.remove(removedPath);
+            dispatchNotice(
+              store,
+              "unmount-info",
+              `[Unmounted ${sanitizeConnectorText(removedPath)}]`,
+            );
+          })();
+          break;
+        case "system:mounts":
+          // Two-stage refresh, never blocked on slow connectors:
+          //   1. Call listMounts() — the cheap, authoritative path list — and
+          //      reconcile mountDescriptionsState so removed mounts disappear
+          //      and stale `pathUnknown` placeholders are dropped.
+          //   2. Print immediately using cheap path/connector fallbacks for
+          //      any path we don't already have a description for.
+          //   3. Best-effort, fire-and-forget describeMount per path: each is
+          //      bounded by the transport's own callTimeoutMs so a single
+          //      OAuth-blocked connector cannot stall others or the print.
+          void (async (): Promise<void> => {
+            const transport = nexusFilesystemTransport;
+            const printSnapshot = (): void => {
+              const snapshot = mountDescriptionsState.getSnapshot();
+              dispatchNotice(
+                store,
+                "mounts-info",
+                formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
+              );
+            };
+            if (transport?.listMounts === undefined) {
+              printSnapshot();
+              return;
+            }
+            const listResult = await transport.listMounts();
+            if (!listResult.ok) {
+              printSnapshot();
+              return;
+            }
+            const livePaths = listResult.value;
+            mountDescriptionsState.reconcile(livePaths);
+            // Seed any newly-discovered live paths with cheap fallbacks so
+            // the print includes them even before describeMount completes.
+            const known = new Set(
+              [
+                ...mountDescriptionsState.getSnapshot().manifest,
+                ...mountDescriptionsState.getSnapshot().runtime,
+              ].map((entry) => entry.path),
+            );
+            for (const path of livePaths) {
+              if (!known.has(path)) {
+                // Prefer the transport's authoritative URI-scheme map for
+                // aliased mounts (e.g. gdrive://x at /team/docs reports
+                // connector "gdrive", not "team"). Fall back to first
+                // path segment only when the transport has no record.
+                const authoritative = transport.mountConnector?.(path);
+                mountDescriptionsState.addRuntime({
+                  path,
+                  connector: authoritative ?? path.split("/").filter(Boolean)[0] ?? "unknown",
+                });
+              }
+            }
+            printSnapshot();
+            // No describeMount enrichment from /mounts. The local bridge is
+            // single-flight: every RPC (reads, writes, /mount, auth) shares
+            // one serialized callQueue. A describeMount that hits OAuth or
+            // simply runs slow can either occupy the queue indefinitely
+            // (blocking foreground filesystem ops) or trip the per-call
+            // timeout that closes the bridge entirely — turning a cosmetic
+            // listing command into a session-killing failure mode. The
+            // operator-facing /mounts UI shows path + connector via the
+            // cheap fallbacks already populated above; README content is
+            // not used by the system prompt and is not worth the risk on
+            // the interactive transport. If a future feature needs it,
+            // it must run on a separate non-interactive transport.
+          })();
+          break;
         case "system:governance-reset":
           // The TUI side already cleared its in-memory alerts via the
           // optimistic dispatch from executeGovernanceReset() in tui-root.tsx.

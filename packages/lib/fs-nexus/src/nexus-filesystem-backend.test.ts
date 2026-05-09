@@ -52,6 +52,29 @@ describe("NexusFileSystem specifics", () => {
     if (result.ok) expect(result.value.content).toBe("test");
   });
 
+  test("explicit empty mountPoint spans the full Nexus namespace", async () => {
+    // Namespace-root semantics must be opt-in per call (mountPoint: "") rather
+    // than the default for any injected transport — otherwise every existing
+    // injected-transport caller silently retargets from /fs/<path> to /<path>.
+    const transport = createFakeNexusTransport();
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      mountPoint: "",
+      transport,
+    });
+
+    await backend.write("/gmail/inbox/message.eml", "mail");
+    await backend.write("/gdrive/team/doc.txt", "doc");
+
+    const gmailRead = await backend.read("/gmail/inbox/message.eml");
+    const gdriveRead = await backend.read("/gdrive/team/doc.txt");
+
+    expect(gmailRead.ok).toBe(true);
+    expect(gdriveRead.ok).toBe(true);
+    if (gmailRead.ok) expect(gmailRead.value.content).toBe("mail");
+    if (gdriveRead.ok) expect(gdriveRead.value.content).toBe("doc");
+  });
+
   test("path traversal is rejected", async () => {
     const backend = createNexusFileSystem({
       url: "http://fake",

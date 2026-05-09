@@ -37,6 +37,18 @@ describe("computeFullPath", () => {
     if (result.ok) expect(result.value).toBe("/agents/a1/workspace/file.ts");
   });
 
+  test("empty basePath keeps callers at the Nexus namespace root", () => {
+    const result = computeFullPath("", "/gmail/inbox/message.eml");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toBe("/gmail/inbox/message.eml");
+  });
+
+  test("empty basePath still rejects traversal above the Nexus namespace root", () => {
+    const result = computeFullPath("", "../etc/passwd");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
   // Path traversal attacks
   test("rejects simple .. traversal", () => {
     const result = computeFullPath("fs", "../etc/passwd");
@@ -116,5 +128,9 @@ describe("stripBasePath", () => {
 
   test("handles nested basePath", () => {
     expect(stripBasePath("agents/a1", "/agents/a1/file.txt")).toBe("/file.txt");
+  });
+
+  test("returns the full path unchanged for the root namespace", () => {
+    expect(stripBasePath("", "/gmail/inbox/message.eml")).toBe("/gmail/inbox/message.eml");
   });
 });

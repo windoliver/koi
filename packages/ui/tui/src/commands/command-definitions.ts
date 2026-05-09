@@ -202,6 +202,24 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     category: "system",
   },
   {
+    id: "system:mount",
+    label: "Mount connector",
+    description: "Mount a connector at runtime with /mount <uri> [as=/path]",
+    category: "system",
+  },
+  {
+    id: "system:unmount",
+    label: "Unmount connector",
+    description: "Unmount a runtime connector with /unmount <mount-path>",
+    category: "system",
+  },
+  {
+    id: "system:mounts",
+    label: "List mounts",
+    description: "List current mounts and their descriptions",
+    category: "system",
+  },
+  {
     id: "system:zoom",
     label: "Zoom",
     description: "Adjust terminal zoom level",

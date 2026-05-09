@@ -16,8 +16,14 @@
 
 import { fileURLToPath } from "node:url";
 import type { KoiError, Result } from "@koi/core";
+import { RETRYABLE_DEFAULTS } from "@koi/core";
 import { mapNexusError } from "./errors.js";
-import type { BridgeNotification, JsonRpcResponse, NexusTransport } from "./types.js";
+import type {
+  BridgeNotification,
+  JsonRpcResponse,
+  MountDescription,
+  NexusTransport,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -63,6 +69,16 @@ export interface LocalTransportConfig {
    * Never set this in production code.
    */
   readonly _bridgePath?: string | undefined;
+  /**
+   * Opt-in capability flag. When false/undefined (default), the returned
+   * transport omits the raw mount mutation and inspection RPCs
+   * (`addMount`, `removeMount`, `listMounts`, `describeMount`) so direct
+   * callers of `createLocalTransport` cannot bypass the resolver's
+   * read-only / scope / protected-root guards. Only enable from
+   * `resolveFileSystemAsync`, which wraps these methods with
+   * `guardedTransport` before exposing them to the runtime.
+   */
+  readonly enableMountMutations?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +153,14 @@ interface PendingRequest {
 // id: null is a valid *response* (parse error); only absent `id` is a notification.
 // ---------------------------------------------------------------------------
 
+function canonicalizeForOverlap(value: string): string {
+  if (value.length === 0) return value;
+  const withSlash = value.startsWith("/") ? value : `/${value}`;
+  return withSlash.endsWith("/") && withSlash.length > 1
+    ? withSlash.replace(/\/+$/, "")
+    : withSlash;
+}
+
 function isNotification(msg: unknown): msg is BridgeNotification {
   return (
     typeof msg === "object" && msg !== null && !("id" in msg) && "method" in msg && "jsonrpc" in msg
@@ -184,6 +208,11 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   // Any failure here (timeout, process exit, parse error) must clean up the
   // subprocess — without this, a repeated startup failure leaks processes.
   let mounts: readonly string[] = [];
+  // Authoritative path -> connector-scheme map populated from the bridge's
+  // ready payload. Lets the TS seed layer report the original URI scheme
+  // (e.g. "gdrive") for aliased mount paths (e.g. /team/docs) instead of
+  // guessing the first path segment.
+  const mountConnectors = new Map<string, string>();
   try {
     const readyLine = await Promise.race([
       lineReader.nextLine(),
@@ -194,11 +223,19 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     const ready = JSON.parse(readyLine) as {
       readonly ready?: boolean;
       readonly mounts?: readonly string[];
+      readonly mount_connectors?: Readonly<Record<string, string>>;
     };
     if (ready.ready !== true) {
       throw new Error(`Unexpected bridge startup message: ${readyLine}`);
     }
     mounts = ready.mounts ?? [];
+    if (ready.mount_connectors !== undefined) {
+      for (const [path, scheme] of Object.entries(ready.mount_connectors)) {
+        if (typeof scheme === "string" && scheme.length > 0) {
+          mountConnectors.set(path, scheme);
+        }
+      }
+    }
   } catch (e: unknown) {
     lineReader.release();
     try {
@@ -541,7 +578,155 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     }
   }
 
-  return { kind: "local-bridge", call, subscribe, submitAuthCode, close, mounts };
+  async function listMounts(): Promise<Result<readonly string[], KoiError>> {
+    const result = await call<{ readonly mounts?: readonly string[] }>("list_mounts", {});
+    if (!result.ok) return result;
+    mounts = result.value.mounts ?? [];
+    // Reconcile the connector-scheme cache: any path that is no longer in
+    // the live mount list must drop its scheme entry so a future add at
+    // the same path cannot inherit stale identity. Paths still live keep
+    // their entries; paths newly observed but never seen in this process
+    // simply have no entry, and consumers fall back to path-prefix.
+    const live = new Set(mounts);
+    for (const path of [...mountConnectors.keys()]) {
+      if (!live.has(path)) mountConnectors.delete(path);
+    }
+    return { ok: true, value: mounts };
+  }
+
+  async function describeMount(path: string): Promise<Result<MountDescription, KoiError>> {
+    return call<MountDescription>("describe_mount", { path });
+  }
+
+  async function addMount(
+    uri: string,
+    at?: string | undefined,
+  ): Promise<Result<MountDescription, KoiError>> {
+    // Defense-in-depth overlap check (independent of any caller-side
+    // wrapper). The resolver wraps this transport with protected-root
+    // checks for runtime trust boundaries, but raw consumers of
+    // createLocalTransport would otherwise have a wide-open addMount.
+    // Refuse `at` values that overlap a path already in the cache —
+    // canonicalize first so trailing/leading-slash drift can't bypass
+    // the check. The bridge does its own scope-aware list_mounts diff
+    // post-commit; this guard catches the obvious pre-commit collisions.
+    if (typeof at === "string") {
+      const canonAt = canonicalizeForOverlap(at);
+      for (const existing of mounts) {
+        const canonExisting = canonicalizeForOverlap(existing);
+        if (canonExisting.length === 0) continue;
+        if (
+          canonAt === canonExisting ||
+          canonAt.startsWith(`${canonExisting}/`) ||
+          canonExisting.startsWith(`${canonAt}/`)
+        ) {
+          return {
+            ok: false,
+            error: {
+              code: "VALIDATION",
+              message: `Cannot mount at ${at}: overlaps existing live mount ${existing}; remove the existing mount first or choose a non-overlapping path.`,
+              retryable: RETRYABLE_DEFAULTS.VALIDATION,
+            },
+          };
+        }
+      }
+    }
+    const result = await call<MountDescription>("add_mount", {
+      uri,
+      ...(at !== undefined ? { at } : {}),
+    });
+    if (!result.ok) return result;
+    // Optimistically update the local cache with the known path. We
+    // deliberately do NOT call list_mounts here: a slow/hung post-commit
+    // refresh would queue behind itself on the single-threaded bridge and
+    // force a fail-fast `close()` that tears down a session whose mount
+    // already succeeded. Callers that need an authoritative list call
+    // listMounts() directly (e.g. /mounts in the TUI).
+    if (
+      result.value.path !== "" &&
+      result.value.pathUnknown !== true &&
+      !mounts.includes(result.value.path)
+    ) {
+      mounts = [...mounts, result.value.path];
+    }
+    // Keep the connector-scheme map in sync. The bridge populates its own
+    // cache from the URI scheme on add_mount, so result.value.connector
+    // matches that authoritative value and we record it here too. Without
+    // this, post-add lookups via mountConnector() would return undefined
+    // for runtime-added paths and consumers would fall back to the path-
+    // prefix heuristic, regressing identity for aliased mounts.
+    if (
+      result.value.path !== "" &&
+      result.value.pathUnknown !== true &&
+      result.value.connector.length > 0
+    ) {
+      mountConnectors.set(result.value.path, result.value.connector);
+    }
+    return result;
+  }
+
+  async function removeMount(
+    path: string,
+  ): Promise<Result<{ readonly path: string; readonly removed: true }, KoiError>> {
+    const result = await call<{ readonly path: string; readonly removed: true }>("remove_mount", {
+      path,
+    });
+    if (!result.ok) return result;
+    // Optimistic cache update only — see addMount() above for why we don't
+    // refresh via list_mounts here. The bridge resolves the authoritative
+    // removed path (canonicalized) and returns it in `result.value.path`,
+    // because the caller-supplied `path` may be a non-canonical form
+    // (trailing slash, missing leading slash). Filter the cache by BOTH
+    // the canonical and the raw values so a stale entry can't survive a
+    // successful unmount when the two differ.
+    const canonicalRemoved = result.value.path;
+    mounts = mounts.filter((m) => m !== path && m !== canonicalRemoved);
+    // Drop connector-scheme cache entries for both raw + canonical forms
+    // so a future add_mount at the same path can't inherit stale identity
+    // from the previous mount.
+    mountConnectors.delete(path);
+    if (canonicalRemoved.length > 0) mountConnectors.delete(canonicalRemoved);
+    return result;
+  }
+
+  // Mutation+inspection RPCs are gated behind an explicit capability so
+  // direct callers of createLocalTransport (tests, scripts, future raw
+  // consumers) cannot reach addMount/removeMount/listMounts/describeMount
+  // without opting in. The resolver passes `enableMountMutations: true`
+  // and immediately wraps these in `guardedTransport` (read-only, scope,
+  // protected-root, quarantine, overlap). Default-deny preserves the
+  // safety invariants the resolver enforces.
+  //
+  // The `mounts` getter is defined directly (not via spread) so it remains
+  // a live view of the closed-over `mounts` array; spreading would capture
+  // its value at construction time and addMount/removeMount updates would
+  // never be visible.
+  const transport: NexusTransport = {
+    kind: "local-bridge",
+    call,
+    subscribe,
+    submitAuthCode,
+    close,
+    get mounts(): readonly string[] {
+      return mounts;
+    },
+    /**
+     * Authoritative connector scheme for a mount path. Returns the scheme
+     * the bridge tracked from its source URI (`gdrive`, `gmail`, `local`,
+     * etc.) for paths committed in the current bridge process — including
+     * startup-seeded manifest mounts and runtime add_mount commits — or
+     * undefined for paths the bridge has no record of (typically pre-
+     * existing mounts shared from another process). Callers that only get
+     * undefined back fall back to deriving the scheme from the path.
+     */
+    mountConnector(path: string): string | undefined {
+      return mountConnectors.get(path);
+    },
+    ...(config.enableMountMutations === true
+      ? { describeMount, addMount, removeMount, listMounts }
+      : {}),
+  };
+  return transport;
 }
 
 // ---------------------------------------------------------------------------
