@@ -780,6 +780,63 @@ describe("createCompositionExecutor", () => {
     expect(store.size).toBe(0);
   });
 
+  test("submit_task preCommitRejection releases the claim so corrected retry is unblocked", async () => {
+    const { scheduler: base, calls } = schedulerStub();
+    let attempt = 0;
+    const rejectingThenAccepting: SchedulerComponent = {
+      ...base,
+      async submit(input, mode, opts) {
+        attempt += 1;
+        if (attempt === 1) {
+          throw preCommitRejection("submit() does not enforce timeoutMs or maxRetries.");
+        }
+        return base.submit(input, mode, opts);
+      },
+    };
+    const { log, store } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler: rejectingThenAccepting,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const planBad: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        {
+          kind: "submit_task",
+          agentId: agentId("agent-1"),
+          mode: "dispatch",
+          input: { kind: "text", text: "x" },
+          taskOptions: { timeoutMs: 5000 },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+    const planGood: CompositionPlan = {
+      ...planBad,
+      steps: [
+        {
+          kind: "submit_task",
+          agentId: agentId("agent-1"),
+          mode: "dispatch",
+          input: { kind: "text", text: "x" },
+        },
+      ],
+    };
+
+    const failed = await executor.execute(trigger(), planBad);
+    expect(failed.status).toBe("failed");
+    // Claim released — store is clean and corrected retry is unblocked.
+    expect(store.size).toBe(0);
+
+    const ok = await executor.execute(trigger(), planGood);
+    expect(ok.status).toBe("executed");
+    expect(calls.submit).toHaveLength(1);
+  });
+
   test("create_schedule fails closed when prior attempt is pending (partial-failure recovery)", async () => {
     const { scheduler, calls } = schedulerStub();
     const { log, store } = inMemoryExecutionLog();
