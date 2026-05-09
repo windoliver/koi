@@ -425,10 +425,34 @@ export function createCompositionExecutor(
 
       for (let index = 0; index < plan.steps.length; index += 1) {
         const step = plan.steps[index]!;
-        const fingerprint = stepFingerprint(step);
+        // Fingerprint + key derivation walks the step payload, so a
+        // circular reference, throwing getter, or other non-serializable
+        // value would crash execute() before the fail-closed path runs.
+        // Wrap as INVALID_PLAN so the contract holds: every execute()
+        // call resolves to a structured result.
+        let fingerprint: string;
+        let stepIdempotencyKey: string;
+        try {
+          fingerprint = stepFingerprint(step);
+          stepIdempotencyKey = deriveStepIdempotencyKey(
+            context.agentId,
+            trigger,
+            occurrenceCounts.get(fingerprint) ?? 0,
+            step,
+          );
+        } catch (cause) {
+          return failedResult(trigger.id, stepResults, {
+            step,
+            status: "failed",
+            error: {
+              code: "INVALID_PLAN",
+              message: `step payload could not be canonicalized: ${cause instanceof Error ? cause.message : String(cause)}`,
+              stepKind: step.kind,
+            },
+          });
+        }
         const occurrenceIndex = occurrenceCounts.get(fingerprint) ?? 0;
         occurrenceCounts.set(fingerprint, occurrenceIndex + 1);
-        const stepIdempotencyKey = deriveStepIdempotencyKey(context.agentId, trigger, occurrenceIndex, step);
         // Track whether this step has acquired the executionLog claim so the
         // outer catch can release on pre-commit rejection or surface the key
         // on ambiguous failure. Only set after claim() returns "claimed".

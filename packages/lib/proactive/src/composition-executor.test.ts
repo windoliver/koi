@@ -1517,6 +1517,43 @@ describe("createCompositionExecutor", () => {
     expect(store.size).toBe(0);
   });
 
+  test("circular step payload returns INVALID_PLAN instead of crashing execute()", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const { log, store } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    // Build a step whose canonicalization will throw (circular reference).
+    const cyclicMetadata: Record<string, unknown> = {};
+    cyclicMetadata.self = cyclicMetadata;
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        {
+          kind: "submit_task",
+          agentId: agentId("agent-1"),
+          mode: "dispatch",
+          input: { kind: "text", text: "x" },
+          taskOptions: { metadata: cyclicMetadata },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("INVALID_PLAN");
+    expect(calls.submit).toHaveLength(0);
+    // No execution-log entries created for a pre-claim crash.
+    expect(store.size).toBe(0);
+  });
+
   test("isPreCommitRejection() recognizes only the exported helper-built rejection", async () => {
     const built = preCommitRejection("nope");
     expect(isPreCommitRejection(built)).toBe(true);
