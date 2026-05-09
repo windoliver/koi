@@ -171,7 +171,16 @@ const PROMPT_SAFE_PATH = /^(?:\/[A-Za-z0-9._-]+)+$/;
 const PROMPT_SAFE_CONNECTOR = /^[A-Za-z0-9._-]+$/;
 
 function isPromptSafeEntry(entry: MountDescription): boolean {
-  return PROMPT_SAFE_PATH.test(entry.path) && PROMPT_SAFE_CONNECTOR.test(entry.connector);
+  if (!PROMPT_SAFE_PATH.test(entry.path)) return false;
+  // The character class above admits `.`, so `/foo/..` and `/foo/.` both
+  // pass the structural test. Reject any segment that is exactly `.` or
+  // `..` so traversal-like identifiers cannot reach the system prompt.
+  for (const segment of entry.path.split("/")) {
+    if (segment === "." || segment === "..") return false;
+  }
+  if (!PROMPT_SAFE_CONNECTOR.test(entry.connector)) return false;
+  if (entry.connector === "." || entry.connector === "..") return false;
+  return true;
 }
 
 function escapeXmlAttr(value: string): string {

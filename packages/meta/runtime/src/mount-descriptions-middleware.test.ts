@@ -123,4 +123,133 @@ describe("createMountDescriptionsMiddleware", () => {
         "</runtime_mounted_connectors>",
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Strict prompt-safety filter — backend-controlled mount identifiers that
+  // fail the [A-Za-z0-9._-] allowlist are OMITTED from the rendered system
+  // prompt block while remaining in the operator-facing snapshot. Lossy
+  // rewrites and percent-encoding were both rejected upstream because they
+  // broke tool-call round-trip.
+  // -------------------------------------------------------------------------
+
+  async function renderWith(
+    state: ReturnType<typeof createMountDescriptionsState>,
+  ): Promise<string | undefined> {
+    const middleware = createMountDescriptionsMiddleware({ state });
+    let captured: ModelRequest | undefined;
+    await middleware.wrapModelCall?.(
+      {} as TurnContext,
+      { messages: [], model: "test-model" },
+      async (request) => {
+        captured = request;
+        return { content: "", stopReason: "stop", model: "test-model" };
+      },
+    );
+    return captured?.systemPrompt;
+  }
+
+  describe("strict prompt-safety filter", () => {
+    test("omits unsafe path entries from rendered block (strict=true)", async () => {
+      const state = createMountDescriptionsState({
+        strictPromptIdentifiers: true,
+        initial: {
+          manifest: [
+            { path: "/gmail/alice@example.com", connector: "gmail" },
+            { path: "/gdrive/team docs", connector: "gdrive" },
+            { path: "/gdrive/team", connector: "gdrive" },
+          ],
+        },
+      });
+      const prompt = await renderWith(state);
+      expect(prompt).toContain('path="/gdrive/team"');
+      expect(prompt).not.toContain("alice@example.com");
+      expect(prompt).not.toContain("team docs");
+    });
+
+    test("omits unsafe connector entries (strict=true)", async () => {
+      const state = createMountDescriptionsState({
+        strictPromptIdentifiers: true,
+        initial: {
+          runtime: [
+            { path: "/x/safe", connector: "g mail" },
+            { path: "/x/also", connector: "../etc" },
+            { path: "/x/ok", connector: "local" },
+          ],
+        },
+      });
+      const prompt = await renderWith(state);
+      expect(prompt).toContain('path="/x/ok"');
+      expect(prompt).not.toContain("g mail");
+      expect(prompt).not.toContain("../etc");
+    });
+
+    test("suppresses block entirely when strict filter empties it", async () => {
+      const state = createMountDescriptionsState({
+        strictPromptIdentifiers: true,
+        initial: {
+          manifest: [{ path: "/gmail/alice@example.com", connector: "gmail" }],
+        },
+      });
+      const prompt = await renderWith(state);
+      // No empty <mounted_connectors /> emitted — request stays untouched
+      // when no entries pass the filter.
+      expect(prompt).toBeUndefined();
+    });
+
+    test("rejects path edge cases: trailing slash, double slash, '..', root-only", async () => {
+      const state = createMountDescriptionsState({
+        strictPromptIdentifiers: true,
+        initial: {
+          runtime: [
+            { path: "/", connector: "local" },
+            { path: "/foo/", connector: "local" },
+            { path: "//foo", connector: "local" },
+            { path: "/foo//bar", connector: "local" },
+            { path: "/foo/..", connector: "local" },
+            { path: "/foo/bar", connector: "local" },
+          ],
+        },
+      });
+      const prompt = await renderWith(state);
+      expect(prompt).toContain('path="/foo/bar"');
+      // Every other path must be absent — assert by matching the rendered
+      // attribute form so a substring of the live entry can't accidentally
+      // satisfy the assertion.
+      expect(prompt).not.toContain('path="/"');
+      expect(prompt).not.toContain('path="/foo/"');
+      expect(prompt).not.toContain('path="//foo"');
+      expect(prompt).not.toContain('path="/foo//bar"');
+      expect(prompt).not.toContain('path="/foo/.."');
+    });
+
+    test("renders all entries with XML-escape only when strict=false", async () => {
+      const state = createMountDescriptionsState({
+        strictPromptIdentifiers: false,
+        initial: {
+          runtime: [{ path: "/gmail/alice@example.com", connector: "gmail" }],
+        },
+      });
+      const prompt = await renderWith(state);
+      expect(prompt).toContain('path="/gmail/alice@example.com"');
+    });
+
+    test("operator-facing snapshot keeps unsafe entries even when prompt drops them", () => {
+      const state = createMountDescriptionsState({
+        strictPromptIdentifiers: true,
+        initial: {
+          manifest: [
+            { path: "/gmail/alice@example.com", connector: "gmail" },
+            { path: "/gdrive/team", connector: "gdrive" },
+          ],
+        },
+      });
+      const snapshot = state.getSnapshot();
+      // Both entries remain in the canonical state — /mounts must continue
+      // to surface the @ path even though the prompt cannot.
+      expect(snapshot.manifest.map((e) => e.path)).toEqual([
+        "/gdrive/team",
+        "/gmail/alice@example.com",
+      ]);
+    });
+  });
 });

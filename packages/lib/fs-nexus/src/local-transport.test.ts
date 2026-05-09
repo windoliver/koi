@@ -289,6 +289,77 @@ while True:
     expect(removed?.ok).toBe(true);
     expect(transport.mounts).not.toContain("/gmail/other-account");
   });
+
+  // -------------------------------------------------------------------------
+  // Capability gate — raw mount mutation/inspection RPCs must be omitted from
+  // the public transport unless the caller passes `enableMountMutations: true`.
+  // The resolver is the only authorized opt-in; direct callers stay read-only.
+  // -------------------------------------------------------------------------
+
+  function writeReadyOnlyBridge(dir: string): string {
+    return writeMockBridge(
+      dir,
+      "mock-ready-only",
+      `
+import sys, json
+sys.stdout = sys.stderr
+_stdout = open(1, "w", closefd=False)
+def out(obj):
+    _stdout.write(json.dumps(obj) + "\\n")
+    _stdout.flush()
+out({"ready": True, "mounts": ["/local/ws"]})
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+`,
+    );
+  }
+
+  test("default-deny: addMount/removeMount/listMounts/describeMount are undefined without opt-in", async () => {
+    const bridgePath = writeReadyOnlyBridge(tmpDir);
+    transport = await createLocalTransport({
+      mountUri: "local://./",
+      _bridgePath: bridgePath,
+      startupTimeoutMs: 5_000,
+    });
+    expect(transport.addMount).toBeUndefined();
+    expect(transport.removeMount).toBeUndefined();
+    expect(transport.listMounts).toBeUndefined();
+    expect(transport.describeMount).toBeUndefined();
+    // Read-only members remain available regardless of the gate.
+    expect(transport.mounts).toEqual(["/local/ws"]);
+    expect(typeof transport.mountConnector).toBe("function");
+    expect(typeof transport.call).toBe("function");
+  });
+
+  test("explicit enableMountMutations=false also omits the methods", async () => {
+    const bridgePath = writeReadyOnlyBridge(tmpDir);
+    transport = await createLocalTransport({
+      mountUri: "local://./",
+      _bridgePath: bridgePath,
+      startupTimeoutMs: 5_000,
+      enableMountMutations: false,
+    });
+    expect(transport.addMount).toBeUndefined();
+    expect(transport.removeMount).toBeUndefined();
+    expect(transport.listMounts).toBeUndefined();
+    expect(transport.describeMount).toBeUndefined();
+  });
+
+  test("enableMountMutations=true exposes all four methods", async () => {
+    const bridgePath = writeReadyOnlyBridge(tmpDir);
+    transport = await createLocalTransport({
+      mountUri: "local://./",
+      _bridgePath: bridgePath,
+      startupTimeoutMs: 5_000,
+      enableMountMutations: true,
+    });
+    expect(typeof transport.addMount).toBe("function");
+    expect(typeof transport.removeMount).toBe("function");
+    expect(typeof transport.listMounts).toBe("function");
+    expect(typeof transport.describeMount).toBe("function");
+  });
 });
 
 // Check if nexus-fs is available
