@@ -1,10 +1,14 @@
-export { createDockerAdapter } from "./adapter.js";
+export { createDockerAdapter, type DockerSandboxAdapter } from "./adapter.js";
 export { createDefaultDockerClient } from "./default-client.js";
 export { detectDocker } from "./detect.js";
-export type {
-  DockerAdapterConfig,
-  DockerClient,
-  DockerContainer,
-  DockerExecOpts,
-  DockerExecResult,
+export {
+  type DockerAdapterConfig,
+  type DockerClient,
+  type DockerContainer,
+  type DockerContainerInfo,
+  type DockerContainerState,
+  type DockerExecOpts,
+  type DockerExecResult,
+  type DockerNameConflictError,
+  isDockerNameConflictError,
 } from "./types.js";

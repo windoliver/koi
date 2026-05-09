@@ -12,8 +12,34 @@ import { detectDocker } from "./detect.js";
 import { computeProfileFingerprint } from "./fingerprint.js";
 import { createDockerInstance } from "./instance.js";
 import { mapProfileToDockerOpts } from "./profile-to-opts.js";
-import type { DockerAdapterConfig, DockerClient, DockerCreateOpts } from "./types.js";
+import { deriveScopeContainerName } from "./scope-name.js";
+import {
+  type DockerAdapterConfig,
+  type DockerClient,
+  type DockerCreateOpts,
+  isDockerNameConflictError,
+} from "./types.js";
 import { validateDockerConfig } from "./validate.js";
+
+/**
+ * Concrete docker adapter type — extends the L0 SandboxAdapter with adapter-
+ * specific scope management. Returned by `createDockerAdapter` so callers that
+ * hold the concrete type can recover from profile drift by destroying the
+ * prior scoped sandbox without going out-of-band to the docker CLI.
+ */
+export interface DockerSandboxAdapter extends SandboxAdapter {
+  /**
+   * Stop and remove any container previously created by `findOrCreate(scope)`.
+   * Returns `true` when a scoped container was found and removed, `false`
+   * when nothing matched. No-op when persistence is unavailable. Use this to
+   * recover from a `findOrCreate` profile-drift VALIDATION error: destroy the
+   * stale scoped sandbox, then call `findOrCreate(scope, ...)` again.
+   *
+   * Optional — only present when the underlying DockerClient supports the
+   * persistence triple.
+   */
+  readonly destroyScope?: (scope: string) => Promise<boolean>;
+}
 
 /** Label key used to tag containers with their persistence scope. */
 const SCOPE_LABEL = "koi.sandbox.scope";
@@ -86,7 +112,7 @@ function createScopeSerializer(): <T>(scope: string, fn: () => Promise<T>) => Pr
  */
 export async function createDockerAdapter(
   config: DockerAdapterConfig,
-): Promise<Result<SandboxAdapter, KoiError>> {
+): Promise<Result<DockerSandboxAdapter, KoiError>> {
   // Fast path: client already provided — skip probe.
   if (config.client !== undefined) {
     const validated = validateDockerConfig(config);
@@ -124,7 +150,7 @@ export async function createDockerAdapter(
   return buildAdapter(client, image);
 }
 
-function buildAdapter(client: DockerClient, image: string): Result<SandboxAdapter, KoiError> {
+function buildAdapter(client: DockerClient, image: string): Result<DockerSandboxAdapter, KoiError> {
   const { capabilities, canPersist } = buildCapabilities(client);
   const serializeScope = createScopeSerializer();
 
@@ -137,7 +163,7 @@ function buildAdapter(client: DockerClient, image: string): Result<SandboxAdapte
     return createDockerInstance(container);
   };
 
-  const adapter: SandboxAdapter = {
+  const adapter: DockerSandboxAdapter = {
     name: "docker",
     version: "0.1.0",
     capabilities,
@@ -147,8 +173,14 @@ function buildAdapter(client: DockerClient, image: string): Result<SandboxAdapte
           findOrCreate: (scope: string, profile: SandboxProfile): Promise<SandboxInstance> =>
             // Per-scope serialization closes the check-then-create race that
             // would otherwise let two concurrent callers fork a scope into two
-            // containers.
+            // containers within the same adapter instance. Cross-process races
+            // are handled by the deterministic container name + name-conflict
+            // retry inside `doFindOrCreate`.
             serializeScope(scope, () => doFindOrCreate(client, image, scope, profile)),
+          destroyScope: (scope: string): Promise<boolean> =>
+            // Serialize destroyScope through the same chain so concurrent
+            // findOrCreate/destroyScope cannot leave the scope in a half-state.
+            serializeScope(scope, () => doDestroyScope(client, scope)),
         }
       : {}),
   };
@@ -183,46 +215,20 @@ async function doFindOrCreate(
 
   const fingerprint = computeProfileFingerprint(profile, image);
   const scopeLabels: Readonly<Record<string, string>> = { [SCOPE_LABEL]: scope };
+  const containerName = deriveScopeContainerName(scope);
 
-  const existing = await findContainer(scopeLabels);
-  if (existing !== undefined) {
-    const info = await inspectContainer(existing.id);
-    // info === undefined means the container vanished between find and
-    // inspect; "dead"/"unknown" means it cannot be reattached. In all three
-    // cases the prior container is unusable, so we fall through to a fresh
-    // create rather than failing closed on the profile mismatch — there is
-    // nothing to reattach to.
-    const reusable =
-      info !== undefined &&
-      (info.state === "running" || info.state === "exited" || info.state === "stopped");
-    if (reusable && info !== undefined) {
-      const recordedHash = info.labels[PROFILE_HASH_LABEL];
-      if (recordedHash !== fingerprint) {
-        // Fail closed: do NOT silently reattach a container whose stored
-        // profile no longer matches the requested one. Caller can resolve by
-        // destroying the prior sandbox (via a fresh `create()` flow) or
-        // updating the scope. Surfacing this loudly is intentional — the
-        // alternative (silent reuse) is the trust-boundary bug we're fixing.
-        const error: KoiError = {
-          code: "VALIDATION",
-          message: `sandbox-docker: scope "${scope}" was created with a different profile (recorded ${recordedHash ?? "<none>"}, requested ${fingerprint}); destroy the prior sandbox or pick a new scope`,
-          retryable: false,
-          context: {
-            scope,
-            recordedProfileHash: recordedHash ?? null,
-            requestedProfileHash: fingerprint,
-          },
-        };
-        throw new Error(error.message, { cause: error });
-      }
-      if (info.state === "running") {
-        return createDockerInstance(existing);
-      }
-      // exited or stopped → resume in place.
-      await startContainer(existing.id);
-      return createDockerInstance(existing);
-    }
-  }
+  // First reuse attempt before issuing a create — common path is "scope already
+  // exists, reattach". The same logic also runs after a name-conflict retry
+  // below, so we factor it out.
+  const reused = await tryReuse(
+    findContainer,
+    inspectContainer,
+    startContainer,
+    scopeLabels,
+    fingerprint,
+    scope,
+  );
+  if (reused !== undefined) return reused;
 
   const opts: DockerCreateOpts = {
     ...mapping.value.opts,
@@ -231,7 +237,112 @@ async function doFindOrCreate(
       ...scopeLabels,
       [PROFILE_HASH_LABEL]: fingerprint,
     },
+    name: containerName,
   };
-  const container = await client.createContainer(opts);
-  return createDockerInstance(container);
+  try {
+    const container = await client.createContainer(opts);
+    return createDockerInstance(container);
+  } catch (e: unknown) {
+    if (!isDockerNameConflictError(e)) throw e;
+    // We lost the cross-process race: another adapter created the scoped
+    // container with the same deterministic name. Re-query and reattach to
+    // the winner — this also runs the profile-hash check, so a winner with a
+    // stale profile still surfaces a VALIDATION error rather than silently
+    // attaching to it.
+    const winner = await tryReuse(
+      findContainer,
+      inspectContainer,
+      startContainer,
+      scopeLabels,
+      fingerprint,
+      scope,
+    );
+    if (winner !== undefined) return winner;
+    // Name was taken but no scope-labeled container is reachable — surface
+    // the original conflict so the caller can investigate (e.g. a non-koi
+    // container squatting on the deterministic name).
+    throw e;
+  }
+}
+
+/**
+ * Attempt to reuse an existing scoped container. Returns a SandboxInstance on
+ * success, `undefined` when nothing usable exists (no-find, dead, or vanished
+ * between find and inspect — the caller should fall through to create).
+ *
+ * Throws a typed VALIDATION error when a reusable container exists but its
+ * recorded profile fingerprint differs from the request — this is the
+ * fail-closed branch that prevents silent policy drift.
+ */
+async function tryReuse(
+  findContainer: NonNullable<DockerClient["findContainer"]>,
+  inspectContainer: NonNullable<DockerClient["inspectContainer"]>,
+  startContainer: NonNullable<DockerClient["startContainer"]>,
+  scopeLabels: Readonly<Record<string, string>>,
+  fingerprint: string,
+  scope: string,
+): Promise<SandboxInstance | undefined> {
+  const existing = await findContainer(scopeLabels);
+  if (existing === undefined) return undefined;
+
+  const info = await inspectContainer(existing.id);
+  // info === undefined: container vanished between find and inspect.
+  // "dead"/"unknown": cannot be reattached. In all three cases the prior
+  // container is unusable so the caller should fall through to a fresh create
+  // rather than fail closed — there is nothing to reattach to.
+  const reusable =
+    info !== undefined &&
+    (info.state === "running" || info.state === "exited" || info.state === "stopped");
+  if (!reusable || info === undefined) return undefined;
+
+  const recordedHash = info.labels[PROFILE_HASH_LABEL];
+  if (recordedHash !== fingerprint) {
+    // Fail closed. Recovery path: the concrete `DockerSandboxAdapter` exposes
+    // `destroyScope(scope)` so the caller can explicitly remove the stale
+    // container and re-issue `findOrCreate` once the policy change is
+    // intentional. We point at that method by name in the message.
+    const error: KoiError = {
+      code: "VALIDATION",
+      message: `sandbox-docker: scope "${scope}" was created with a different profile (recorded ${recordedHash ?? "<none>"}, requested ${fingerprint}); call adapter.destroyScope("${scope}") to remove the stale sandbox, then retry findOrCreate, or pick a different scope key`,
+      retryable: false,
+      context: {
+        scope,
+        recordedProfileHash: recordedHash ?? null,
+        requestedProfileHash: fingerprint,
+      },
+    };
+    throw new Error(error.message, { cause: error });
+  }
+
+  if (info.state === "running") {
+    return createDockerInstance(existing);
+  }
+  // exited or stopped → resume in place.
+  await startContainer(existing.id);
+  return createDockerInstance(existing);
+}
+
+/**
+ * Stop and remove the scoped container, if any. Returns true when something
+ * was destroyed, false when no scope-labeled container existed. Best-effort:
+ * a partial failure (e.g. stop succeeds but remove fails) propagates so the
+ * caller can decide whether to retry.
+ */
+async function doDestroyScope(client: DockerClient, scope: string): Promise<boolean> {
+  const findContainer = client.findContainer;
+  if (findContainer === undefined) return false;
+  const existing = await findContainer({ [SCOPE_LABEL]: scope });
+  if (existing === undefined) return false;
+  // Best-effort stop; container.remove uses `rm -f` so it tears down running
+  // containers too. If stop fails we still attempt remove and surface the
+  // first error after cleanup.
+  let stopError: unknown;
+  try {
+    await existing.stop();
+  } catch (e: unknown) {
+    stopError = e;
+  }
+  await existing.remove();
+  if (stopError !== undefined) throw stopError;
+  return true;
 }

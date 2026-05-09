@@ -62,6 +62,34 @@ export interface DockerCreateOpts {
    * `findOrCreate(scope)` can locate it.
    */
   readonly labels?: Readonly<Record<string, string>>;
+  /**
+   * Optional deterministic container name (`--name <name>`). The persistence
+   * path derives a name from the scope key so Docker enforces cross-process
+   * uniqueness — two adapters racing `findOrCreate(scope)` cannot both
+   * succeed. The loser receives a name-conflict error and the adapter
+   * re-queries to attach to the winner. See `scope-name.ts`.
+   */
+  readonly name?: string;
+}
+
+/**
+ * Sentinel marker attached to errors thrown by `createContainer` when Docker
+ * rejects a `--name` due to an existing container claiming the same name.
+ * The persistence adapter catches this to convert "I lost the race" into
+ * "let me find and reattach to the winner".
+ */
+export const DOCKER_NAME_CONFLICT_CODE = "DOCKER_NAME_CONFLICT" as const;
+
+export interface DockerNameConflictError extends Error {
+  readonly code: typeof DOCKER_NAME_CONFLICT_CODE;
+}
+
+export function isDockerNameConflictError(e: unknown): e is DockerNameConflictError {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    (e as { code?: string }).code === DOCKER_NAME_CONFLICT_CODE
+  );
 }
 
 /** Lifecycle state of an existing container, normalized across docker versions. */

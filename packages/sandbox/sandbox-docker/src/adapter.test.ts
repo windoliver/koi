@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { createDockerAdapter } from "./adapter.js";
 import { computeProfileFingerprint } from "./fingerprint.js";
-import type {
-  DockerClient,
-  DockerContainer,
-  DockerContainerState,
-  DockerCreateOpts,
+import { deriveScopeContainerName } from "./scope-name.js";
+import {
+  DOCKER_NAME_CONFLICT_CODE,
+  type DockerClient,
+  type DockerContainer,
+  type DockerContainerState,
+  type DockerCreateOpts,
 } from "./types.js";
 
 const stubClient: DockerClient = {
@@ -418,6 +420,140 @@ describe("createDockerAdapter", () => {
     expect(createEndIdxs.length).toBe(2);
     // Both finds occur before the first create-end (proves interleaving).
     expect(Math.max(...findIdxs)).toBeLessThan(createEndIdxs[0] ?? Infinity);
+  });
+
+  // Persistence (cross-process race): when createContainer throws a name-conflict
+  // error (another adapter won the race), findOrCreate must reattach to the
+  // winner instead of bubbling the conflict.
+  test("findOrCreate retries via findContainer when createContainer throws name conflict", async () => {
+    const winner = fakeContainer("winner");
+    let findCount = 0;
+    const client: DockerClient = {
+      createContainer: async (): Promise<DockerContainer> => {
+        // Simulate the daemon rejecting our --name because the rival already
+        // claimed it between our find() and create().
+        const e = Object.assign(new Error("name in use"), {
+          code: DOCKER_NAME_CONFLICT_CODE,
+        } as const);
+        throw e;
+      },
+      findContainer: async () => {
+        findCount += 1;
+        // First find: nothing (we believed we needed to create). Second find
+        // (after the conflict): the rival's container.
+        return findCount === 1 ? undefined : winner;
+      },
+      inspectContainer: async () => ({
+        state: "running",
+        labels: { "koi.sandbox.profile-hash": PROFILE_HASH },
+      }),
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    const inst = await r.value.findOrCreate("scope-RACE-X", PROFILE);
+    // findContainer called twice: once before create, once after conflict.
+    expect(findCount).toBe(2);
+    expect(inst).toBeDefined();
+  });
+
+  // Persistence (cross-process race): name-conflict bubbles up if the conflict
+  // is NOT a koi-managed scope container (no scope-labeled container exists
+  // after the conflict). Prevents masking real squatters on the deterministic
+  // name.
+  test("findOrCreate surfaces name-conflict when no scope container is reachable after retry", async () => {
+    const client: DockerClient = {
+      createContainer: async (): Promise<DockerContainer> => {
+        const e = Object.assign(new Error("name in use"), {
+          code: DOCKER_NAME_CONFLICT_CODE,
+        } as const);
+        throw e;
+      },
+      // Never find anything — simulates a squatter (non-koi container with the
+      // same deterministic name).
+      findContainer: async () => undefined,
+      inspectContainer: async () => undefined,
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    await expect(r.value.findOrCreate("scope-SQUAT", PROFILE)).rejects.toThrow(/name in use/);
+  });
+
+  // Persistence (cross-process race): the create call must include the
+  // deterministic scope-derived container name so Docker enforces uniqueness.
+  test("findOrCreate sends a deterministic --name (derived from scope) on create", async () => {
+    const { client, events } = persistentClient({});
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    await r.value.findOrCreate("scope-NAME", PROFILE);
+    expect(events.createCalls.length).toBe(1);
+    expect(events.createCalls[0]?.name).toBe(deriveScopeContainerName("scope-NAME"));
+  });
+
+  // Drift recovery: destroyScope removes a scoped container and unblocks reuse
+  // with the new profile.
+  test("destroyScope removes the scoped container and frees the scope", async () => {
+    let stopped = 0;
+    let removed = 0;
+    const existing: DockerContainer = {
+      id: "stale",
+      exec: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      readFile: async () => new Uint8Array(),
+      writeFile: async () => {},
+      stop: async () => {
+        stopped += 1;
+      },
+      remove: async () => {
+        removed += 1;
+      },
+    };
+    const { client } = persistentClient({
+      preexisting: { container: existing, state: "running", labels: {} },
+    });
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
+    const wasDestroyed = await r.value.destroyScope("scope-DROP");
+    expect(wasDestroyed).toBe(true);
+    expect(stopped).toBe(1);
+    expect(removed).toBe(1);
+  });
+
+  // destroyScope returns false (idempotent) when nothing matches.
+  test("destroyScope returns false when no scoped container exists", async () => {
+    const { client } = persistentClient({});
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
+    const wasDestroyed = await r.value.destroyScope("scope-NONE");
+    expect(wasDestroyed).toBe(false);
+  });
+
+  // destroyScope is omitted on minimal clients (no persistence triple).
+  test("destroyScope is undefined when persistence is unavailable", async () => {
+    const r = await createDockerAdapter({ client: stubClient });
+    if (!r.ok) throw new Error("setup failed");
+    expect(r.value.destroyScope).toBeUndefined();
+  });
+
+  // Drift error message points at the supported recovery method (destroyScope).
+  test("findOrCreate drift error references destroyScope as the recovery path", async () => {
+    const existing = fakeContainer("drifted");
+    const { client } = persistentClient({
+      preexisting: {
+        container: existing,
+        state: "running",
+        labels: { "koi.sandbox.profile-hash": "deadbeefdeadbeef" },
+      },
+    });
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    await expect(r.value.findOrCreate("scope-RECOVER", PROFILE)).rejects.toThrow(/destroyScope/);
   });
 
   // Persistence (race): if the first call rejects, the chain must not deadlock the second.

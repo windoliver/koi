@@ -1,12 +1,13 @@
 import { Buffer } from "node:buffer";
-import type {
-  DockerClient,
-  DockerContainer,
-  DockerContainerInfo,
-  DockerContainerState,
-  DockerCreateOpts,
-  DockerExecOpts,
-  DockerExecResult,
+import {
+  DOCKER_NAME_CONFLICT_CODE,
+  type DockerClient,
+  type DockerContainer,
+  type DockerContainerInfo,
+  type DockerContainerState,
+  type DockerCreateOpts,
+  type DockerExecOpts,
+  type DockerExecResult,
 } from "./types.js";
 
 /** Default maximum output bytes for docker exec (1 MiB). */
@@ -291,6 +292,7 @@ function buildCreateArgs(opts: DockerCreateOpts): readonly string[] {
   if (opts.readOnlyRoot === true) args.push("--read-only");
   for (const path of opts.tmpfsMounts ?? []) args.push("--tmpfs", path);
   for (const [k, v] of Object.entries(opts.labels ?? {})) args.push("--label", `${k}=${v}`);
+  if (opts.name !== undefined) args.push("--name", opts.name);
   args.push(opts.image, "sleep", "infinity");
   return args;
 }
@@ -407,6 +409,17 @@ export function createDefaultDockerClient(config?: DefaultDockerClientConfig): D
     createContainer: async (opts: DockerCreateOpts): Promise<DockerContainer> => {
       const create = await runDocker(buildCreateArgs(opts), undefined, env);
       if (create.exitCode !== 0) {
+        // Daemon-level uniqueness: when --name collides with an existing
+        // container, surface a typed error so the persistence adapter can
+        // recover by reattaching to the winner instead of treating this as
+        // a fatal create failure.
+        if (opts.name !== undefined && /is already in use by container/i.test(create.stderr)) {
+          const conflict = Object.assign(
+            new Error(`docker container name "${opts.name}" is already in use`),
+            { code: DOCKER_NAME_CONFLICT_CODE } as const,
+          );
+          throw conflict;
+        }
         throw new Error("docker create failed", { cause: create });
       }
       const id = create.stdout.trim();

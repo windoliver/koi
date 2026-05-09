@@ -965,6 +965,79 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
+  // Persistence: --name flag is appended when opts.name is set.
+  test("buildCreateArgs: passes --name <name> when opts.name is set", async () => {
+    const allArgs: string[][] = [];
+    let callCount = 0;
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      callCount += 1;
+      allArgs.push(args);
+      if (callCount === 1) return fakeProc({ stdout: "nid\n", stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+        name: "koi-sb-myscope-deadbeef0123",
+      });
+      const first = allArgs[0] ?? [];
+      const idx = first.indexOf("--name");
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(first[idx + 1]).toBe("koi-sb-myscope-deadbeef0123");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: name conflict surfaces a typed error so the adapter can retry.
+  test("createContainer: throws typed name-conflict error on docker name collision", async () => {
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({
+        stdout: "",
+        stderr: 'Conflict. The container name "/koi-sb-x-1" is already in use by container "abc"',
+        exitCode: 1,
+      }),
+    );
+    try {
+      const client = createDefaultDockerClient();
+      let thrown: unknown;
+      try {
+        await client.createContainer({
+          image: "ubuntu:22.04",
+          networkMode: "none",
+          name: "koi-sb-x-1",
+        });
+      } catch (e: unknown) {
+        thrown = e;
+      }
+      expect((thrown as { code?: string } | undefined)?.code).toBe("DOCKER_NAME_CONFLICT");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: createContainer still throws generic error when name is unset
+  // even if stderr happens to mention "in use" — we only treat it as a name
+  // conflict when --name was actually requested.
+  test("createContainer: generic error path when no name was requested", async () => {
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({ stdout: "", stderr: "is already in use by container 'x'", exitCode: 1 }),
+    );
+    try {
+      const client = createDefaultDockerClient();
+      await expect(
+        client.createContainer({ image: "ubuntu:22.04", networkMode: "none" }),
+      ).rejects.toThrow("docker create failed");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
   // Persistence: startContainer throws on non-zero exit.
   test("startContainer: throws when docker start fails", async () => {
     // @ts-expect-error — test stub
