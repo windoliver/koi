@@ -29,6 +29,18 @@ describe("monitor tools", () => {
     expect(created.ok).toBe(true);
     expect(created.deduped).toBeUndefined();
     expect(stub.scheduleCalls).toHaveLength(1);
+    expect(stub.scheduleCalls[0]?.expression).toBe("0 9 * * *");
+    expect(stub.scheduleCalls[0]?.mode).toBe("dispatch");
+    expect(stub.scheduleCalls[0]?.input).toEqual({
+      kind: "text",
+      text: [
+        "Monitor check: dependency-watch",
+        "Goal: Detect whether issue #1212 is unblocked",
+        "Check: Inspect repo and GitHub state, then decide whether follow-up is warranted.",
+        "Context: Look at scheduler/channel restoration issues first.",
+      ].join("\n"),
+    });
+    expect(stub.scheduleCalls[0]?.options).toBeUndefined();
 
     const listed = (await listMonitors.execute({})) as {
       ok: boolean;
@@ -108,30 +120,33 @@ describe("monitor tools", () => {
   });
 
   test("create_monitor clears its reservation after a failed scheduler create", async () => {
-    const stub = createSchedulerStub({ scheduleError: new Error("scheduler unavailable") });
     const state = createMonitorToolState();
-    const createMonitor = createCreateMonitorTool({ scheduler: stub.component }, state);
-
-    const failed = (await createMonitor.execute({
+    const failingStub = createSchedulerStub({ scheduleError: new Error("scheduler unavailable") });
+    const createMonitor = createCreateMonitorTool({ scheduler: failingStub.component }, state);
+    const args = {
       name: "dependency-watch",
       goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo state.",
       expression: "0 9 * * *",
       idempotency_key: "dep-watch",
-    })) as { ok: boolean; error: string };
+    };
+
+    const failed = (await createMonitor.execute(args)) as { ok: boolean; error: string };
     expect(failed.ok).toBe(false);
     expect(failed.error).toContain("scheduler unavailable");
 
-    const retry = (await createMonitor.execute({
-      name: "dependency-watch",
-      goal: "Detect whether issue #1212 is unblocked",
-      check_prompt: "Inspect repo state.",
-      expression: "0 9 * * *",
-      idempotency_key: "dep-watch",
-    })) as { ok: boolean; error: string };
-    expect(retry.ok).toBe(false);
-    expect(retry.error).toContain("scheduler unavailable");
-    expect(state.monitorIdByIdempotencyKey.size).toBe(0);
+    const workingStub = createSchedulerStub();
+    const retryMonitor = createCreateMonitorTool({ scheduler: workingStub.component }, state);
+    const retried = (await retryMonitor.execute(args)) as {
+      ok: boolean;
+      monitor_id: string;
+      schedule_id: string;
+      deduped?: boolean;
+    };
+
+    expect(retried.ok).toBe(true);
+    expect(retried.deduped).toBeUndefined();
+    expect(workingStub.scheduleCalls).toHaveLength(1);
   });
 
   test("update_monitor rotates the backing schedule and replaces stored fields", async () => {
@@ -236,6 +251,8 @@ describe("monitor tools", () => {
     })) as { ok: boolean; error: string };
     expect(failed.ok).toBe(false);
     expect(failed.error).toContain("scheduler unavailable");
+    expect(failingStub.unscheduleCalls).toHaveLength(0);
+    expect(createStub.unscheduleCalls).toHaveLength(0);
 
     const listed = (await listMonitors.execute({})) as {
       monitors: { goal: string; schedule_id: string }[];
