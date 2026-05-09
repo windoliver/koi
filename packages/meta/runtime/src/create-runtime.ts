@@ -120,6 +120,10 @@ const DEFAULT_AGENT_NAME = "koi-runtime";
  */
 interface AutoHarnessSessionEntry {
   readonly sessionId: string;
+  /** Stable per-stream id from SessionContext.runId. Distinguishes
+   *  concurrent streams that share one logical sessionId, and lets
+   *  onSessionEnd remove all aliases of one logical attachment. */
+  readonly runId: string;
   readonly scoped: {
     readonly getSignals: () => readonly { readonly id: string }[];
     readonly dismiss: (signalId: string) => void;
@@ -607,6 +611,30 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 // registration, bookkeeping, UI wiring) on every retry while
                 // never actually attaching ownership (R5 round 13 finding).
                 // Fail before the callback so the side effects never run.
+                // Dedupe by (sessionId, runId): forge-demand can deliver
+                // proxied/rebuilt SessionContext objects for the same
+                // logical stream multiple times, each producing a fresh
+                // attachment call. Without dedupe, those aliases pile up
+                // ownership entries that onSessionEnd cleans only one at
+                // a time, leaking entries until the cap rejects new
+                // attachments (R5 round 17 finding).
+                for (const existing of autoHarnessSessionEntries) {
+                  if (
+                    existing.sessionId === sessionContext.sessionId &&
+                    existing.runId === sessionContext.runId
+                  ) {
+                    // Already tracking this logical attachment — caller
+                    // callback was already run on the original attachment;
+                    // we still re-run it for the alias because forge-demand
+                    // expects the host's onSessionAttached to fire per
+                    // SessionContext object (proxied or not). Then bail
+                    // without inserting a duplicate entry.
+                    if (baseConfigWithHealth.onSessionAttached !== undefined) {
+                      await baseConfigWithHealth.onSessionAttached(sessionContext, scoped);
+                    }
+                    return;
+                  }
+                }
                 if (autoHarnessSessionEntries.size >= AUTO_HARNESS_SESSION_CAP) {
                   throw new Error(
                     `[auto-harness] session ownership cap (${AUTO_HARNESS_SESSION_CAP}) reached. ` +
@@ -630,6 +658,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 }
                 autoHarnessSessionEntries.add({
                   sessionId: sessionContext.sessionId,
+                  runId: sessionContext.runId,
                   scoped,
                 });
               },
@@ -686,27 +715,28 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         priority: 950,
         describeCapabilities: () => undefined,
         onSessionEnd: async (ctx) => {
-          // Remove ONE matching entry per onSessionEnd. Stable-session
-          // mode lets multiple concurrent streams share one logical
-          // sessionId, each producing a distinct attachment; deleting all
-          // matches when the first stream ends would tear down the
-          // surviving streams' scoped handles and silently disable
-          // auto-harness for still-live traffic. Only reset stack-side
-          // per-session state once the last attachment ends.
-          let removed = false;
-          let stillHasOthers = false;
+          // Remove every entry for this logical attachment, identified by
+          // (sessionId, runId). One stream may have produced multiple
+          // alias entries via rebuilt/proxied SessionContext objects;
+          // deleting only one would leak the remaining aliases (R5 round
+          // 17 finding). Concurrent streams that share sessionId have
+          // distinct runIds, so this cleanup does not touch their entries.
+          let removedAny = false;
           for (const entry of autoHarnessSessionEntries) {
-            if (entry.sessionId !== ctx.sessionId) continue;
-            if (!removed) {
+            if (entry.sessionId === ctx.sessionId && entry.runId === ctx.runId) {
               autoHarnessSessionEntries.delete(entry);
-              removed = true;
-            } else {
-              stillHasOthers = true;
-              break;
+              removedAny = true;
             }
           }
-          if (removed && !stillHasOthers) {
-            stack.resetSession(ctx.sessionId);
+          // Reset stack-side per-session state only when the last
+          // attachment for this logical sessionId has ended.
+          if (removedAny) {
+            const stillHasOthers = Array.from(autoHarnessSessionEntries).some(
+              (e) => e.sessionId === ctx.sessionId,
+            );
+            if (!stillHasOthers) {
+              stack.resetSession(ctx.sessionId);
+            }
           }
         },
       };

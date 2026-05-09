@@ -312,26 +312,22 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     emitEvent({ kind: "synthesis.started", signalId: signal.id });
     try {
       const outcome = await runPipeline(signal);
-      // Acknowledge the signal regardless of terminal outcome (success,
-      // verification fail, policy block, approval denial, deploy error).
-      // Without dismissal, forge-demand keeps re-emitting the same condition
-      // after cooldown and burns the session emit budget.
-      safeDismiss();
-      // Only mark the trigger as completed for outcomes that won't change
-      // on retry: success, hard verification rejection, policy block, or
-      // explicit approval denial. Transient failures (generator outage,
-      // verifier crash, store error, deploy infrastructure failure) leave
-      // the trigger eligible so a subsequent signal for the same root cause
-      // can re-attempt the pipeline once the dependency recovers (R5
-      // round 8 finding).
+      // Acknowledge the signal ONLY for non-transient terminal outcomes
+      // (success, verification fail, policy block, approval denial). For
+      // transient infrastructure failures, do NOT dismiss: the
+      // forge-demand scoped dismiss clears the pending signal AND the
+      // accumulated detector evidence (failure counter, cooldown entry).
+      // Erasing that evidence means the next retry would have to
+      // re-accumulate the failure threshold from scratch, defeating the
+      // self-healing path on a transient generator/verifier/store/deploy
+      // outage (R5 round 17 finding). Leave the signal pending so the
+      // detector keeps it queued and re-fires once cooldown elapses.
       if (outcome.kind !== "transient") {
+        safeDismiss();
         state.completedTriggers.add(triggerKey);
       } else {
-        // Refund the budget for transient infrastructure failures so a few
-        // generator/verifier/store outages cannot permanently exhaust the
-        // session cap and disable self-healing for the rest of the session
-        // (R5 round 9 finding). The counter never goes below zero — it was
-        // incremented before the pipeline started.
+        // Refund the budget for transient failures so a few outages
+        // cannot exhaust the session cap and disable self-healing.
         state.count = Math.max(0, state.count - 1);
       }
       return outcome.artifact;
