@@ -480,10 +480,7 @@ export function createCancelMonitorTool(
       }
 
       try {
-        const removed = await scheduler.unschedule(scheduleId(record.scheduleId));
-        if (!removed) {
-          return { ok: true, removed: false };
-        }
+        await scheduler.unschedule(scheduleId(record.scheduleId));
       } catch (e: unknown) {
         return {
           ok: false,
