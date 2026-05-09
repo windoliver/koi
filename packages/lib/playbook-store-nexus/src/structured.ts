@@ -33,13 +33,13 @@ export function createNexusStructuredPlaybookStore(
   // createNexusPlaybookProposalStore pointing at the same backend so that
   // save/recordProposal interleaving is serialised across instances.
   const scope = config.lockScope ?? base;
-  // Default open so fresh tenants can bootstrap their first structured
-  // playbook without a separate pre-provision step. Deployments that run
-  // multiple coordinators against the same Nexus namespace and need to
-  // close the initial-create race (transport lacks create-only CAS) can
-  // opt in by setting requirePreProvisioned: true and pre-provisioning
-  // via a single-writer path before any concurrent saves.
-  const requirePreProvisioned = config.requirePreProvisioned ?? false;
+  // Fail-closed by default: this transport lacks create-only CAS, so two
+  // racing initial saves can both succeed and silently lose one payload.
+  // Bootstrap deployments that have proven single-writer for the initial
+  // create (e.g. a coordinator-runs-first migration) can opt out via
+  // requirePreProvisioned: false. We default closed so a caller that
+  // forgets the option cannot corrupt the very first structured playbook.
+  const requirePreProvisioned = config.requirePreProvisioned ?? true;
   const path = (id: string): string => `${dir}/${encodeAceId(id)}.json`;
 
   return {

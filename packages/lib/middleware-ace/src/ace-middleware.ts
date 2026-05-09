@@ -272,31 +272,61 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       const state = sessions.get(ctx.sessionId);
       if (state === undefined) return;
       if (state.teardownPromise !== undefined) return state.teardownPromise;
-      // Mark closing IMMEDIATELY (synchronously) so any wrapper that fires
-      // between now and the drain loop becomes invisible to trajectory
-      // recording — bounds the drain window to wrappers already registered.
+      // Mark closing IMMEDIATELY (synchronously). Wrappers that arrive
+      // after this flip route to shutdownInFlight and are still drained
+      // (and recorded) below — they remain visible to trajectory and
+      // promotion so post-closing side-effects do not leak past the audit.
       state.closing = true;
-      const drainSnapshot = Array.from(state.inFlight);
       const drainTimeoutMs = config.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
       let drainTimedOut = false;
       const promise = (async (): Promise<void> => {
-        // Drain only wrappers registered at teardown start. Bounded by
-        // drainTimeoutMs so a single stuck call cannot wedge teardown
-        // forever (caller can opt out of the bound by setting Infinity).
-        if (drainSnapshot.length > 0) {
-          const drainAll = Promise.allSettled(drainSnapshot);
+        // Unified drain: loop until BOTH inFlight (started before closing)
+        // and shutdownInFlight (started after closing) are empty under an
+        // absolute deadline. Late wrappers are recorded into state.entries
+        // because closed=true is not flipped until after this loop —
+        // closing the audit hole where post-close work executed silently.
+        // Bounded by drainTimeoutMs so a single stuck call cannot wedge
+        // teardown (caller can opt out via Number.POSITIVE_INFINITY).
+        const drainStart = Date.now();
+        const hasPending = (): boolean =>
+          state.inFlight.size > 0 || state.shutdownInFlight.size > 0;
+        if (hasPending()) {
           if (drainTimeoutMs === Number.POSITIVE_INFINITY) {
-            await drainAll;
+            while (hasPending()) {
+              const snapshot = [
+                ...Array.from(state.inFlight),
+                ...Array.from(state.shutdownInFlight),
+              ];
+              await Promise.allSettled(snapshot);
+            }
           } else {
-            const timeout = new Promise<"timeout">((resolve) => {
-              setTimeout(() => resolve("timeout"), drainTimeoutMs).unref?.();
-            });
-            const outcome = await Promise.race([drainAll.then(() => "ok" as const), timeout]);
-            if (outcome === "timeout") {
-              drainTimedOut = true;
+            const deadline = drainStart + drainTimeoutMs;
+            while (hasPending()) {
+              const remaining = deadline - Date.now();
+              if (remaining <= 0) {
+                drainTimedOut = true;
+                break;
+              }
+              const snapshot = [
+                ...Array.from(state.inFlight),
+                ...Array.from(state.shutdownInFlight),
+              ];
+              const timeout = new Promise<"timeout">((resolve) => {
+                setTimeout(() => resolve("timeout"), remaining).unref?.();
+              });
+              const outcome = await Promise.race([
+                Promise.allSettled(snapshot).then(() => "ok" as const),
+                timeout,
+              ]);
+              if (outcome === "timeout") {
+                drainTimedOut = true;
+                break;
+              }
+            }
+            if (drainTimedOut) {
               try {
                 console.error(
-                  `[ace] session teardown drain timed out after ${drainTimeoutMs}ms (sessionId=${ctx.sessionId}, pending=${state.inFlight.size}); persisting completed trajectory prefix only — skipping promotion pipeline to avoid baking conclusions from incomplete session`,
+                  `[ace] session teardown drain timed out after ${drainTimeoutMs}ms (sessionId=${ctx.sessionId}, in-flight=${state.inFlight.size}, shutdown-pending=${state.shutdownInFlight.size}); persisting completed trajectory prefix only — skipping promotion pipeline to avoid baking conclusions from incomplete session`,
                 );
               } catch {
                 // never block teardown on log failures
@@ -352,51 +382,6 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
             }
           }
         } finally {
-          // Lifecycle barrier: drain straggler model/tool wrappers that
-          // started during the closing window so a reused sessionId cannot
-          // overlap them with a fresh lifecycle. Loop on the set under an
-          // absolute deadline — a single snapshot would leak any wrapper
-          // added after the snapshot is taken (post-closing wrapModelCall /
-          // wrapToolCall calls still register in shutdownInFlight). On
-          // Infinity, loop until the set drains organically.
-          if (state.shutdownInFlight.size > 0) {
-            if (drainTimeoutMs === Number.POSITIVE_INFINITY) {
-              while (state.shutdownInFlight.size > 0) {
-                await Promise.allSettled(Array.from(state.shutdownInFlight));
-              }
-            } else {
-              const deadline = Date.now() + drainTimeoutMs;
-              let timedOut = false;
-              while (state.shutdownInFlight.size > 0) {
-                const remaining = deadline - Date.now();
-                if (remaining <= 0) {
-                  timedOut = true;
-                  break;
-                }
-                const snapshot = Array.from(state.shutdownInFlight);
-                const timeout = new Promise<"timeout">((resolve) => {
-                  setTimeout(() => resolve("timeout"), remaining).unref?.();
-                });
-                const outcome = await Promise.race([
-                  Promise.allSettled(snapshot).then(() => "ok" as const),
-                  timeout,
-                ]);
-                if (outcome === "timeout") {
-                  timedOut = true;
-                  break;
-                }
-              }
-              if (timedOut) {
-                try {
-                  console.error(
-                    `[ace] session shutdown drain timed out after ${drainTimeoutMs}ms (sessionId=${ctx.sessionId}, shutdown-pending=${state.shutdownInFlight.size}); leaving slot to expire — wrappers may outlive teardown`,
-                  );
-                } catch {
-                  // never block teardown on log failures
-                }
-              }
-            }
-          }
           // Only drop the slot if it still references US — a fresh
           // onSessionStart with the same sessionId may have replaced it.
           if (sessions.get(ctx.sessionId) === state) {

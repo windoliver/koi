@@ -354,29 +354,32 @@ describe("createNexusStructuredPlaybookStore", () => {
     }
   });
 
-  test("default config allows initial create on empty backend (bootstrap path)", async () => {
+  test("default config rejects initial create on empty backend (fail-closed against create-race)", async () => {
     const transport = createFakeNexusTransport();
     try {
-      // No requirePreProvisioned — default must permit first save.
+      // No requirePreProvisioned — default MUST be fail-closed because this
+      // transport lacks create-only CAS, and two racing initial saves can
+      // both succeed (silent payload loss). Callers must explicitly opt in
+      // to bootstrap by setting requirePreProvisioned: false.
       const store = createNexusStructuredPlaybookStore({ transport });
-      await store.save({ ...spb("pb-bootstrap"), version: 1 });
-      const got = await store.get("pb-bootstrap");
-      expect(got?.version).toBe(1);
+      await expect(store.save({ ...spb("pb-default"), version: 1 })).rejects.toThrow(
+        /refusing to create/,
+      );
     } finally {
       transport.close();
     }
   });
 
-  test("requirePreProvisioned: true rejects initial create on empty backend (opt-in fail-closed)", async () => {
+  test("requirePreProvisioned: false allows initial create (explicit opt-in for proven single-writer)", async () => {
     const transport = createFakeNexusTransport();
     try {
       const store = createNexusStructuredPlaybookStore({
         transport,
-        requirePreProvisioned: true,
+        requirePreProvisioned: false,
       });
-      await expect(store.save({ ...spb("pb-locked"), version: 1 })).rejects.toThrow(
-        /refusing to create/,
-      );
+      await store.save({ ...spb("pb-bootstrap"), version: 1 });
+      const got = await store.get("pb-bootstrap");
+      expect(got?.version).toBe(1);
     } finally {
       transport.close();
     }

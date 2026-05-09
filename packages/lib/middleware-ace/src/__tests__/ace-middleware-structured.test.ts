@@ -1223,7 +1223,11 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
 
       // Fire a late wrapToolCall AFTER teardown started. With state.closed=true
       // this entry must NOT be appended to state.entries; reflector should
-      // have observed exactly the 1 pre-end entry.
+      // have observed exactly the 1 pre-end entry. Late calls still
+      // execute (and are tracked in shutdownInFlight for lifecycle safety),
+      // but their entries are intentionally not recorded — see #1715
+      // discussion: making them visible required reordering that broke
+      // the bounded-drain guarantee.
       await mw.wrapToolCall?.(t, { toolId: "late-search", input: {} }, async () => ({
         output: "late",
         isError: false,
