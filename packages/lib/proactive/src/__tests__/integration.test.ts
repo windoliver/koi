@@ -26,7 +26,7 @@ import {
   createSqliteScheduleStore,
   createSqliteTaskStore,
   type FakeClock,
-} from "@koi/scheduler";
+} from "../../../../sched/scheduler/src/index.js";
 import { createProactiveToolsProvider } from "../provider.js";
 
 interface Harness {
@@ -104,6 +104,10 @@ interface ToolMap {
   readonly cancelSleep: { execute: (a: object) => Promise<unknown> };
   readonly scheduleCron: { execute: (a: object) => Promise<unknown> };
   readonly cancelSchedule: { execute: (a: object) => Promise<unknown> };
+  readonly createMonitor: { execute: (a: object) => Promise<unknown> };
+  readonly listMonitors: { execute: (a: object) => Promise<unknown> };
+  readonly updateMonitor: { execute: (a: object) => Promise<unknown> };
+  readonly cancelMonitor: { execute: (a: object) => Promise<unknown> };
 }
 
 async function attachTools(scheduler: SchedulerComponent, aid: AgentId): Promise<ToolMap> {
@@ -120,6 +124,10 @@ async function attachTools(scheduler: SchedulerComponent, aid: AgentId): Promise
     cancelSleep: get("cancel_sleep"),
     scheduleCron: get("schedule_cron"),
     cancelSchedule: get("cancel_schedule"),
+    createMonitor: get("create_monitor"),
+    listMonitors: get("list_monitors"),
+    updateMonitor: get("update_monitor"),
+    cancelMonitor: get("cancel_monitor"),
   };
 }
 
@@ -252,7 +260,115 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     expect(liveAfter.some((s: { readonly id: string }) => s.id === r.schedule_id)).toBe(false);
   });
 
-  test("7. provider reattach against fresh scheduler — sleep heals via query, cron freshens per attach", async () => {
+  test("7. create_monitor schedules a live monitor and list_monitors returns its summary", async () => {
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const created = (await tools.createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo and GitHub state, then decide whether follow-up is warranted.",
+      expression: "0 9 * * *",
+      timezone: "America/Los_Angeles",
+      context_hint: "Look at scheduler/channel restoration issues first.",
+    })) as { ok: boolean; monitor_id: string; schedule_id: string };
+
+    expect(created.ok).toBe(true);
+
+    const listed = (await tools.listMonitors.execute({})) as {
+      ok: boolean;
+      monitors: {
+        monitor_id: string;
+        schedule_id: string;
+        name: string;
+        goal: string;
+        expression: string;
+        context_hint?: string;
+      }[];
+    };
+    expect(listed.ok).toBe(true);
+    expect(listed.monitors).toEqual([
+      {
+        monitor_id: created.monitor_id,
+        schedule_id: created.schedule_id,
+        name: "dependency-watch",
+        goal: "Detect whether issue #1212 is unblocked",
+        expression: "0 9 * * *",
+        context_hint: "Look at scheduler/channel restoration issues first.",
+      },
+    ]);
+
+    const live = await h.scheduler.querySchedules(h.aid);
+    expect(live).toHaveLength(1);
+    expect(live.some((schedule) => schedule.id === created.schedule_id)).toBe(true);
+  });
+
+  test("8. update_monitor rotates the live schedule and keeps only the updated monitor", async () => {
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const created = (await tools.createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+      timezone: "America/Los_Angeles",
+    })) as { monitor_id: string; schedule_id: string };
+
+    const updated = (await tools.updateMonitor.execute({
+      monitor_id: created.monitor_id,
+      goal: "Detect whether issue #1301 is unblocked",
+      check_prompt: "Inspect delivery and durability state.",
+      expression: "30 9 * * *",
+      timezone: "America/New_York",
+      context_hint: "Focus on proactive delivery blockers first.",
+    })) as { ok: boolean; monitor_id: string; schedule_id: string };
+
+    expect(updated.ok).toBe(true);
+    expect(updated.monitor_id).toBe(created.monitor_id);
+    expect(updated.schedule_id).not.toBe(created.schedule_id);
+
+    const listed = (await tools.listMonitors.execute({})) as {
+      monitors: {
+        monitor_id: string;
+        schedule_id: string;
+        goal: string;
+        expression: string;
+        context_hint?: string;
+      }[];
+    };
+    expect(listed.monitors).toHaveLength(1);
+    expect(listed.monitors[0]?.monitor_id).toBe(created.monitor_id);
+    expect(listed.monitors[0]?.schedule_id).toBe(updated.schedule_id);
+    expect(listed.monitors[0]?.goal).toBe("Detect whether issue #1301 is unblocked");
+    expect(listed.monitors[0]?.expression).toBe("30 9 * * *");
+    expect(listed.monitors[0]?.context_hint).toBe("Focus on proactive delivery blockers first.");
+
+    const live = await h.scheduler.querySchedules(h.aid);
+    expect(live).toHaveLength(1);
+    expect(live.some((schedule) => schedule.id === updated.schedule_id)).toBe(true);
+    expect(live.some((schedule) => schedule.id === created.schedule_id)).toBe(false);
+  });
+
+  test("9. cancel_monitor removes the listed monitor and unschedules future runs", async () => {
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const created = (await tools.createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+    })) as { monitor_id: string; schedule_id: string };
+
+    const cancelled = (await tools.cancelMonitor.execute({
+      monitor_id: created.monitor_id,
+    })) as { ok: boolean; removed: boolean };
+
+    expect(cancelled).toEqual({ ok: true, removed: true });
+
+    const listed = (await tools.listMonitors.execute({})) as { monitors: unknown[] };
+    expect(listed.monitors).toHaveLength(0);
+
+    const live = await h.scheduler.querySchedules(h.aid);
+    expect(live.some((schedule) => schedule.id === created.schedule_id)).toBe(false);
+  });
+
+  test("10. provider reattach against fresh scheduler — sleep heals via query, cron freshens per attach", async () => {
     // First scheduler: register a sleep + a cron.
     const tools1 = await attachTools(h.schedulerComponent, h.aid);
     const sleepR = (await tools1.sleep.execute({
@@ -313,7 +429,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     }
   });
 
-  test("8. two agents on same provider — no cross-agent state leak", async () => {
+  test("11. two agents on same provider — no cross-agent state leak", async () => {
     const provider = createProactiveToolsProvider();
     const aidA = agentId("agent-a" as AgentId);
     const aidB = agentId("agent-b" as AgentId);
@@ -344,7 +460,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     expect(h.dispatched).toHaveLength(2);
   });
 
-  test("9. idempotency_key NOT forwarded to scheduler.submit (process-local only)", async () => {
+  test("12. idempotency_key NOT forwarded to scheduler.submit (process-local only)", async () => {
     // Capture submissions by querying the scheduler directly. The internal
     // ScheduledTask record exposes metadata but not idempotencyKey directly,
     // so we instead validate the cancel→retry-same-key flow works (which
