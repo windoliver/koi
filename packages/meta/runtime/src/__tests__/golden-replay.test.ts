@@ -18750,3 +18750,163 @@ describe("Golden: @koi/workspace-nexus", () => {
     expect(partial.isSandboxed).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/proactive
+// L2 — composition executor + planners + durable execution log. No LLM
+// required: tests exercise the executor/log/planner contracts directly.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/proactive", () => {
+  test("sqliteCompositionExecutionLog: claim → record → replay short-circuits with stored output", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { sqliteCompositionExecutionLog } = await import("@koi/proactive");
+
+    const db = new Database(":memory:");
+    const log = sqliteCompositionExecutionLog(db);
+
+    expect(log.claim("k1")).toEqual({ kind: "claimed" });
+    await log.record("k1", { taskId: "t-1" });
+    expect(log.claim("k1")).toEqual({ kind: "complete", output: { taskId: "t-1" } });
+
+    // Survives across log instances on the same db (restart simulation).
+    const log2 = sqliteCompositionExecutionLog(db);
+    expect(log2.claim("k1")).toEqual({ kind: "complete", output: { taskId: "t-1" } });
+
+    db.close();
+  });
+
+  test("createCompositionExecutor: notify_user via injected handler dedupes on replay", async () => {
+    const { createCompositionExecutor, inMemoryCompositionExecutionLog } = await import(
+      "@koi/proactive"
+    );
+    const { agentId, scheduleId, taskId } = await import("@koi/core");
+
+    const notifications: unknown[] = [];
+    const scheduler: import("@koi/core").SchedulerComponent = {
+      submit: async () => taskId("noop"),
+      cancel: async () => true,
+      schedule: async () => scheduleId("noop"),
+      unschedule: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      query: async () => [],
+      stats: async () => ({
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        deadLettered: 0,
+        activeSchedules: 0,
+        pausedSchedules: 0,
+      }),
+      history: async () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("golden-agent" as import("@koi/core").AgentId),
+      scheduler,
+      notify: async (n) => {
+        notifications.push(n);
+        return { delivered: true };
+      },
+      executionLog: inMemoryCompositionExecutionLog(),
+    });
+    const trigger: import("@koi/core").CompositionTrigger = {
+      id: "trig-1",
+      source: "golden",
+      confidence: 1,
+      moment: { kind: "external_event", source: "x", eventType: "y" },
+      suggestedCapabilities: [],
+      context: {},
+      emittedAt: 1,
+    };
+    const plan: import("@koi/core").CompositionPlan = {
+      triggerId: "trig-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const r1 = await executor.execute(trigger, plan);
+    expect(r1.status).toBe("executed");
+    expect(notifications).toHaveLength(1);
+
+    // Replay → executionLog short-circuits, no second notification.
+    const r2 = await executor.execute(trigger, plan);
+    expect(r2.status).toBe("executed");
+    expect(notifications).toHaveLength(1);
+  });
+
+  test("createLlmCompositionPlanner: back-compat for adapter responses missing triggerEmittedAt", async () => {
+    const { createLlmCompositionPlanner } = await import("@koi/proactive");
+
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trig-legacy",
+            steps: [
+              { kind: "notify_user", channel: "inbox", message: "hello", priority: "normal" },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trig-legacy",
+        source: "golden",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 99,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    // Missing triggerEmittedAt is back-filled from current trigger.emittedAt.
+    expect(plan.triggerEmittedAt).toBe(99);
+    expect(plan.steps).toHaveLength(1);
+  });
+
+  test("createRuleBasedCompositionPlanner: emits notify_user for threshold_crossed", async () => {
+    const { createRuleBasedCompositionPlanner } = await import("@koi/proactive");
+
+    const planner = createRuleBasedCompositionPlanner();
+    const plan = await planner.plan(
+      {
+        id: "trig-rule",
+        source: "governance",
+        confidence: 1,
+        moment: {
+          kind: "threshold_crossed",
+          sensor: "error_rate",
+          value: 0.9,
+          limit: 0.2,
+          direction: "above",
+        },
+        suggestedCapabilities: ["notify_user"],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.steps.length).toBeGreaterThanOrEqual(1);
+    expect(plan.steps.some((s) => s.kind === "notify_user")).toBe(true);
+  });
+
+  test("preCommitRejection brand: round-trips via isPreCommitRejection across throw boundary", async () => {
+    const { isPreCommitRejection, preCommitRejection } = await import("@koi/proactive");
+
+    const e = preCommitRejection("invalid cron", new Error("boom"));
+    expect(isPreCommitRejection(e)).toBe(true);
+    expect(e.message).toContain("invalid cron");
+    expect(isPreCommitRejection(new Error("plain"))).toBe(false);
+    expect(isPreCommitRejection(undefined)).toBe(false);
+  });
+});
