@@ -352,20 +352,58 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
         // pre-persist" audit window where late calls executed untracked.
         try {
           if (state.entries.length === 0) return;
-          // Snapshot length so we know what we already persisted; any
-          // entries appended after this index by late wrappers will be
-          // sent in a follow-up append after the second drain.
-          const firstAppendLength = state.entries.length;
-          // Trajectory append is ground-truth observability — safe to persist
-          // even on drain timeout because state.entries only contains entries
-          // from wrappers that already completed (trackInFlight only appends
-          // post-await). Hung wrappers contributed nothing and are absent.
+          // Bounded extra drain we can use multiple times to chase late
+          // entries that arrive between phases. Each call refreshes the
+          // remaining budget so persistence + pipelines + delta drain are
+          // never individually unbounded.
+          const drainOnce = async (): Promise<void> => {
+            const deadline =
+              drainTimeoutMs === Number.POSITIVE_INFINITY
+                ? Number.POSITIVE_INFINITY
+                : Date.now() + drainTimeoutMs;
+            while (state.shutdownInFlight.size > 0 || state.inFlight.size > 0) {
+              const remaining =
+                deadline === Number.POSITIVE_INFINITY
+                  ? Number.POSITIVE_INFINITY
+                  : deadline - Date.now();
+              if (remaining !== Number.POSITIVE_INFINITY && remaining <= 0) break;
+              const snap = [...state.inFlight, ...state.shutdownInFlight];
+              if (remaining === Number.POSITIVE_INFINITY) {
+                await Promise.allSettled(snap);
+              } else {
+                const t = new Promise<"timeout">((resolve) => {
+                  setTimeout(() => resolve("timeout"), remaining).unref?.();
+                });
+                const o = await Promise.race([
+                  Promise.allSettled(snap).then(() => "ok" as const),
+                  t,
+                ]);
+                if (o === "timeout") break;
+              }
+            }
+          };
+          // Phase 1: persist the trajectory we have so durable observability
+          // captures everything seen so far. Tracks how much has been
+          // appended so each later phase only persists its delta — append
+          // is non-idempotent by contract, so we must not double-write.
+          let appendedLength = state.entries.length;
           if (config.trajectoryStore !== undefined) {
             await config.trajectoryStore.append(
               ctx.sessionId,
-              state.entries.slice(0, firstAppendLength),
+              state.entries.slice(0, appendedLength),
             );
           }
+          // Phase 2: drain wrappers that arrived during the append, then
+          // append their delta so the durable trajectory matches state.entries
+          // BEFORE the learning pipelines run. Late entries that arrive after
+          // the first append must be visible to stats/promotion or those
+          // pipelines commit verdicts on an incomplete session.
+          await drainOnce();
+          if (config.trajectoryStore !== undefined && state.entries.length > appendedLength) {
+            await config.trajectoryStore.append(ctx.sessionId, state.entries.slice(appendedLength));
+            appendedLength = state.entries.length;
+          }
+          // Phase 3: run the learning pipelines on the now-stable snapshot.
           // Skip downstream curation/consolidation/promotion on drain timeout:
           // those derive learnings from what is presumed to be a complete
           // session. Promoting playbooks from an incomplete trajectory risks
@@ -402,39 +440,14 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
               }
             }
           }
-          // Catch wrappers that started during persistence: drain them
-          // (bounded by remaining time in drainTimeoutMs) and append the
-          // delta so their entries land in the durable trajectory too.
-          // Bounded by a fresh deadline so persistence + post-drain is
-          // never unbounded.
-          const postPersistDeadline =
-            drainTimeoutMs === Number.POSITIVE_INFINITY
-              ? Number.POSITIVE_INFINITY
-              : Date.now() + drainTimeoutMs;
-          while (state.shutdownInFlight.size > 0 || state.inFlight.size > 0) {
-            const remaining =
-              postPersistDeadline === Number.POSITIVE_INFINITY
-                ? Number.POSITIVE_INFINITY
-                : postPersistDeadline - Date.now();
-            if (remaining !== Number.POSITIVE_INFINITY && remaining <= 0) break;
-            const snap = [...state.inFlight, ...state.shutdownInFlight];
-            if (remaining === Number.POSITIVE_INFINITY) {
-              await Promise.allSettled(snap);
-            } else {
-              const t = new Promise<"timeout">((resolve) => {
-                setTimeout(() => resolve("timeout"), remaining).unref?.();
-              });
-              const o = await Promise.race([Promise.allSettled(snap).then(() => "ok" as const), t]);
-              if (o === "timeout") break;
-            }
-          }
-          if (config.trajectoryStore !== undefined && state.entries.length > firstAppendLength) {
-            // Persist the delta. trajectoryStore.append is non-idempotent
-            // by contract, so we slice to avoid duplicating the first batch.
-            await config.trajectoryStore.append(
-              ctx.sessionId,
-              state.entries.slice(firstAppendLength),
-            );
+          // Phase 4: drain any wrappers that arrived during the pipelines
+          // and append their delta. We do not re-run the pipelines on this
+          // delta — pipeline output reflects the post-drain snapshot at the
+          // start of phase 3, which is the strongest "stable" guarantee
+          // bounded teardown can give without unbounded recursion.
+          await drainOnce();
+          if (config.trajectoryStore !== undefined && state.entries.length > appendedLength) {
+            await config.trajectoryStore.append(ctx.sessionId, state.entries.slice(appendedLength));
           }
         } finally {
           // Now seal: late wrappers from this point on hard-reject without

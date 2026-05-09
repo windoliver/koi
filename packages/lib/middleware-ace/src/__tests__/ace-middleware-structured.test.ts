@@ -1272,6 +1272,84 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
     }
   });
 
+  test("learning pipelines see late entries that arrived during the first trajectory append", async () => {
+    // Regression: late wrappers that arrive AFTER the first trajectoryStore
+    // append but BEFORE pipelines run must be included in pipeline input,
+    // otherwise stats/promotion commit verdicts on an incomplete session.
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    let releaseAppend: () => void = () => {};
+    const appendBlocker = new Promise<void>((r) => {
+      releaseAppend = r;
+    });
+    let firstAppendReceived = false;
+    const trajectoryStore = {
+      append: async (_sessionId: string, _entries: readonly unknown[]): Promise<void> => {
+        if (!firstAppendReceived) {
+          firstAppendReceived = true;
+          await appendBlocker;
+        }
+      },
+      getSession: async (): Promise<readonly never[]> => [],
+      listSessions: async (): Promise<readonly string[]> => [],
+    };
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      let observedEntryCount = -1;
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        trajectoryStore,
+        clock: () => 1000,
+        drainTimeoutMs: 5000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async ({ trajectory }) => {
+            observedEntryCount = trajectory.length;
+            return reflection;
+          },
+          curator: async () => [],
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-pipeline-late");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-pipeline-late", 0);
+
+      // Pre-teardown call so the trajectory has a starting entry.
+      await mw.wrapToolCall?.(t, { toolId: "pre", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+
+      const teardown = mw.onSessionEnd?.(ctx);
+
+      // Yield until the FIRST append has begun (it pauses on the blocker).
+      while (!firstAppendReceived) {
+        await Promise.resolve();
+      }
+
+      // Late wrapToolCall while the first append is paused — this entry
+      // must be visible to the reflector when pipelines run after the
+      // append finishes.
+      await mw.wrapToolCall?.(t, { toolId: "late", input: {} }, async () => ({
+        output: "late",
+        isError: false,
+      }));
+
+      releaseAppend();
+      await teardown;
+
+      // Reflector saw both entries — pipeline ran on the post-drain snapshot.
+      expect(observedEntryCount).toBe(2);
+    } finally {
+      store.close();
+    }
+  });
+
   test("late wrapToolCall after onSessionEnd starts IS recorded (drained before seal)", async () => {
     const store = createSqlitePlaybookStore({ path: ":memory:" });
     try {
