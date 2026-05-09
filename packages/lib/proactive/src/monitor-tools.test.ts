@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { scheduleId } from "@koi/core";
+import { type SchedulerComponent, scheduleId } from "@koi/core";
 import {
   createCancelMonitorTool,
   createCreateMonitorTool,
@@ -368,6 +368,55 @@ describe("monitor tools", () => {
     expect(listed.monitors[0]?.schedule_id).toBe(created.schedule_id);
   });
 
+  test("update_monitor compensates when retiring the original schedule throws", async () => {
+    const stub = createSchedulerStub();
+    let unscheduleAttempts = 0;
+    const scheduler: SchedulerComponent = {
+      ...stub.component,
+      unschedule(id) {
+        stub.component.unschedule(id);
+        unscheduleAttempts += 1;
+        if (unscheduleAttempts === 1) {
+          throw new Error("scheduler unavailable");
+        }
+        return true;
+      },
+    };
+    const state = createMonitorToolState();
+    const createMonitor = createCreateMonitorTool({ scheduler }, state);
+    const updateMonitor = createUpdateMonitorTool({ scheduler }, state);
+    const listMonitors = createListMonitorsTool(state);
+
+    const created = (await createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+      timezone: "America/Los_Angeles",
+    })) as { monitor_id: string; schedule_id: string };
+
+    const failed = (await updateMonitor.execute({
+      monitor_id: created.monitor_id,
+      goal: "Detect whether issue #1301 is unblocked",
+      expression: "30 9 * * *",
+      timezone: "America/New_York",
+    })) as { ok: boolean; error: string };
+
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toContain("scheduler unavailable");
+    expect(stub.unscheduleCalls).toHaveLength(2);
+    expect(stub.unscheduleCalls[0]).toBe(scheduleId(created.schedule_id));
+    expect(String(stub.unscheduleCalls[1])).toBe("sched-2");
+
+    const listed = (await listMonitors.execute({})) as {
+      monitors: { goal: string; expression: string; schedule_id: string }[];
+    };
+    expect(listed.monitors).toHaveLength(1);
+    expect(listed.monitors[0]?.goal).toBe("Detect whether issue #1212 is unblocked");
+    expect(listed.monitors[0]?.expression).toBe("0 9 * * *");
+    expect(listed.monitors[0]?.schedule_id).toBe(created.schedule_id);
+  });
+
   test("cancel_monitor removes the record and clears create-time idempotency", async () => {
     const stub = createSchedulerStub();
     const state = createMonitorToolState();
@@ -478,5 +527,69 @@ describe("monitor tools", () => {
         "Check: Inspect repo state.",
       ].join("\n"),
     );
+  });
+
+  test("scheduler stub tracks submitted task lifecycle and query helpers", async () => {
+    const stub = createSchedulerStub();
+    const task = await stub.component.submit({ kind: "text", text: "wake up" }, "spawn", {
+      delayMs: 5_000,
+    });
+
+    expect(stub.submitCalls).toHaveLength(1);
+    expect(stub.submitCalls[0]).toEqual({
+      input: { kind: "text", text: "wake up" },
+      mode: "spawn",
+      options: { delayMs: 5_000 },
+    });
+    expect(stub.isLive(task)).toBe(true);
+    expect(await stub.component.query({})).toEqual([
+      {
+        id: task,
+        agentId: expect.any(String),
+        input: { kind: "text", text: "" },
+        mode: "spawn",
+        priority: 0,
+        status: "pending",
+        createdAt: 0,
+        retries: 0,
+        maxRetries: 0,
+      },
+    ]);
+    expect(await stub.component.pause(scheduleId("sched-pause"))).toBe(true);
+    expect(await stub.component.resume(scheduleId("sched-pause"))).toBe(true);
+    expect(await stub.component.stats()).toEqual({
+      pending: 0,
+      running: 0,
+      completed: 0,
+      failed: 0,
+      deadLettered: 0,
+      activeSchedules: 0,
+      pausedSchedules: 0,
+    });
+    expect(await stub.component.history({})).toEqual([]);
+
+    expect(await stub.component.cancel(task)).toBe(true);
+    expect(stub.cancelCalls).toEqual([task]);
+    expect(stub.isLive(task)).toBe(false);
+
+    const retired = await stub.component.submit({ kind: "text", text: "retire me" }, "spawn");
+    expect(stub.isLive(retired)).toBe(true);
+    stub.retireTask(retired);
+    expect(stub.isLive(retired)).toBe(false);
+  });
+
+  test("scheduler stub surfaces submit errors and non-removing cancels", async () => {
+    const failingSubmit = createSchedulerStub({ submitError: new Error("queue full") });
+    expect(() =>
+      failingSubmit.component.submit({ kind: "text", text: "wake up" }, "spawn"),
+    ).toThrow("queue full");
+
+    const nonRemovingCancel = createSchedulerStub({ cancelResult: false });
+    const task = await nonRemovingCancel.component.submit(
+      { kind: "text", text: "wake up" },
+      "spawn",
+    );
+    expect(await nonRemovingCancel.component.cancel(task)).toBe(false);
+    expect(nonRemovingCancel.isLive(task)).toBe(true);
   });
 });

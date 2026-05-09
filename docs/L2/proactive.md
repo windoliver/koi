@@ -232,12 +232,16 @@ for the model — we deliberately avoid inventing a "wake reason" envelope until
 caller needs it. If/when that materializes, it goes into `EngineInput` (or a new kind),
 not into proactive.
 
-### Mode is always `"dispatch"`
+### Sleep uses `"spawn"`; recurring tools use `"dispatch"`
 
-The agent that called `sleep` is the same agent that should resume — we never `"spawn"`
-a fresh process from a sleep call. If a future tool needs spawn semantics (e.g. periodic
-"start a new triage agent" cron), it gets its own tool with its own name; we don't add
-a `mode` parameter to `sleep`.
+`sleep` always uses `"spawn"` for its delayed wake-up. The deferred wake creates a fresh
+agent run when the timer elapses, which is the only mode supported durably across the
+in-memory scheduler and Temporal for delayed delivery.
+
+Recurring proactive tools (`schedule_cron` and monitor-backed cron schedules) use
+`"dispatch"` because each fire is a scheduler-driven self-dispatch rather than a delayed
+one-shot spawn. If a future tool needs different semantics, it should get its own
+explicit tool surface rather than a caller-controlled `mode` parameter.
 
 ### Bounded sleep duration
 

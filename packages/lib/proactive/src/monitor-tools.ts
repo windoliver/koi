@@ -6,7 +6,7 @@
  * monitor definition and same-process idempotency semantics for create.
  */
 
-import type { JsonObject, Tool } from "@koi/core";
+import type { JsonObject, SchedulerComponent, Tool } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, scheduleId } from "@koi/core";
 import { toJSONSchema, z } from "zod";
 import type { ProactiveToolsConfig } from "./types.js";
@@ -173,6 +173,17 @@ function buildMonitorRecord(
     contextHint: args.contextHint,
     idempotencyKey: args.idempotencyKey,
   };
+}
+
+async function bestEffortUnscheduleReplacement(
+  scheduler: SchedulerComponent,
+  scheduleIdValue: string,
+): Promise<void> {
+  try {
+    await scheduler.unschedule(scheduleId(scheduleIdValue));
+  } catch {
+    // Best-effort compensation only. Preserve the original local record either way.
+  }
 }
 
 function createMonitorId(state: MonitorToolState): string {
@@ -413,17 +424,14 @@ export function createUpdateMonitorTool(
       try {
         const removed = await scheduler.unschedule(scheduleId(current.scheduleId));
         if (!removed) {
-          try {
-            await scheduler.unschedule(scheduleId(newScheduleId));
-          } catch {
-            // Best-effort compensation only. Preserve the original local record either way.
-          }
+          await bestEffortUnscheduleReplacement(scheduler, newScheduleId);
           return {
             ok: false,
             error: "Failed to retire previous monitor schedule",
           };
         }
       } catch (e: unknown) {
+        await bestEffortUnscheduleReplacement(scheduler, newScheduleId);
         return {
           ok: false,
           error: e instanceof Error ? e.message : "Failed to retire previous monitor schedule",
