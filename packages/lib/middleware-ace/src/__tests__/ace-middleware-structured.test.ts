@@ -1182,6 +1182,96 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
     }
   });
 
+  test("wrapToolCall during persistence (post-drain, pre-seal) IS recorded and persisted", async () => {
+    // Regression for the "post-drain audit window" — wrappers that arrive
+    // AFTER the unified drain stabilizes but BEFORE persistence finishes
+    // must still be tracked, recorded, and durably persisted, not skipped
+    // as untracked side effects.
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    const appended: { count: number; entries: readonly { identifier: string }[] }[] = [];
+    const trajectoryStore = {
+      append: async (
+        _sessionId: string,
+        entries: readonly { identifier: string }[],
+      ): Promise<void> => {
+        appended.push({ count: entries.length, entries });
+      },
+      getSession: async (): Promise<readonly never[]> => [],
+      listSessions: async (): Promise<readonly string[]> => [],
+    };
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      // Slow the playbookStore.save so persistence pauses long enough for
+      // a late wrapToolCall to register and complete during the window.
+      let releasePersist: () => void = () => {};
+      const persistBlocker = new Promise<void>((r) => {
+        releasePersist = r;
+      });
+      const slowStore: typeof store.playbooks = {
+        ...store.playbooks,
+        save: async (pb): Promise<void> => {
+          await persistBlocker;
+          return store.playbooks.save(pb);
+        },
+      };
+
+      const mw = createAceMiddleware({
+        playbookStore: slowStore,
+        trajectoryStore,
+        clock: () => 1000,
+        drainTimeoutMs: 5000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: stubReflector,
+          curator: async () => [],
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-postdrain");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-postdrain", 0);
+
+      // Pre-teardown call so trajectory has at least one entry → persistence
+      // runs (we need a non-empty trajectory to exercise the slow path).
+      await mw.wrapToolCall?.(t, { toolId: "pre", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+
+      // Kick off teardown (don't await yet).
+      const teardown = mw.onSessionEnd?.(ctx);
+
+      // Yield so teardown's drain stabilizes and persistence (slowStore.save)
+      // begins awaiting the blocker.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Late wrapToolCall during persistence window. closed is still false,
+      // so it must be tracked + recorded.
+      await mw.wrapToolCall?.(t, { toolId: "during-persist", input: {} }, async () => ({
+        output: "late",
+        isError: false,
+      }));
+
+      // Release persistence so teardown can finish.
+      releasePersist();
+      await teardown;
+
+      // Both entries reached the durable trajectoryStore — first append
+      // covers the pre-teardown entry, second append covers the late
+      // delta (entries appended during the persistence window).
+      const allPersisted = appended.flatMap((a) => a.entries);
+      expect(allPersisted.map((e) => e.identifier).sort()).toEqual(["during-persist", "pre"]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("late wrapToolCall after onSessionEnd starts IS recorded (drained before seal)", async () => {
     const store = createSqlitePlaybookStore({ path: ":memory:" });
     try {

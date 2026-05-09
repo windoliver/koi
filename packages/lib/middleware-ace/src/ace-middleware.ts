@@ -343,54 +343,103 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
             }
           }
         }
-        // Now seal: any callback arriving after this flip cannot mutate
-        // `entries` mid-teardown.
-        state.closed = true;
+        // Persistence runs while closed=false so any wrappers that arrive
+        // during the (potentially slow) trajectoryStore.append + promotion
+        // pipeline still go through the normal recordEntry path. After
+        // persistence finishes, we drain once more to catch wrappers that
+        // started during it, then append the delta to trajectoryStore and
+        // ONLY THEN seal closed=true. This eliminates the "post-drain,
+        // pre-persist" audit window where late calls executed untracked.
         try {
           if (state.entries.length === 0) return;
+          // Snapshot length so we know what we already persisted; any
+          // entries appended after this index by late wrappers will be
+          // sent in a follow-up append after the second drain.
+          const firstAppendLength = state.entries.length;
           // Trajectory append is ground-truth observability — safe to persist
           // even on drain timeout because state.entries only contains entries
           // from wrappers that already completed (trackInFlight only appends
           // post-await). Hung wrappers contributed nothing and are absent.
           if (config.trajectoryStore !== undefined) {
-            await config.trajectoryStore.append(ctx.sessionId, state.entries);
+            await config.trajectoryStore.append(
+              ctx.sessionId,
+              state.entries.slice(0, firstAppendLength),
+            );
           }
           // Skip downstream curation/consolidation/promotion on drain timeout:
           // those derive learnings from what is presumed to be a complete
           // session. Promoting playbooks from an incomplete trajectory risks
           // baking in conclusions that the dropped suffix would have changed.
-          if (drainTimedOut) return;
-          const stats = aggregateTrajectoryStats(state.entries);
-          const candidates = curateTrajectorySummary(stats, 1, {
-            minScore,
-            nowMs: clock(),
-            lambda,
-          });
-          const updated = consolidate(candidates, state.playbooks);
-          for (const pb of updated) {
-            await config.playbookStore.save(pb);
-          }
-          if (config.structuredPipeline !== undefined) {
-            try {
-              await runStructuredPipeline(
-                ctx.sessionId,
-                state.entries,
-                config.structuredPipeline,
-                clock,
-              );
-            } catch (err: unknown) {
-              const failureCtx: FailureContext = {
-                stage: extractStageSafe(err),
-                playbookId: config.structuredPipeline.playbookId,
-                sessionId: ctx.sessionId,
-              };
-              logFailureSafe(err, undefined, failureCtx);
-              if (config.structuredPipeline.onError !== undefined) {
-                invokeOnErrorDetached(config.structuredPipeline.onError, err, failureCtx);
+          if (!drainTimedOut) {
+            const stats = aggregateTrajectoryStats(state.entries);
+            const candidates = curateTrajectorySummary(stats, 1, {
+              minScore,
+              nowMs: clock(),
+              lambda,
+            });
+            const updated = consolidate(candidates, state.playbooks);
+            for (const pb of updated) {
+              await config.playbookStore.save(pb);
+            }
+            if (config.structuredPipeline !== undefined) {
+              try {
+                await runStructuredPipeline(
+                  ctx.sessionId,
+                  state.entries,
+                  config.structuredPipeline,
+                  clock,
+                );
+              } catch (err: unknown) {
+                const failureCtx: FailureContext = {
+                  stage: extractStageSafe(err),
+                  playbookId: config.structuredPipeline.playbookId,
+                  sessionId: ctx.sessionId,
+                };
+                logFailureSafe(err, undefined, failureCtx);
+                if (config.structuredPipeline.onError !== undefined) {
+                  invokeOnErrorDetached(config.structuredPipeline.onError, err, failureCtx);
+                }
               }
             }
           }
+          // Catch wrappers that started during persistence: drain them
+          // (bounded by remaining time in drainTimeoutMs) and append the
+          // delta so their entries land in the durable trajectory too.
+          // Bounded by a fresh deadline so persistence + post-drain is
+          // never unbounded.
+          const postPersistDeadline =
+            drainTimeoutMs === Number.POSITIVE_INFINITY
+              ? Number.POSITIVE_INFINITY
+              : Date.now() + drainTimeoutMs;
+          while (state.shutdownInFlight.size > 0 || state.inFlight.size > 0) {
+            const remaining =
+              postPersistDeadline === Number.POSITIVE_INFINITY
+                ? Number.POSITIVE_INFINITY
+                : postPersistDeadline - Date.now();
+            if (remaining !== Number.POSITIVE_INFINITY && remaining <= 0) break;
+            const snap = [...state.inFlight, ...state.shutdownInFlight];
+            if (remaining === Number.POSITIVE_INFINITY) {
+              await Promise.allSettled(snap);
+            } else {
+              const t = new Promise<"timeout">((resolve) => {
+                setTimeout(() => resolve("timeout"), remaining).unref?.();
+              });
+              const o = await Promise.race([Promise.allSettled(snap).then(() => "ok" as const), t]);
+              if (o === "timeout") break;
+            }
+          }
+          if (config.trajectoryStore !== undefined && state.entries.length > firstAppendLength) {
+            // Persist the delta. trajectoryStore.append is non-idempotent
+            // by contract, so we slice to avoid duplicating the first batch.
+            await config.trajectoryStore.append(
+              ctx.sessionId,
+              state.entries.slice(firstAppendLength),
+            );
+          }
         } finally {
+          // Now seal: late wrappers from this point on hard-reject without
+          // tracking or recording, and the slot is removed.
+          state.closed = true;
           // Only drop the slot if it still references US — a fresh
           // onSessionStart with the same sessionId may have replaced it.
           if (sessions.get(ctx.sessionId) === state) {
