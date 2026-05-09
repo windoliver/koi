@@ -25,6 +25,11 @@ const createMonitorSchema = z.object({
     .string()
     .min(1, "expression is required")
     .describe('Cron expression understood by croner (e.g. "0 9 * * 1-5").'),
+  timezone: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('IANA timezone for the cron expression (e.g. "America/Los_Angeles").'),
   context_hint: z
     .string()
     .min(1)
@@ -52,6 +57,7 @@ const updateMonitorSchema = z
     goal: z.string().min(1).optional().describe("Replacement monitor goal."),
     check_prompt: z.string().min(1).optional().describe("Replacement monitor instructions."),
     expression: z.string().min(1).optional().describe("Replacement cron expression."),
+    timezone: z.string().min(1).optional().describe("Replacement cron timezone."),
     context_hint: z.string().min(1).optional().describe("Replacement optional context hint."),
   })
   .refine(
@@ -60,6 +66,7 @@ const updateMonitorSchema = z
       value.goal !== undefined ||
       value.check_prompt !== undefined ||
       value.expression !== undefined ||
+      value.timezone !== undefined ||
       value.context_hint !== undefined,
     "At least one updatable field must be provided",
   );
@@ -75,6 +82,7 @@ interface MonitorCreateFingerprint {
   readonly goal: string;
   readonly checkPrompt: string;
   readonly expression: string;
+  readonly timezone: string | undefined;
   readonly contextHint: string | undefined;
 }
 
@@ -85,6 +93,7 @@ export interface MonitorRecord {
   readonly goal: string;
   readonly checkPrompt: string;
   readonly expression: string;
+  readonly timezone: string | undefined;
   readonly contextHint: string | undefined;
   readonly idempotencyKey: string | undefined;
 }
@@ -125,6 +134,7 @@ function buildCreateFingerprint(args: {
   readonly goal: string;
   readonly check_prompt: string;
   readonly expression: string;
+  readonly timezone?: string;
   readonly context_hint?: string;
 }): MonitorCreateFingerprint {
   return {
@@ -132,6 +142,7 @@ function buildCreateFingerprint(args: {
     goal: args.goal,
     checkPrompt: args.check_prompt,
     expression: args.expression,
+    timezone: args.timezone,
     contextHint: args.context_hint,
   };
 }
@@ -145,6 +156,7 @@ function monitorCreateMatches(
     record.goal === fingerprint.goal &&
     record.checkPrompt === fingerprint.checkPrompt &&
     record.expression === fingerprint.expression &&
+    record.timezone === fingerprint.timezone &&
     record.contextHint === fingerprint.contextHint
   );
 }
@@ -157,6 +169,7 @@ function buildMonitorRecord(
     readonly goal: string;
     readonly checkPrompt: string;
     readonly expression: string;
+    readonly timezone?: string;
     readonly contextHint?: string;
     readonly idempotencyKey?: string;
   },
@@ -168,6 +181,7 @@ function buildMonitorRecord(
     goal: args.goal,
     checkPrompt: args.checkPrompt,
     expression: args.expression,
+    timezone: args.timezone,
     contextHint: args.contextHint,
     idempotencyKey: args.idempotencyKey,
   };
@@ -184,7 +198,6 @@ function listMonitorView(record: MonitorRecord): {
   readonly schedule_id: string;
   readonly name: string;
   readonly goal: string;
-  readonly check_prompt: string;
   readonly expression: string;
   readonly context_hint?: string;
 } {
@@ -193,7 +206,6 @@ function listMonitorView(record: MonitorRecord): {
     schedule_id: record.scheduleId,
     name: record.name,
     goal: record.goal,
-    check_prompt: record.checkPrompt,
     expression: record.expression,
     context_hint: record.contextHint,
   };
@@ -222,7 +234,8 @@ export function createCreateMonitorTool(
         return { ok: false, error: parsed.error.message };
       }
 
-      const { name, goal, check_prompt, expression, context_hint, idempotency_key } = parsed.data;
+      const { name, goal, check_prompt, expression, timezone, context_hint, idempotency_key } =
+        parsed.data;
       const fingerprint = buildCreateFingerprint(parsed.data);
 
       if (idempotency_key !== undefined) {
@@ -235,7 +248,7 @@ export function createCreateMonitorTool(
                 ok: false,
                 error:
                   `idempotency_key '${idempotency_key}' already registered for a different monitor ` +
-                  "(name, goal, check_prompt, expression, or context_hint differ). Use a " +
+                  "(name, goal, check_prompt, expression, timezone, or context_hint differ). Use a " +
                   "distinct key, or cancel the existing monitor first.",
               };
             }
@@ -261,15 +274,24 @@ export function createCreateMonitorTool(
         checkPrompt: check_prompt,
         contextHint: context_hint,
       });
+      const scheduleOptions = timezone !== undefined ? { timezone } : undefined;
 
       const submission = Promise.resolve()
-        .then(() => scheduler.schedule(expression, { kind: "text", text: wakeText }, "dispatch"))
+        .then(() =>
+          scheduler.schedule(
+            expression,
+            { kind: "text", text: wakeText },
+            "dispatch",
+            scheduleOptions,
+          ),
+        )
         .then((scheduledId): MonitorRecord => {
           const record = buildMonitorRecord(monitorId, String(scheduledId), {
             name,
             goal,
             checkPrompt: check_prompt,
             expression,
+            timezone,
             contextHint: context_hint,
             idempotencyKey: idempotency_key,
           });
@@ -365,6 +387,7 @@ export function createUpdateMonitorTool(
         goal: parsed.data.goal ?? current.goal,
         checkPrompt: parsed.data.check_prompt ?? current.checkPrompt,
         expression: parsed.data.expression ?? current.expression,
+        timezone: parsed.data.timezone ?? current.timezone,
         contextHint: parsed.data.context_hint ?? current.contextHint,
         idempotencyKey: current.idempotencyKey,
       });
@@ -375,16 +398,31 @@ export function createUpdateMonitorTool(
         checkPrompt: next.checkPrompt,
         contextHint: next.contextHint,
       });
+      const scheduleOptions = next.timezone !== undefined ? { timezone: next.timezone } : undefined;
 
       let newScheduleId: string;
       try {
         newScheduleId = String(
-          await scheduler.schedule(next.expression, { kind: "text", text: wakeText }, "dispatch"),
+          await scheduler.schedule(
+            next.expression,
+            { kind: "text", text: wakeText },
+            "dispatch",
+            scheduleOptions,
+          ),
         );
       } catch (e: unknown) {
         return {
           ok: false,
           error: e instanceof Error ? e.message : "Failed to update monitor",
+        };
+      }
+
+      try {
+        await scheduler.unschedule(scheduleId(current.scheduleId));
+      } catch (e: unknown) {
+        return {
+          ok: false,
+          error: e instanceof Error ? e.message : "Failed to retire previous monitor schedule",
         };
       }
 
@@ -396,15 +434,6 @@ export function createUpdateMonitorTool(
       state.monitorsById.set(updated.monitorId, updated);
       if (updated.idempotencyKey !== undefined) {
         state.idempotencyMap.set(updated.idempotencyKey, { kind: "settled", record: updated });
-      }
-
-      try {
-        await scheduler.unschedule(scheduleId(current.scheduleId));
-      } catch (e: unknown) {
-        return {
-          ok: false,
-          error: e instanceof Error ? e.message : "Failed to retire previous monitor schedule",
-        };
       }
 
       return {
