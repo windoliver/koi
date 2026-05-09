@@ -17,6 +17,14 @@ export interface MountDescriptionsSnapshot {
 
 export interface MountDescriptionsState {
   readonly getSnapshot: () => MountDescriptionsSnapshot;
+  /**
+   * Returns true when the state is configured with prompt-safety strict
+   * mode. Strict mode is applied at PROMPT RENDER time only — the canonical
+   * snapshot retains every in-scope mount so /mounts and runtime
+   * bookkeeping never lose live mounts whose identifiers happen to use
+   * characters outside the allowlist (e.g. `@`, spaces).
+   */
+  readonly isStrictPromptMode: () => boolean;
   readonly setManifest: (entries: readonly MountDescription[]) => void;
   readonly addRuntime: (entry: MountDescription) => void;
   readonly remove: (path: string) => void;
@@ -111,10 +119,15 @@ export function createMountDescriptionsState(
   let scopePaths = config.scopePaths;
   const strict = config.strictPromptIdentifiers === true;
 
-  const allow = (entries: readonly MountDescription[]): readonly MountDescription[] => {
-    const scoped = filterEntriesByScope(entries, scopePaths);
-    return strict ? scoped.filter(isPromptSafeMountIdentifier) : scoped;
-  };
+  // Scope filter only — prompt-safety filtering is applied at render time
+  // (renderBlock + middleware), not here. Filtering by identifier
+  // characters at write time would silently drop legitimate live mounts
+  // (e.g. emails containing '@', display names with spaces) from the
+  // canonical snapshot, breaking /mounts visibility and runtime
+  // bookkeeping. The state is the source of truth for "what is mounted";
+  // the prompt is just one consumer.
+  const allow = (entries: readonly MountDescription[]): readonly MountDescription[] =>
+    filterEntriesByScope(entries, scopePaths);
 
   let manifest = sortManifest(allow(config.initial?.manifest ?? []));
   let runtime = [...allow(config.initial?.runtime ?? [])];
@@ -124,6 +137,7 @@ export function createMountDescriptionsState(
       manifest,
       runtime,
     }),
+    isStrictPromptMode: (): boolean => strict,
     setManifest: (entries): void => {
       manifest = sortManifest(allow(entries));
     },
@@ -179,9 +193,15 @@ function escapeXmlAttr(value: string): string {
 function renderBlock(
   tag: "mounted_connectors" | "runtime_mounted_connectors",
   entries: readonly MountDescription[],
+  strict: boolean,
 ): string | undefined {
-  if (entries.length === 0) return undefined;
-  const items = entries
+  // Apply prompt-safety filtering at the prompt boundary: entries with
+  // characters outside the allowlist are dropped from the system prompt
+  // only. They remain in the canonical state for /mounts and other
+  // operator-facing UIs.
+  const promptable = strict ? entries.filter(isPromptSafeMountIdentifier) : entries;
+  if (promptable.length === 0) return undefined;
+  const items = promptable
     .map((entry) => {
       const attrs = [
         `path="${escapeXmlAttr(entry.path)}"`,
@@ -207,10 +227,11 @@ function joinPromptSections(sections: readonly (string | undefined)[]): string |
 function injectMountDescriptions(
   snapshot: MountDescriptionsSnapshot,
   request: ModelRequest,
+  strict: boolean,
 ): ModelRequest {
   const sections = [
-    renderBlock("mounted_connectors", snapshot.manifest),
-    renderBlock("runtime_mounted_connectors", snapshot.runtime),
+    renderBlock("mounted_connectors", snapshot.manifest, strict),
+    renderBlock("runtime_mounted_connectors", snapshot.runtime, strict),
   ].filter((value): value is string => value !== undefined);
   if (sections.length === 0) return request;
   const content = sections.join("\n\n");
@@ -250,14 +271,26 @@ export function createMountDescriptionsMiddleware(config: {
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      return next(injectMountDescriptions(config.state.getSnapshot(), request));
+      return next(
+        injectMountDescriptions(
+          config.state.getSnapshot(),
+          request,
+          config.state.isStrictPromptMode(),
+        ),
+      );
     },
     async *wrapModelStream(
       _ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      yield* next(injectMountDescriptions(config.state.getSnapshot(), request));
+      yield* next(
+        injectMountDescriptions(
+          config.state.getSnapshot(),
+          request,
+          config.state.isStrictPromptMode(),
+        ),
+      );
     },
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
       return undefined;

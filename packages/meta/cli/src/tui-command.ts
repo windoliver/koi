@@ -6307,7 +6307,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             if (!result.ok) {
               const message = isRpcMethodUnavailable(result.error)
                 ? "Mount add/remove requires a newer Nexus build with add_mount/remove_mount support."
-                : `Mount failed: ${result.error.message}`;
+                : `Mount failed: ${sanitizeConnectorText(result.error.message)}`;
               store.dispatch({
                 kind: "add_error",
                 code: "MOUNT_FAILED",
@@ -6323,7 +6323,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               dispatchNotice(
                 store,
                 "mount-info",
-                `[Mounted ${parsed.value.uri} but path discovery failed; run /mounts to refresh]`,
+                `[Mounted ${sanitizeConnectorText(parsed.value.uri)} but path discovery failed; run /mounts to refresh]`,
               );
               return;
             }
@@ -6378,7 +6378,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             if (!result.ok) {
               const message = isRpcMethodUnavailable(result.error)
                 ? "Mount add/remove requires a newer Nexus build with add_mount/remove_mount support."
-                : `Unmount failed: ${result.error.message}`;
+                : `Unmount failed: ${sanitizeConnectorText(result.error.message)}`;
               store.dispatch({
                 kind: "add_error",
                 code: "UNMOUNT_FAILED",
