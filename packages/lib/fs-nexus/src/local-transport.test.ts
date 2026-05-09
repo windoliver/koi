@@ -270,6 +270,7 @@ while True:
       mountUri: "local://./",
       _bridgePath: bridgePath,
       startupTimeoutMs: 5_000,
+      enableMountMutations: true,
     });
 
     const described = await transport.describeMount?.("/local/ws");

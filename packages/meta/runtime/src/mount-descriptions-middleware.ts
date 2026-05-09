@@ -153,6 +153,27 @@ function sortManifest(entries: readonly MountDescription[]): readonly MountDescr
   return [...entries].sort((a, b) => a.path.localeCompare(b.path));
 }
 
+/**
+ * Prompt-safe identifier allowlist. Identifiers that flow into the
+ * `<connector path="..." name="..." />` block of the system prompt must be
+ * drawn from a conservative character set — anything else is omitted from
+ * the rendered block (but retained in the operator-facing
+ * `MountDescriptionsState` snapshot, so /mounts and runtime bookkeeping
+ * still see live mounts whose names contain `@`, spaces, etc.).
+ *
+ * Path: one or more `/segment` runs, each segment using `[A-Za-z0-9._-]`.
+ * Connector: a single `[A-Za-z0-9._-]` token.
+ *
+ * XML escaping (escapeXmlAttr) remains a defense-in-depth layer for the
+ * permitted characters; this allowlist is the primary filter.
+ */
+const PROMPT_SAFE_PATH = /^(?:\/[A-Za-z0-9._-]+)+$/;
+const PROMPT_SAFE_CONNECTOR = /^[A-Za-z0-9._-]+$/;
+
+function isPromptSafeEntry(entry: MountDescription): boolean {
+  return PROMPT_SAFE_PATH.test(entry.path) && PROMPT_SAFE_CONNECTOR.test(entry.connector);
+}
+
 function escapeXmlAttr(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -175,29 +196,37 @@ function escapeXmlAttr(value: string): string {
  * via tool output or a dedicated lower-trust context channel instead.
  */
 /**
- * Render mount identity with XML-attribute escaping only. Earlier
- * iterations attempted lossy `_` substitution and reversible percent-
- * encoding for "strict" mode, but both broke path round-tripping: the
- * model would see `/gmail/alice%40example.com` or `/gmail/alice_example.com`
- * and issue tool calls against those paths, while the live mount stayed
- * at `/gmail/alice@example.com`. Filesystem operations would then fail
- * or hit the wrong target.
+ * Render the mount identity block.
  *
- * Defense at this layer:
- *   - escapeXmlAttr neutralizes `<`, `>`, `&`, `"` so identifiers cannot
- *     break the surrounding XML structure or open new tags.
- *   - The `strict` flag is retained on the API surface for backward
- *     compatibility but no longer alters rendering. Connector trust
- *     and the bridge's URI-scheme allowlist remain the boundary for
- *     mount-name *content*; this layer only renders.
+ * When `strict` is true, entries failing the prompt-safe identifier
+ * allowlist (PROMPT_SAFE_PATH / PROMPT_SAFE_CONNECTOR) are OMITTED from the
+ * rendered block — they are never injected into the system prompt — while
+ * remaining in the operator-facing `MountDescriptionsState` snapshot so
+ * /mounts continues to surface them to the user. Earlier iterations tried
+ * lossy `_` substitution and reversible percent-encoding so that the model
+ * could still see *something* for unsafe paths, but both broke round-trip:
+ * the model would issue tool calls against the rewritten string while the
+ * live mount stayed at its real path, so filesystem operations failed or
+ * hit the wrong target. Omission is the only correct option — the model
+ * simply does not see backend-controlled identifiers that fall outside the
+ * allowlist.
+ *
+ * When `strict` is false, every entry is rendered with XML-attribute
+ * escaping only. escapeXmlAttr remains a defense-in-depth layer in both
+ * modes so that even allowlisted identifiers cannot break the surrounding
+ * XML structure or open new tags.
+ *
+ * If filtering empties the block, the block is suppressed entirely (return
+ * undefined) so the prompt never contains an empty `<mounted_connectors />`.
  */
 function renderBlock(
   tag: "mounted_connectors" | "runtime_mounted_connectors",
   entries: readonly MountDescription[],
-  _strict: boolean,
+  strict: boolean,
 ): string | undefined {
-  if (entries.length === 0) return undefined;
-  const items = entries
+  const visible = strict ? entries.filter(isPromptSafeEntry) : entries;
+  if (visible.length === 0) return undefined;
+  const items = visible
     .map((entry) => {
       const attrs = [
         `path="${escapeXmlAttr(entry.path)}"`,

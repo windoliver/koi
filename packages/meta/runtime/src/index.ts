@@ -177,14 +177,6 @@ export {
 // Artifact tool provider (@koi/artifacts wiring)
 export type { ArtifactToolProviderConfig } from "./artifact-tool-provider.js";
 export { createArtifactToolProvider } from "./artifact-tool-provider.js";
-export type {
-  MountDescriptionsSnapshot,
-  MountDescriptionsState,
-} from "./mount-descriptions-middleware.js";
-export {
-  createMountDescriptionsMiddleware,
-  createMountDescriptionsState,
-} from "./mount-descriptions-middleware.js";
 // authed_fetch tool (gov-15) — agent-facing tool that consumes CREDENTIALS
 export type { AuthedFetchToolOptions } from "./authed-fetch-tool.js";
 export { createAuthedFetchTool } from "./authed-fetch-tool.js";
@@ -214,6 +206,14 @@ export type { McpLifecycleConfig } from "./middleware/mcp-lifecycle.js";
 export { recordMcpLifecycle } from "./middleware/mcp-lifecycle.js";
 export type { TraceWrapperConfig } from "./middleware/trace-wrapper.js";
 export { wrapMiddlewareWithTrace } from "./middleware/trace-wrapper.js";
+export type {
+  MountDescriptionsSnapshot,
+  MountDescriptionsState,
+} from "./mount-descriptions-middleware.js";
+export {
+  createMountDescriptionsMiddleware,
+  createMountDescriptionsState,
+} from "./mount-descriptions-middleware.js";
 export {
   resolveFileSystem,
   resolveFileSystemAsync,

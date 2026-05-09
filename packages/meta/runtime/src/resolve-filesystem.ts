@@ -554,6 +554,13 @@ export async function resolveFileSystemAsync(
       callTimeoutMs: options.callTimeoutMs,
       authTimeoutMs: options.authTimeoutMs,
       env: options.env,
+      // The resolver is the only authorized consumer of the raw mount
+      // mutation/inspection RPCs — guardedTransport (below) wraps them
+      // with read-only/scope/protected-root/overlap/quarantine checks
+      // before they reach the runtime. createLocalTransport defaults
+      // these methods to omitted; opting in here keeps them off-limits
+      // for any other createLocalTransport caller.
+      enableMountMutations: true,
     });
 
     // If backend construction fails, close the already-started subprocess to

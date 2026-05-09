@@ -105,6 +105,16 @@ interface LocalTransportConfig {
      * Never set this in production code.
      */
     readonly _bridgePath?: string | undefined;
+    /**
+     * Opt-in capability flag. When false/undefined (default), the returned
+     * transport omits the raw mount mutation and inspection RPCs
+     * (\`addMount\`, \`removeMount\`, \`listMounts\`, \`describeMount\`) so direct
+     * callers of \`createLocalTransport\` cannot bypass the resolver's
+     * read-only / scope / protected-root guards. Only enable from
+     * \`resolveFileSystemAsync\`, which wraps these methods with
+     * \`guardedTransport\` before exposing them to the runtime.
+     */
+    readonly enableMountMutations?: boolean | undefined;
 }
 /**
  * Spawn a local nexus-fs bridge process and return a NexusTransport.

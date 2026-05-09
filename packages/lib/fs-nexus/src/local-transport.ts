@@ -69,6 +69,16 @@ export interface LocalTransportConfig {
    * Never set this in production code.
    */
   readonly _bridgePath?: string | undefined;
+  /**
+   * Opt-in capability flag. When false/undefined (default), the returned
+   * transport omits the raw mount mutation and inspection RPCs
+   * (`addMount`, `removeMount`, `listMounts`, `describeMount`) so direct
+   * callers of `createLocalTransport` cannot bypass the resolver's
+   * read-only / scope / protected-root guards. Only enable from
+   * `resolveFileSystemAsync`, which wraps these methods with
+   * `guardedTransport` before exposing them to the runtime.
+   */
+  readonly enableMountMutations?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -679,7 +689,19 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     return result;
   }
 
-  return {
+  // Mutation+inspection RPCs are gated behind an explicit capability so
+  // direct callers of createLocalTransport (tests, scripts, future raw
+  // consumers) cannot reach addMount/removeMount/listMounts/describeMount
+  // without opting in. The resolver passes `enableMountMutations: true`
+  // and immediately wraps these in `guardedTransport` (read-only, scope,
+  // protected-root, quarantine, overlap). Default-deny preserves the
+  // safety invariants the resolver enforces.
+  //
+  // The `mounts` getter is defined directly (not via spread) so it remains
+  // a live view of the closed-over `mounts` array; spreading would capture
+  // its value at construction time and addMount/removeMount updates would
+  // never be visible.
+  const transport: NexusTransport = {
     kind: "local-bridge",
     call,
     subscribe,
@@ -700,11 +722,11 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     mountConnector(path: string): string | undefined {
       return mountConnectors.get(path);
     },
-    describeMount,
-    addMount,
-    removeMount,
-    listMounts,
+    ...(config.enableMountMutations === true
+      ? { describeMount, addMount, removeMount, listMounts }
+      : {}),
   };
+  return transport;
 }
 
 // ---------------------------------------------------------------------------
