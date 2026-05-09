@@ -6,7 +6,7 @@ describe("createProactiveTools", () => {
   test("returns sleep, cron, and monitor tools in stable order", () => {
     const stub = createSchedulerStub();
     const tools = createProactiveTools({ scheduler: stub.component });
-    expect(tools.map((t) => t.descriptor.name)).toEqual(PROACTIVE_TOOL_NAMES);
+    expect(tools.map((t) => t.descriptor.name)).toEqual([...PROACTIVE_TOOL_NAMES]);
   });
 
   test("all tools share the primordial origin", () => {

@@ -108,7 +108,7 @@ export function formatMonitorWakeMessage(args: {
   readonly name: string;
   readonly goal: string;
   readonly checkPrompt: string;
-  readonly contextHint?: string;
+  readonly contextHint?: string | undefined;
 }): string {
   const lines = [`Monitor check: ${args.name}`, `Goal: ${args.goal}`, `Check: ${args.checkPrompt}`];
   if (args.contextHint !== undefined) {
@@ -122,8 +122,8 @@ function buildCreateFingerprint(args: {
   readonly goal: string;
   readonly check_prompt: string;
   readonly expression: string;
-  readonly timezone?: string;
-  readonly context_hint?: string;
+  readonly timezone?: string | undefined;
+  readonly context_hint?: string | undefined;
 }): MonitorCreateFingerprint {
   return {
     name: args.name,
@@ -157,9 +157,9 @@ function buildMonitorRecord(
     readonly goal: string;
     readonly checkPrompt: string;
     readonly expression: string;
-    readonly timezone?: string;
-    readonly contextHint?: string;
-    readonly idempotencyKey?: string;
+    readonly timezone?: string | undefined;
+    readonly contextHint?: string | undefined;
+    readonly idempotencyKey?: string | undefined;
   },
 ): MonitorRecord {
   return {

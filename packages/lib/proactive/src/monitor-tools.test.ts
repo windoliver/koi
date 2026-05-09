@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { scheduleId } from "@koi/core";
 import {
   createCancelMonitorTool,
   createCreateMonitorTool,
@@ -231,7 +232,7 @@ describe("monitor tools", () => {
 
     expect(updated.ok).toBe(true);
     expect(updated.schedule_id).not.toBe(created.schedule_id);
-    expect(stub.unscheduleCalls).toEqual([created.schedule_id]);
+    expect(stub.unscheduleCalls).toEqual([scheduleId(created.schedule_id)]);
     expect(stub.scheduleCalls[1]?.options).toEqual({ timezone: "America/New_York" });
 
     const listed = (await listMonitors.execute({})) as {
@@ -355,7 +356,7 @@ describe("monitor tools", () => {
     expect(failed.ok).toBe(false);
     expect(failed.error).toContain("retire previous monitor schedule");
     expect(stub.unscheduleCalls).toHaveLength(2);
-    expect(stub.unscheduleCalls[0]).toBe(created.schedule_id);
+    expect(stub.unscheduleCalls[0]).toBe(scheduleId(created.schedule_id));
     expect(String(stub.unscheduleCalls[1])).toBe("sched-2");
 
     const listed = (await listMonitors.execute({})) as {
@@ -386,7 +387,7 @@ describe("monitor tools", () => {
       monitor_id: created.monitor_id,
     })) as { ok: boolean; removed: boolean };
     expect(cancelled).toEqual({ ok: true, removed: true });
-    expect(stub.unscheduleCalls).toEqual([created.schedule_id]);
+    expect(stub.unscheduleCalls).toEqual([scheduleId(created.schedule_id)]);
 
     const listed = (await listMonitors.execute({})) as { monitors: unknown[] };
     expect(listed.monitors).toHaveLength(0);
@@ -420,7 +421,7 @@ describe("monitor tools", () => {
       monitor_id: created.monitor_id,
     })) as { ok: boolean; removed: boolean };
     expect(cancelled).toEqual({ ok: true, removed: true });
-    expect(stub.unscheduleCalls).toEqual([created.schedule_id]);
+    expect(stub.unscheduleCalls).toEqual([scheduleId(created.schedule_id)]);
 
     const listed = (await listMonitors.execute({})) as { monitors: unknown[] };
     expect(listed.monitors).toHaveLength(0);

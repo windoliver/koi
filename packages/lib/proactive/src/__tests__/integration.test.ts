@@ -15,24 +15,56 @@ import type {
   AgentId,
   EngineInput,
   SchedulerComponent,
+  ScheduleStore,
   SubsystemToken,
   TaskScheduler,
+  TaskStore,
 } from "@koi/core";
-import { agentId, DEFAULT_SCHEDULER_CONFIG, SCHEDULER, toolToken } from "@koi/core";
-import {
+import { agentId, DEFAULT_SCHEDULER_CONFIG, SCHEDULER, scheduleId, toolToken } from "@koi/core";
+import { createProactiveToolsProvider } from "../provider.js";
+
+setDefaultTimeout(15_000);
+
+interface FakeClock {
+  readonly now: () => number;
+  readonly setTimeout: (fn: () => void, ms: number) => ReturnType<typeof globalThis.setTimeout>;
+  readonly clearTimeout: (id: ReturnType<typeof globalThis.setTimeout>) => void;
+  readonly tick: (ms: number) => void;
+  readonly setTime: (ms: number) => void;
+}
+
+interface SchedulerModule {
+  readonly createFakeClock: (initialTime?: number) => FakeClock;
+  readonly createScheduler: (
+    config: typeof DEFAULT_SCHEDULER_CONFIG,
+    store: TaskStore,
+    dispatcher: (
+      agentId: AgentId,
+      input: EngineInput,
+      mode: "spawn" | "dispatch",
+      signal: AbortSignal,
+    ) => Promise<void>,
+    clock?: FakeClock,
+    scheduleStore?: ScheduleStore,
+  ) => TaskScheduler;
+  readonly createSchedulerComponent: (
+    scheduler: TaskScheduler,
+    agentId: AgentId,
+  ) => SchedulerComponent;
+  readonly createSqliteScheduleStore: (db: Database) => ScheduleStore;
+  readonly createSqliteTaskStore: (db: Database) => TaskStore;
+}
+
+const schedulerSourceEntrypoint = "../../../../sched/scheduler/src/" + "index.js";
+const schedulerModule = (await import(schedulerSourceEntrypoint)) as SchedulerModule;
+
+const {
   createFakeClock,
   createScheduler,
   createSchedulerComponent,
   createSqliteScheduleStore,
   createSqliteTaskStore,
-  type FakeClock,
-  // Focused `bun test packages/lib/proactive/src/__tests__/integration.test.ts`
-  // cannot resolve the public `@koi/scheduler` workspace export in this repo
-  // layout today, so this test uses the package's public source entrypoint.
-} from "../../../../sched/scheduler/src/index.js";
-import { createProactiveToolsProvider } from "../provider.js";
-
-setDefaultTimeout(15_000);
+} = schedulerModule;
 
 interface Harness {
   readonly scheduler: TaskScheduler;
@@ -50,8 +82,8 @@ function buildHarness(): Harness {
   const scheduler = createScheduler(
     { ...DEFAULT_SCHEDULER_CONFIG, pollIntervalMs: 1 },
     createSqliteTaskStore(db),
-    async (_a: AgentId, inp: EngineInput) => {
-      dispatched.push(inp);
+    async (_agentId: AgentId, input: EngineInput) => {
+      dispatched.push(input);
     },
     clock,
     createSqliteScheduleStore(db),
@@ -349,7 +381,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     const live = await h.scheduler.querySchedules(h.aid);
     expect(live).toHaveLength(1);
     expect(live[0]).toEqual({
-      id: created.schedule_id,
+      id: scheduleId(created.schedule_id),
       agentId: h.aid,
       expression,
       input: { kind: "text", text: wakeText },
@@ -419,7 +451,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     const live = await h.scheduler.querySchedules(h.aid);
     expect(live).toHaveLength(1);
     expect(live[0]).toEqual({
-      id: updated.schedule_id,
+      id: scheduleId(updated.schedule_id),
       agentId: h.aid,
       expression: updatedExpression,
       input: { kind: "text", text: updatedWakeText },
