@@ -411,13 +411,7 @@ export function createUpdateMonitorTool(
       }
 
       try {
-        const removed = await scheduler.unschedule(scheduleId(current.scheduleId));
-        if (!removed) {
-          return {
-            ok: false,
-            error: `Failed to retire previous monitor schedule: removed:false for '${current.scheduleId}'`,
-          };
-        }
+        await scheduler.unschedule(scheduleId(current.scheduleId));
       } catch (e: unknown) {
         return {
           ok: false,
