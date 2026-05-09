@@ -88,4 +88,36 @@ describe("createNexusAgentProvider", () => {
     expect(attached.components.get("scratchpad")).toBeDefined();
     expect(attached.components.get("workspace")).toBeUndefined();
   });
+
+  test("awaits async scratchpad and workspace wiring and exposes a no-op detach", async () => {
+    const { createNexusAgentProvider } = await import(
+      `./agent-provider.js?cacheBust=${Date.now()}-${Math.random()}`
+    );
+
+    const provider = createNexusAgentProvider({
+      createFileSystem: (agentId) => ({ kind: "fs", agentId }),
+      createMailbox: async (agentId) => ({ kind: "mailbox", agentId }),
+      createSnapshotStore: (agentId) => ({ kind: "snapshot", agentId }),
+      createPlaybookStore: (agentId) => ({ kind: "playbook", agentId }),
+      createHandoffStore: (agentId) => ({ kind: "handoff", agentId }),
+      createScratchpad: async (groupId) => ({ kind: "scratchpad", groupId }),
+      createWorkspace: async (agentId) => ({ kind: "workspace", agentId }),
+      enableScratchpad: true,
+      enableWorkspace: true,
+    });
+
+    const attached = await provider.attach({
+      pid: { id: "agent-2", groupId: "group-2" },
+    } as never);
+
+    expect(attached.components.get("scratchpad")).toEqual({
+      kind: "scratchpad",
+      groupId: "group-2",
+    });
+    expect(attached.components.get("workspace")).toEqual({
+      kind: "workspace",
+      agentId: "agent-2",
+    });
+    await expect(provider.detach()).resolves.toBeUndefined();
+  });
 });
