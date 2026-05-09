@@ -401,7 +401,7 @@ describe("monitor tools", () => {
     expect(recreated.monitor_id).not.toBe(created.monitor_id);
   });
 
-  test("cancel_monitor keeps the record when unschedule reports false", async () => {
+  test("cancel_monitor still removes known local state when unschedule reports false", async () => {
     const stub = createSchedulerStub({ unscheduleResult: false });
     const state = createMonitorToolState();
     const createMonitor = createCreateMonitorTool({ scheduler: stub.component }, state);
@@ -419,32 +419,21 @@ describe("monitor tools", () => {
     const cancelled = (await cancelMonitor.execute({
       monitor_id: created.monitor_id,
     })) as { ok: boolean; removed: boolean };
-    expect(cancelled).toEqual({ ok: true, removed: false });
+    expect(cancelled).toEqual({ ok: true, removed: true });
     expect(stub.unscheduleCalls).toEqual([created.schedule_id]);
 
-    const listed = (await listMonitors.execute({})) as {
-      monitors: { monitor_id: string; schedule_id: string }[];
-    };
-    expect(listed.monitors).toEqual([
-      {
-        monitor_id: created.monitor_id,
-        name: "dependency-watch",
-        goal: "Detect whether issue #1212 is unblocked",
-        expression: "0 9 * * *",
-        schedule_id: created.schedule_id,
-      },
-    ]);
+    const listed = (await listMonitors.execute({})) as { monitors: unknown[] };
+    expect(listed.monitors).toHaveLength(0);
 
-    const deduped = (await createMonitor.execute({
+    const recreated = (await createMonitor.execute({
       name: "dependency-watch",
       goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo state.",
       expression: "0 9 * * *",
       idempotency_key: "dep-watch",
-    })) as { monitor_id: string; schedule_id: string; deduped?: boolean };
-    expect(deduped.monitor_id).toBe(created.monitor_id);
-    expect(deduped.schedule_id).toBe(created.schedule_id);
-    expect(deduped.deduped).toBe(true);
+    })) as { monitor_id: string; deduped?: boolean };
+    expect(recreated.monitor_id).not.toBe(created.monitor_id);
+    expect(recreated.deduped).toBeUndefined();
   });
 
   test("cancel_monitor returns removed:false for an unknown monitor_id", async () => {
