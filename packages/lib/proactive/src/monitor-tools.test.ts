@@ -90,6 +90,50 @@ describe("monitor tools", () => {
     expect(mismatch.error).toContain("already registered");
   });
 
+  test("create_monitor validates required fields before touching the scheduler", async () => {
+    const stub = createSchedulerStub();
+    const state = createMonitorToolState();
+    const createMonitor = createCreateMonitorTool({ scheduler: stub.component }, state);
+
+    const invalid = (await createMonitor.execute({
+      name: "",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+    })) as { ok: boolean; error: string };
+
+    expect(invalid.ok).toBe(false);
+    expect(invalid.error).toContain("name");
+    expect(stub.scheduleCalls).toHaveLength(0);
+  });
+
+  test("create_monitor clears its reservation after a failed scheduler create", async () => {
+    const stub = createSchedulerStub({ scheduleError: new Error("scheduler unavailable") });
+    const state = createMonitorToolState();
+    const createMonitor = createCreateMonitorTool({ scheduler: stub.component }, state);
+
+    const failed = (await createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+      idempotency_key: "dep-watch",
+    })) as { ok: boolean; error: string };
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toContain("scheduler unavailable");
+
+    const retry = (await createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+      idempotency_key: "dep-watch",
+    })) as { ok: boolean; error: string };
+    expect(retry.ok).toBe(false);
+    expect(retry.error).toContain("scheduler unavailable");
+    expect(state.monitorIdByIdempotencyKey.size).toBe(0);
+  });
+
   test("update_monitor rotates the backing schedule and replaces stored fields", async () => {
     const stub = createSchedulerStub();
     const state = createMonitorToolState();
@@ -122,6 +166,82 @@ describe("monitor tools", () => {
     expect(listed.monitors[0]?.expression).toBe("30 9 * * *");
     expect(listed.monitors[0]?.context_hint).toBe("Focus on delivery and durability work.");
     expect(listed.monitors[0]?.schedule_id).toBe(updated.schedule_id);
+  });
+
+  test("update_monitor fails for an unknown monitor_id", async () => {
+    const stub = createSchedulerStub();
+    const state = createMonitorToolState();
+    const updateMonitor = createUpdateMonitorTool({ scheduler: stub.component }, state);
+
+    const result = (await updateMonitor.execute({
+      monitor_id: "monitor-missing",
+      goal: "Detect whether issue #1301 is unblocked",
+    })) as { ok: boolean; error: string };
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("not found");
+    expect(stub.scheduleCalls).toHaveLength(0);
+    expect(stub.unscheduleCalls).toHaveLength(0);
+  });
+
+  test("update_monitor preserves omitted fields by patch semantics", async () => {
+    const stub = createSchedulerStub();
+    const state = createMonitorToolState();
+    const createMonitor = createCreateMonitorTool({ scheduler: stub.component }, state);
+    const updateMonitor = createUpdateMonitorTool({ scheduler: stub.component }, state);
+    const listMonitors = createListMonitorsTool(state);
+
+    const created = (await createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+      context_hint: "Look at scheduler/channel restoration issues first.",
+    })) as { monitor_id: string };
+
+    await updateMonitor.execute({
+      monitor_id: created.monitor_id,
+      goal: "Detect whether issue #1301 is unblocked",
+    });
+
+    const listed = (await listMonitors.execute({})) as {
+      monitors: { name: string; goal: string; expression: string; context_hint?: string }[];
+    };
+    expect(listed.monitors[0]?.name).toBe("dependency-watch");
+    expect(listed.monitors[0]?.goal).toBe("Detect whether issue #1301 is unblocked");
+    expect(listed.monitors[0]?.expression).toBe("0 9 * * *");
+    expect(listed.monitors[0]?.context_hint).toBe(
+      "Look at scheduler/channel restoration issues first.",
+    );
+  });
+
+  test("update_monitor leaves the original record intact when replacement scheduling fails", async () => {
+    const state = createMonitorToolState();
+    const createStub = createSchedulerStub();
+    const failingStub = createSchedulerStub({ scheduleError: new Error("scheduler unavailable") });
+    const createMonitor = createCreateMonitorTool({ scheduler: createStub.component }, state);
+    const updateMonitor = createUpdateMonitorTool({ scheduler: failingStub.component }, state);
+    const listMonitors = createListMonitorsTool(state);
+
+    const created = (await createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+    })) as { monitor_id: string; schedule_id: string };
+
+    const failed = (await updateMonitor.execute({
+      monitor_id: created.monitor_id,
+      goal: "Detect whether issue #1301 is unblocked",
+    })) as { ok: boolean; error: string };
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toContain("scheduler unavailable");
+
+    const listed = (await listMonitors.execute({})) as {
+      monitors: { goal: string; schedule_id: string }[];
+    };
+    expect(listed.monitors[0]?.goal).toBe("Detect whether issue #1212 is unblocked");
+    expect(listed.monitors[0]?.schedule_id).toBe(created.schedule_id);
   });
 
   test("cancel_monitor removes the record and clears create-time idempotency", async () => {
@@ -182,6 +302,22 @@ describe("monitor tools", () => {
         "Goal: Detect whether issue #1212 is unblocked",
         "Check: Inspect repo and GitHub state, then decide whether follow-up is warranted.",
         "Context: Look at scheduler/channel restoration issues first.",
+      ].join("\n"),
+    );
+  });
+
+  test("formatMonitorWakeMessage omits the Context line when no context hint is present", () => {
+    expect(
+      formatMonitorWakeMessage({
+        name: "dependency-watch",
+        goal: "Detect whether issue #1212 is unblocked",
+        checkPrompt: "Inspect repo state.",
+      }),
+    ).toBe(
+      [
+        "Monitor check: dependency-watch",
+        "Goal: Detect whether issue #1212 is unblocked",
+        "Check: Inspect repo state.",
       ].join("\n"),
     );
   });
