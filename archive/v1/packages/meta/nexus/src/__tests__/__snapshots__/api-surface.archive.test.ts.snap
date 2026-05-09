@@ -1,0 +1,7 @@
+exports[`@koi/nexus API surface . has stable type surface 1`] = `
+"export { createNexusStack } from \\"./nexus-stack.js\\";
+export type { NexusStackConfig, NexusStack, NexusAgentProvider, NexusGlobalBackends, } from \\"./types.js\\";
+export { computeAgentNamespace, computeGroupNamespace } from \\"./namespace.js\\";
+export type { NamespaceStrategy, AgentNamespace } from \\"./namespace.js\\";
+"
+`;

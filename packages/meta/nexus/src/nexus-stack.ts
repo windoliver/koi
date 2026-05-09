@@ -1,85 +1,40 @@
-import type { NexusBundle } from "./types.js";
+import { createNexusAgentProvider } from "./agent-provider.js";
+import { createGlobalBackends } from "./global-backends.js";
+import type { NexusBundle, NexusStackConfig } from "./types.js";
 
-const LIVE_GLOBAL_SURFACES = {
-  registry: "@koi/registry-nexus",
-  permissions: "@koi/permissions-nexus",
-  audit: "@koi/audit-sink-nexus",
-  search: "@koi/search-nexus",
-  scheduler: "@koi/scheduler-nexus",
-} as const;
+async function runDisposers(disposers: readonly (() => void | Promise<void>)[]): Promise<void> {
+  const results = await Promise.allSettled(disposers.map(async (dispose) => dispose()));
+  const firstFailure = results.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (firstFailure !== undefined) {
+    throw firstFailure.reason;
+  }
+}
 
-const LIVE_AGENT_SURFACES = {
-  filesystem: "@koi/fs-nexus",
-  mailbox: "@koi/ipc-nexus",
-  scratchpad: "@koi/scratchpad-nexus",
-  workspace: "@koi/workspace-nexus",
-  snapshotStore: "@koi/snapshot-store-nexus",
-  playbookStore: "@koi/playbook-store-nexus",
-  handoffStore: "@koi/handoff",
-} as const;
-
-const OUT_OF_SCOPE_SURFACES = [
-  "@koi/nexus-store",
-  "@koi/filesystem-nexus",
-  "@koi/pay-nexus",
-  "@koi/name-service-nexus",
-] as const;
-
-void OUT_OF_SCOPE_SURFACES;
-
-export async function createNexusStack(config: {
-  readonly transport: unknown;
-  readonly enableScratchpad: boolean;
-  readonly enableWorkspace: boolean;
-  readonly global: {
-    readonly registry?: boolean;
-    readonly permissions?: boolean;
-    readonly audit?: boolean;
-    readonly search?: boolean;
-    readonly scheduler?: boolean;
-  };
-}): Promise<NexusBundle> {
+export async function createNexusStack(config: NexusStackConfig): Promise<NexusBundle> {
   void config.transport;
+  const provider = createNexusAgentProvider({
+    ...config.agentProvider,
+    enableScratchpad: config.enableScratchpad,
+    enableWorkspace: config.enableWorkspace,
+  });
+  const backends = await createGlobalBackends(config.globalFactories, config.global);
+
+  const disposers: Array<() => void | Promise<void>> = [provider.detach];
+  if (config.dispose !== undefined) {
+    disposers.push(...config.dispose);
+  }
+
   return {
-    backends: {
-      ...(config.global.registry === false
-        ? {}
-        : { registry: { surface: LIVE_GLOBAL_SURFACES.registry } }),
-      ...(config.global.permissions === false
-        ? {}
-        : { permissions: { surface: LIVE_GLOBAL_SURFACES.permissions } }),
-      ...(config.global.audit === false ? {} : { audit: { surface: LIVE_GLOBAL_SURFACES.audit } }),
-      ...(config.global.search === false
-        ? {}
-        : { search: { surface: LIVE_GLOBAL_SURFACES.search } }),
-      ...(config.global.scheduler === false
-        ? {}
-        : { scheduler: { surface: LIVE_GLOBAL_SURFACES.scheduler } }),
-    },
-    providers: [
-      {
-        surface: "@koi/nexus-agent-provider",
-        components: [
-          { key: "filesystem", surface: LIVE_AGENT_SURFACES.filesystem },
-          { key: "mailbox", surface: LIVE_AGENT_SURFACES.mailbox },
-          { key: "snapshot-store", surface: LIVE_AGENT_SURFACES.snapshotStore },
-          { key: "playbook-store", surface: LIVE_AGENT_SURFACES.playbookStore },
-          { key: "handoff-store", surface: LIVE_AGENT_SURFACES.handoffStore },
-          ...(config.enableScratchpad
-            ? [{ key: "scratchpad", surface: LIVE_AGENT_SURFACES.scratchpad }]
-            : []),
-          ...(config.enableWorkspace
-            ? [{ key: "workspace", surface: LIVE_AGENT_SURFACES.workspace }]
-            : []),
-        ],
-      },
-    ],
-    middlewares: [],
+    backends,
+    providers: [provider],
+    middlewares: config.middlewares ?? [],
     config: {
       transportKind: "provided",
       scratchpadEnabled: config.enableScratchpad,
       workspaceEnabled: config.enableWorkspace,
     },
-    dispose: async () => {},
+    dispose: async () => runDisposers(disposers),
   };
 }

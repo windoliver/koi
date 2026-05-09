@@ -310,14 +310,14 @@ Purpose-built for running agents as background services (systemd, launchd, Docke
 
 Both commands resolve channels from the manifest. `start` falls back to a CLI channel (stdin/stdout REPL), while `serve` operates headless with only manifest-declared channels (Slack, Discord, HTTP webhook, etc.).
 
-### Shared Nexus Resolution (`resolve-nexus.ts`)
+### Shared Nexus Resolution (`resolve-nexus-for-host.ts`)
 
-Centralized Nexus URL resolution with clear priority:
+Centralized host-side Nexus endpoint resolution with clear priority:
 
 ```
 1. --nexus-url CLI flag       (highest priority)
-2. NEXUS_URL env var
-3. Embed mode — auto-start    (lowest priority, default)
+2. manifest.nexus.url / NEXUS_URL env
+3. sandbox spawn via @koi/nexus-sandbox when the host needs a global endpoint
 ```
 
 ---
@@ -777,28 +777,29 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 
 ## Nexus Resolution
 
-The `resolve-nexus.ts` module provides two exported functions:
+The current CLI does **not** build a runtime Nexus bundle through `@koi/nexus.createNexusStack()`. Instead it resolves a host endpoint when one is needed, sets `NEXUS_URL`, and wires individual Nexus-backed packages directly in the relevant CLI paths.
 
-### `resolveNexusStack(nexusUrl)`
+### `resolveNexusEndpoint(input, deps)`
 
-Core resolver. Creates the full Nexus stack via `@koi/nexus.createNexusStack()`. Returns `NexusResolution` with middlewares, providers, dispose, and baseUrl.
+Pure resolver in `nexus-resolver.ts`. It decides between:
 
-### `resolveNexusOrWarn(nexusUrl, verbose)`
+- explicit CLI URL
+- explicit manifest URL
+- `NEXUS_URL`
+- spawned local sandbox via `@koi/nexus-sandbox`
 
-Safe wrapper used by both commands. Returns `NexusResolvedState` — on success returns the Nexus stack directly, on failure returns empty defaults (`EMPTY_NEXUS`) and logs a warning. The agent always starts, even if Nexus is unavailable.
+It returns a `NexusEndpoint` with `url`, `source`, `shutdown()`, and `terminate()`.
 
-```typescript
-// In start.ts and serve.ts:
-const nexus = await resolveNexusOrWarn(flags.nexusUrl, flags.verbose);
+### `resolveNexusForHost(input)`
 
-const runtime = await createKoi({
-  manifest,
-  adapter,
-  middleware: [...resolved.value.middleware, ...nexus.middlewares],
-  providers: [...nexus.providers],
-  extensions,
-});
-```
+Host-side wrapper in `resolve-nexus-for-host.ts`. It only resolves an endpoint when the host actually needs one:
+
+- `--nexus-url`
+- `manifest.nexus`
+- Nexus-backed delegation
+- Nexus filesystem without its own explicit URL
+
+That keeps the CLI from spawning or resolving Nexus when no active subsystem needs it.
 
 ---
 

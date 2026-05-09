@@ -5,7 +5,7 @@ import { createNexusSchedulerBackends } from "@koi/scheduler-nexus";
 import { createNexusSearch } from "@koi/search-nexus";
 import type { GlobalBackendFactories, GlobalBackendFlags, NexusGlobalBackends } from "./types.js";
 
-export const liveGlobalBackendImports = {
+export const liveGlobalBackendImports: Record<string, unknown> = {
   registry: createNexusRegistry,
   permissions: createNexusPermissionBackend,
   audit: createNexusAuditSink,

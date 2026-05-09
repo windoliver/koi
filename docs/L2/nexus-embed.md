@@ -122,34 +122,22 @@ ensureNexusRunning()
     └─ 7. Save connection state + return { baseUrl, spawned, pid }
 ```
 
-### Integration with @koi/nexus (L3)
+### Integration Notes
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  @koi/cli (L3)                                           │
 │                                                          │
 │  koi start / koi serve                                   │
-│    └─ resolveNexusStack()                                │
-│         └─ createNexusStack({ baseUrl? })                │
-│              │                                           │
-│              ├─ baseUrl provided → connect to remote     │
-│              └─ baseUrl missing  → lazy import embed     │
-│                   └─ ensureNexusRunning()                 │
-│                        └─ spawn + poll → baseUrl         │
+│    └─ resolveNexusForHost(...)                           │
+│         └─ resolveNexusEndpoint(...)                     │
+│              ├─ explicit URL → use remote endpoint       │
+│              └─ sandbox mode / auto fallback             │
+│                   └─ @koi/nexus-sandbox startSandbox()   │
 │                                                          │
 │  koi stop --nexus                                        │
 │    └─ stopEmbedNexus()                                   │
 │         └─ SIGTERM + clean PID/state files               │
-└──────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────┐
-│  @koi/nexus (L3)                                         │
-│    createNexusStack(config)                               │
-│      └─ if !baseUrl: await import("@koi/nexus-embed")    │
-│                         └─ ensureNexusRunning()           │
-│      └─ createNexusClient({ baseUrl, apiKey? })           │
-│      └─ createGlobalBackends(...)                         │
-│      └─ createNexusAgentProvider(...)                     │
 └──────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────┐
@@ -160,6 +148,8 @@ ensureNexusRunning()
 │    resolveNexusBinary()  → string[]                       │
 └──────────────────────────────────────────────────────────┘
 ```
+
+`@koi/nexus` now exists as an L3 composition bundle, but it does not currently auto-import `@koi/nexus-embed`. Host-side auto-start behavior in the live CLI is handled by the resolver path above.
 
 ### Package Structure
 

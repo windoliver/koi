@@ -103,16 +103,29 @@ const { providers } = createIpcStack({
 ### With Nexus (via @koi/nexus)
 
 ```typescript
-import { createNexusBackends } from "@koi/nexus";
+import { createNexusStack } from "@koi/nexus";
 import { createIpcStack } from "@koi/ipc-stack";
 
-const nexus = createNexusBackends({ baseUrl, apiKey });
+const nexus = await createNexusStack({
+  transport,
+  enableScratchpad: true,
+  enableWorkspace: false,
+  global: {
+    registry: true,
+    permissions: true,
+    audit: false,
+    search: false,
+    scheduler: false,
+  },
+  globalFactories,
+  agentProvider,
+});
 
 const { providers, middlewares } = createIpcStack({
   spawn: mySpawnFn,
   preset: "distributed",
-  nexusProviders: [nexus.mailbox.provider, nexus.scratchpad.provider],
-  nexusMiddlewares: [nexus.scratchpad.middleware],
+  nexusProviders: [...nexus.providers],
+  nexusMiddlewares: [...nexus.middlewares],
 });
 ```
 

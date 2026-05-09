@@ -36,6 +36,6 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
-    "test:api": "bun test src/__tests__/api-surface.test.ts"
+    "test:api": "bun test src/__tests__/api-surface.archive.test.ts"
   }
 }

@@ -12,9 +12,9 @@
   },
   "scripts": {
     "build": "bun ../../../scripts/run-tsup.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -b --pretty false",
     "lint": "biome check .",
-    "test": "bun test"
+    "test": "bun test src"
   },
   "koi": {
     "optional": true

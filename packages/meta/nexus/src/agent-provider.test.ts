@@ -65,13 +65,13 @@ describe("createNexusAgentProvider", () => {
     );
 
     const provider = createNexusAgentProvider({
-      createFileSystem: (agentId) => ({ kind: "fs", agentId }),
-      createMailbox: async (agentId) => ({ kind: "mailbox", agentId }),
-      createSnapshotStore: (agentId) => ({ kind: "snapshot", agentId }),
-      createPlaybookStore: (agentId) => ({ kind: "playbook", agentId }),
-      createHandoffStore: (agentId) => ({ kind: "handoff", agentId }),
-      createScratchpad: (groupId) => ({ kind: "scratchpad", groupId }),
-      createWorkspace: async (agentId) => ({ kind: "workspace", agentId }),
+      createFileSystem: (agentId: string) => ({ kind: "fs", agentId }),
+      createMailbox: async (agentId: string) => ({ kind: "mailbox", agentId }),
+      createSnapshotStore: (agentId: string) => ({ kind: "snapshot", agentId }),
+      createPlaybookStore: (agentId: string) => ({ kind: "playbook", agentId }),
+      createHandoffStore: (agentId: string) => ({ kind: "handoff", agentId }),
+      createScratchpad: (groupId: string) => ({ kind: "scratchpad", groupId }),
+      createWorkspace: async (agentId: string) => ({ kind: "workspace", agentId }),
       enableScratchpad: true,
       enableWorkspace: false,
     });
@@ -95,13 +95,13 @@ describe("createNexusAgentProvider", () => {
     );
 
     const provider = createNexusAgentProvider({
-      createFileSystem: (agentId) => ({ kind: "fs", agentId }),
-      createMailbox: async (agentId) => ({ kind: "mailbox", agentId }),
-      createSnapshotStore: (agentId) => ({ kind: "snapshot", agentId }),
-      createPlaybookStore: (agentId) => ({ kind: "playbook", agentId }),
-      createHandoffStore: (agentId) => ({ kind: "handoff", agentId }),
-      createScratchpad: async (groupId) => ({ kind: "scratchpad", groupId }),
-      createWorkspace: async (agentId) => ({ kind: "workspace", agentId }),
+      createFileSystem: (agentId: string) => ({ kind: "fs", agentId }),
+      createMailbox: async (agentId: string) => ({ kind: "mailbox", agentId }),
+      createSnapshotStore: (agentId: string) => ({ kind: "snapshot", agentId }),
+      createPlaybookStore: (agentId: string) => ({ kind: "playbook", agentId }),
+      createHandoffStore: (agentId: string) => ({ kind: "handoff", agentId }),
+      createScratchpad: async (groupId: string) => ({ kind: "scratchpad", groupId }),
+      createWorkspace: async (agentId: string) => ({ kind: "workspace", agentId }),
       enableScratchpad: true,
       enableWorkspace: true,
     });

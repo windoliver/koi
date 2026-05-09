@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 218 workspace packages
+- 219 workspace packages
 - 11 package families
-- 218 packages with local test files
-- 194 packages with dedicated package docs
+- 219 packages with local test files
+- 195 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,8 +16,8 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 144 | 745 | 125 |
-| meta | 4 | 112 | 3 |
+| lib | 144 | 736 | 125 |
+| meta | 5 | 117 | 4 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
 | sandbox | 12 | 67 | 12 |
@@ -119,7 +119,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/long-running` (packages/lib/long-running) - Long-running harness — multi-turn agent lifecycle with soft checkpointing, pause/resume, and crash recovery. Tests: 1. Docs: docs/L2/long-running.md.
 - `@koi/loop` (packages/lib/loop) - Convergence loop primitive — re-runs an agent until a deterministic verifier passes or a budget is exhausted. Tests: 8. Docs: docs/L2/loop.md.
 - `@koi/lsp` (packages/lib/lsp) - LSP client tools: hover, definition, references, diagnostics, symbols. Tests: 9. Docs: docs/L2/lsp.md.
-- `@koi/middleware-ace` (packages/lib/middleware-ace) - Adaptive Continuous Enhancement — trajectory-to-playbook self-improvement loop (stat pipeline + injection). Tests: 11. Docs: docs/L2/middleware-ace.md.
+- `@koi/middleware-ace` (packages/lib/middleware-ace) - Adaptive Continuous Enhancement — trajectory-to-playbook self-improvement loop (stat pipeline + injection). Tests: 6. Docs: docs/L2/middleware-ace.md.
 - `@koi/middleware-call-dedup` (packages/lib/middleware-call-dedup) - Cache deterministic tool call results within a session by content-hashed key. Tests: 3. Docs: docs/L2/middleware-call-dedup.md.
 - `@koi/middleware-call-limits` (packages/lib/middleware-call-limits) - Per-session tool and model call caps with atomic increment-if-below counters. Tests: 4. Docs: docs/L2/middleware-call-limits.md.
 - `@koi/middleware-circuit-breaker` (packages/lib/middleware-circuit-breaker) - Per-provider circuit breaker for model calls — fail fast on unhealthy providers. Tests: 1. Docs: docs/L2/middleware-circuit-breaker.md.
@@ -154,7 +154,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/playbook-store-nexus` (packages/lib/playbook-store-nexus) - L2 storage adapter: ACE PlaybookStore/StructuredPlaybookStore/TrajectoryStore/PlaybookProposalStore over Nexus. Tests: 5. Docs: docs/L2/playbook-store-nexus.md.
 - `@koi/playbook-store-sqlite` (packages/lib/playbook-store-sqlite) - L2 storage adapter: persistent ACE PlaybookStore + TrajectoryStore + PlaybookProposalStore over SQLite. Tests: 1. Docs: docs/L2/playbook-store-sqlite.md.
 - `@koi/plugins` (packages/lib/plugins) - Plugin manifest validation, multi-source discovery, and in-memory registry. Tests: 7. Docs: docs/L2/plugins.md.
-- `@koi/proactive` (packages/lib/proactive) - Proactive/autonomous tool surfaces — sleep, wake, and cron tools over SchedulerComponent. Tests: 15. Docs: docs/L2/proactive.md.
+- `@koi/proactive` (packages/lib/proactive) - Proactive/autonomous tool surfaces — sleep, wake, and cron tools over SchedulerComponent. Tests: 11. Docs: docs/L2/proactive.md.
 - `@koi/query-engine` (packages/lib/query-engine) - Stream consumer that maps ModelChunk to EngineEvent with tool-call argument accumulation. Tests: 6. Docs: docs/L2/query-engine.md.
 - `@koi/replay` (packages/lib/replay) - Deterministic cassette recording and replay for Koi agent tests. Tests: 3. Docs: docs/L2/replay.md.
 - `@koi/rules-loader` (packages/lib/rules-loader) - Hierarchical project rules file discovery, loading, merging, and system prompt injection. Tests: 6. Docs: docs/L2/rules-loader.md.
@@ -194,10 +194,11 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/workspace-conformance` (packages/lib/workspace-conformance) - Shared bun:test conformance suite for WorkspaceBackend implementations. Tests: 1. Docs: docs/L2/workspace-conformance.md.
 - `@koi/workspace-nexus` (packages/lib/workspace-nexus) - Nexus-backed WorkspaceBackend with optional local fallback. Tests: 4. Docs: docs/L2/workspace-nexus.md.
 
-## meta (4)
+## meta (5)
 
 - `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 68. Docs: docs/L3/cli.md.
 - `@koi/auto-harness` (packages/meta/auto-harness) - L3 composition wiring for auto-harness synthesis session controls and policy-cache attachment. Tests: 1. Docs: -.
+- `@koi/nexus` (packages/meta/nexus) - L3 Nexus composition wiring for the active v2 Nexus package set. Tests: 5. Docs: docs/L3/nexus.md.
 - `@koi/rlm-stack` (packages/meta/rlm-stack) - L3 composition wiring @koi/middleware-rlm with @koi/context-manager threshold coordination. Tests: 3. Docs: docs/L2/rlm-stack.md, docs/L3/rlm-stack.md.
 - `@koi/runtime` (packages/meta/runtime) - L3 meta-package: wires Phase 1 kernel + L2 packages into a bootable runtime with progressive stub replacement. Tests: 40. Docs: docs/L3/runtime.md.
 

@@ -5,8 +5,9 @@ import { createPlaybookStoreNexus } from "@koi/playbook-store-nexus";
 import { createNexusScratchpad } from "@koi/scratchpad-nexus";
 import { createSnapshotStoreNexus } from "@koi/snapshot-store-nexus";
 import { createNexusWorkspaceBackend } from "@koi/workspace-nexus";
+import type { NexusAgentIdentity, NexusAgentProvider, NexusAgentProviderConfig } from "./types.js";
 
-export const liveAgentProviderImports = {
+export const liveAgentProviderImports: Record<string, unknown> = {
   createFileSystem: createNexusFileSystem,
   createMailbox: createNexusMailbox,
   createSnapshotStore: createSnapshotStoreNexus,
@@ -16,21 +17,9 @@ export const liveAgentProviderImports = {
   createWorkspace: createNexusWorkspaceBackend,
 };
 
-type Awaitable<T> = T | Promise<T>;
-
-export function createNexusAgentProvider(config: {
-  readonly createFileSystem: (agentId: string) => unknown;
-  readonly createMailbox: (agentId: string) => Promise<unknown>;
-  readonly createSnapshotStore: (agentId: string) => unknown;
-  readonly createPlaybookStore: (agentId: string) => unknown;
-  readonly createHandoffStore: (agentId: string) => unknown;
-  readonly createScratchpad: (groupId: string) => Awaitable<unknown>;
-  readonly createWorkspace: (agentId: string) => Promise<unknown>;
-  readonly enableScratchpad: boolean;
-  readonly enableWorkspace: boolean;
-}) {
+export function createNexusAgentProvider(config: NexusAgentProviderConfig): NexusAgentProvider {
   return {
-    async attach(agent: { pid: { id: string; groupId?: string } }) {
+    async attach(agent: NexusAgentIdentity) {
       const components = new Map<string, unknown>();
       components.set("filesystem", config.createFileSystem(agent.pid.id));
       components.set("mailbox", await config.createMailbox(agent.pid.id));

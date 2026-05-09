@@ -203,7 +203,7 @@ Each re-exports the corresponding L3 meta-package verbatim:
 | `koi/gateway` | `@koi/gateway-stack` | Gateway routing |
 | `koi/governance` | `@koi/governance` | Policy and permissions |
 | `koi/ipc` | `@koi/ipc-stack` + `@koi/handoff` + `@koi/name-service` | Inter-process communication |
-| `koi/nexus` | `@koi/nexus` | Nexus integration |
+| `koi/nexus` | `@koi/nexus` | Nexus composition wiring |
 | `koi/node` | `@koi/node-stack` | Distributed node runtime |
 | `koi/quality` | `@koi/quality-gate` | Quality gate checks |
 | `koi/retry` | `@koi/retry-stack` | Retry and recovery |
