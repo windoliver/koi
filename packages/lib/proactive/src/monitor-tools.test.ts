@@ -19,9 +19,9 @@ describe("monitor tools", () => {
     const created = (await createMonitor.execute({
       name: "dependency-watch",
       goal: "Detect whether issue #1212 is unblocked",
-      check_prompt:
-        "Inspect repo and GitHub state, then decide whether follow-up is warranted.",
+      check_prompt: "Inspect repo and GitHub state, then decide whether follow-up is warranted.",
       expression: "0 9 * * *",
+      timezone: "America/Los_Angeles",
       context_hint: "Look at scheduler/channel restoration issues first.",
       idempotency_key: "dep-watch",
     })) as { ok: boolean; monitor_id: string; schedule_id: string; deduped?: boolean };
@@ -40,15 +40,29 @@ describe("monitor tools", () => {
         "Context: Look at scheduler/channel restoration issues first.",
       ].join("\n"),
     });
-    expect(stub.scheduleCalls[0]?.options).toBeUndefined();
+    expect(stub.scheduleCalls[0]?.options).toEqual({ timezone: "America/Los_Angeles" });
 
     const listed = (await listMonitors.execute({})) as {
       ok: boolean;
-      monitors: { monitor_id: string; name: string; goal: string; schedule_id: string }[];
+      monitors: {
+        monitor_id: string;
+        name: string;
+        goal: string;
+        expression: string;
+        context_hint?: string;
+        schedule_id: string;
+      }[];
     };
     expect(listed.monitors).toHaveLength(1);
-    expect(listed.monitors[0]?.monitor_id).toBe(created.monitor_id);
-    expect(listed.monitors[0]?.schedule_id).toBe(created.schedule_id);
+    expect(listed.monitors[0]).toEqual({
+      monitor_id: created.monitor_id,
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      expression: "0 9 * * *",
+      context_hint: "Look at scheduler/channel restoration issues first.",
+      schedule_id: created.schedule_id,
+    });
+    expect(listed.monitors[0]).not.toHaveProperty("check_prompt");
   });
 
   test("create_monitor dedupes same-process identical idempotency_key", async () => {
@@ -61,10 +75,14 @@ describe("monitor tools", () => {
       goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo state.",
       expression: "0 9 * * *",
+      timezone: "America/Los_Angeles",
       idempotency_key: "dep-watch",
     };
 
-    const first = (await createMonitor.execute(args)) as { monitor_id: string; schedule_id: string };
+    const first = (await createMonitor.execute(args)) as {
+      monitor_id: string;
+      schedule_id: string;
+    };
     const second = (await createMonitor.execute(args)) as {
       monitor_id: string;
       schedule_id: string;
@@ -87,14 +105,16 @@ describe("monitor tools", () => {
       goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo state.",
       expression: "0 9 * * *",
+      timezone: "America/Los_Angeles",
       idempotency_key: "dep-watch",
     });
 
     const mismatch = (await createMonitor.execute({
       name: "dependency-watch",
-      goal: "Detect whether issue #1301 is unblocked",
+      goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo state.",
       expression: "0 9 * * *",
+      timezone: "America/New_York",
       idempotency_key: "dep-watch",
     })) as { ok: boolean; error: string };
 
@@ -117,6 +137,43 @@ describe("monitor tools", () => {
     expect(invalid.ok).toBe(false);
     expect(invalid.error).toContain("name");
     expect(stub.scheduleCalls).toHaveLength(0);
+  });
+
+  test("list_monitors returns summary fields without exposing check_prompt", async () => {
+    const stub = createSchedulerStub();
+    const state = createMonitorToolState();
+    const createMonitor = createCreateMonitorTool({ scheduler: stub.component }, state);
+    const listMonitors = createListMonitorsTool(state);
+
+    const created = (await createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+      context_hint: "Look at scheduler/channel restoration issues first.",
+    })) as { monitor_id: string; schedule_id: string };
+
+    const listed = (await listMonitors.execute({})) as {
+      monitors: {
+        monitor_id: string;
+        name: string;
+        goal: string;
+        expression: string;
+        context_hint?: string;
+        schedule_id: string;
+      }[];
+    };
+
+    expect(listed.monitors).toEqual([
+      {
+        monitor_id: created.monitor_id,
+        name: "dependency-watch",
+        goal: "Detect whether issue #1212 is unblocked",
+        expression: "0 9 * * *",
+        context_hint: "Look at scheduler/channel restoration issues first.",
+        schedule_id: created.schedule_id,
+      },
+    ]);
   });
 
   test("create_monitor clears its reservation after a failed scheduler create", async () => {
@@ -161,26 +218,35 @@ describe("monitor tools", () => {
       goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo state.",
       expression: "0 9 * * *",
+      timezone: "America/Los_Angeles",
     })) as { monitor_id: string; schedule_id: string };
 
     const updated = (await updateMonitor.execute({
       monitor_id: created.monitor_id,
       goal: "Detect whether issue #1301 is unblocked",
       expression: "30 9 * * *",
+      timezone: "America/New_York",
       context_hint: "Focus on delivery and durability work.",
     })) as { ok: boolean; monitor_id: string; schedule_id: string };
 
     expect(updated.ok).toBe(true);
     expect(updated.schedule_id).not.toBe(created.schedule_id);
     expect(stub.unscheduleCalls).toEqual([created.schedule_id]);
+    expect(stub.scheduleCalls[1]?.options).toEqual({ timezone: "America/New_York" });
 
     const listed = (await listMonitors.execute({})) as {
-      monitors: { goal: string; expression: string; context_hint?: string; schedule_id: string }[];
+      monitors: {
+        goal: string;
+        expression: string;
+        context_hint?: string;
+        schedule_id: string;
+      }[];
     };
     expect(listed.monitors[0]?.goal).toBe("Detect whether issue #1301 is unblocked");
     expect(listed.monitors[0]?.expression).toBe("30 9 * * *");
     expect(listed.monitors[0]?.context_hint).toBe("Focus on delivery and durability work.");
     expect(listed.monitors[0]?.schedule_id).toBe(updated.schedule_id);
+    expect(listed.monitors[0]).not.toHaveProperty("check_prompt");
   });
 
   test("update_monitor fails for an unknown monitor_id", async () => {
@@ -211,6 +277,7 @@ describe("monitor tools", () => {
       goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo state.",
       expression: "0 9 * * *",
+      timezone: "UTC",
       context_hint: "Look at scheduler/channel restoration issues first.",
     })) as { monitor_id: string };
 
@@ -222,12 +289,14 @@ describe("monitor tools", () => {
     const listed = (await listMonitors.execute({})) as {
       monitors: { name: string; goal: string; expression: string; context_hint?: string }[];
     };
+    expect(stub.scheduleCalls[1]?.options).toEqual({ timezone: "UTC" });
     expect(listed.monitors[0]?.name).toBe("dependency-watch");
     expect(listed.monitors[0]?.goal).toBe("Detect whether issue #1301 is unblocked");
     expect(listed.monitors[0]?.expression).toBe("0 9 * * *");
     expect(listed.monitors[0]?.context_hint).toBe(
       "Look at scheduler/channel restoration issues first.",
     );
+    expect(listed.monitors[0]).not.toHaveProperty("check_prompt");
   });
 
   test("update_monitor leaves the original record intact when replacement scheduling fails", async () => {
@@ -309,8 +378,7 @@ describe("monitor tools", () => {
       formatMonitorWakeMessage({
         name: "dependency-watch",
         goal: "Detect whether issue #1212 is unblocked",
-        checkPrompt:
-          "Inspect repo and GitHub state, then decide whether follow-up is warranted.",
+        checkPrompt: "Inspect repo and GitHub state, then decide whether follow-up is warranted.",
         contextHint: "Look at scheduler/channel restoration issues first.",
       }),
     ).toBe(
