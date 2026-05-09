@@ -69,6 +69,7 @@
   - changed-files:
     - any-glob-to-any-file:
       - "packages/**/agent/cli/**"
+      - "packages/**/auto-harness/**"
       - "packages/**/cli/**"
       - "packages/**/gateway-stack/**"
       - "packages/**/rlm-stack/**"
@@ -82,6 +83,7 @@
       - "packages/**"
       - "!packages/**/ace-types/**"
       - "!packages/**/agent/cli/**"
+      - "!packages/**/auto-harness/**"
       - "!packages/**/bash-ast/**"
       - "!packages/**/bash-classifier/**"
       - "!packages/**/bash-security/**"
