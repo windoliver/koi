@@ -15,6 +15,7 @@ import type {
   AgentTurnInput,
   AgentTurnResult,
   AgentWorkflowConfig,
+  DroppedSpawn,
   IncomingMessage,
   ScheduledInputPayload,
   WorkerWorkflowConfig,
@@ -209,10 +210,21 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
       // time we get here (queue, retry, or worker delay between spawn
       // capture and child start). Mirrors the in-process spawn fast-path
       // rejection so expired children never consume worker capacity.
+      // Surface the drop on the result so callers can react programmatically.
       const deadlineExpired =
         childConfig.absoluteDeadlineMs !== undefined &&
         childConfig.absoluteDeadlineMs <= Date.now();
-      if (!deadlineExpired) {
+      if (deadlineExpired) {
+        const drop: DroppedSpawn = {
+          childAgentId: String(result.spawnChild.childAgentId),
+          reason: "deadline-expired",
+        };
+        result = {
+          ...result,
+          spawnChild: undefined,
+          droppedSpawns: [...(result.droppedSpawns ?? []), drop],
+        };
+      } else {
         await startChild("workerWorkflow", {
           args: [childConfig],
           workflowId: buildChildWorkflowId(

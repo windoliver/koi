@@ -12,6 +12,7 @@ import { mapKoiErrorToApplicationFailure, mapTemporalError } from "../temporal-e
 import type {
   AgentTurnInput,
   AgentTurnResult,
+  DroppedSpawn,
   IncomingMessage,
   SpawnChildRequest,
 } from "../types.js";
@@ -85,6 +86,7 @@ export function createActivities(deps: ActivityDeps): {
       const turnId = input.turnId;
       const blocks: ContentBlock[] = [];
       let spawnChild: SpawnChildRequest | undefined;
+      const droppedSpawns: DroppedSpawn[] = [];
       let eventCount = 0;
       let frameIndex = 0;
       const heartbeatTimer = startHeartbeatTimer(() => {
@@ -160,13 +162,18 @@ export function createActivities(deps: ActivityDeps): {
             // not be invalidated by a post-hoc throw, since the next cron
             // tick would replay them and duplicate user-visible output.
             if (input.allowSpawn === false) {
+              const childIdStr = String(record.childAgentId ?? "");
+              droppedSpawns.push({
+                childAgentId: childIdStr,
+                reason: "scheduled-firing-no-spawn",
+              });
               await deps.sendGatewayFrame(input.agentId, {
                 kind: "agent:spawn_dropped",
                 sessionId: input.sessionId,
                 turnId,
                 frameIndex: frameIndex++,
                 reason: "scheduled-firing-no-spawn",
-                childAgentId: String(record.childAgentId ?? ""),
+                childAgentId: childIdStr,
               });
               continue;
             }
@@ -327,13 +334,16 @@ export function createActivities(deps: ActivityDeps): {
             );
             if (presentUnsupported !== undefined || additionalToolsRequested) {
               const fieldName = presentUnsupported ?? "additionalTools";
+              const childIdStr = String(record.childAgentId ?? "");
+              const reason = `unsupported-spawn-field:${fieldName}`;
+              droppedSpawns.push({ childAgentId: childIdStr, reason });
               await deps.sendGatewayFrame(input.agentId, {
                 kind: "agent:spawn_dropped",
                 sessionId: input.sessionId,
                 turnId,
                 frameIndex: frameIndex++,
-                reason: `unsupported-spawn-field:${fieldName}`,
-                childAgentId: String(record.childAgentId ?? ""),
+                reason,
+                childAgentId: childIdStr,
               });
               continue;
             }
@@ -448,6 +458,7 @@ export function createActivities(deps: ActivityDeps): {
             turnsProcessed: input.stateRefs.turnsProcessed + 1,
           },
           spawnChild,
+          ...(droppedSpawns.length > 0 ? { droppedSpawns } : {}),
         };
       } catch (error: unknown) {
         const koiError = mapTemporalError(error);

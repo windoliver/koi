@@ -92,11 +92,30 @@ export interface SpawnChildRequest {
     | undefined;
 }
 
+export interface DroppedSpawn {
+  readonly childAgentId: string;
+  /**
+   * Why the spawn was not started. Stable identifiers callers can match on:
+   *   `scheduled-firing-no-spawn` — parent is a scheduled cron firing
+   *   `unsupported-spawn-field:<field>` — request used a field the
+   *      Temporal path cannot carry (e.g. additionalTools, manifest)
+   *   `deadline-expired` — absoluteDeadlineMs elapsed before startChild
+   */
+  readonly reason: string;
+}
+
 export interface AgentTurnResult {
   readonly turnId: string;
   readonly blocks: readonly ContentBlock[];
   readonly updatedStateRefs: AgentStateRefs;
   readonly spawnChild: SpawnChildRequest | undefined;
+  /**
+   * Spawns the engine requested but the durable Temporal path could not
+   * start (unsupported fields, expired deadline, scheduled-firing rules).
+   * Surfaced here so callers can react programmatically, not only via the
+   * operator-facing `agent:spawn_dropped` gateway frame.
+   */
+  readonly droppedSpawns?: readonly DroppedSpawn[] | undefined;
 }
 
 export interface IncomingMessage {
