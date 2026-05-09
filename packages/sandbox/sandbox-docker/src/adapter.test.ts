@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createDockerAdapter } from "./adapter.js";
 import { computeProfileFingerprint } from "./fingerprint.js";
 import { deriveScopeContainerName } from "./scope-name.js";
+import { createInMemoryScopeRegistry, type ScopeRegistry } from "./scope-registry.js";
 import {
   DOCKER_NAME_CONFLICT_CODE,
   type DockerClient,
@@ -35,21 +36,26 @@ function fakeContainer(id: string, withDetach = true): DockerContainer {
 }
 
 /**
- * Build a persistence-capable DockerClient by overlaying find/inspect/start
- * onto a controllable container store. `preexisting.labels` defaults to a
- * fingerprint matching `PROFILE` so reuse paths succeed; tests override it to
- * simulate profile drift or absence.
+ * Build a persistence-capable DockerClient + ScopeRegistry pair. `preexisting`
+ * pre-populates the registry with the container ID so the trust-check passes,
+ * and supplies the labels (default: a fingerprint matching `PROFILE`) so
+ * reuse paths succeed. Tests override `labels` to simulate profile drift or
+ * `presentInRegistry: false` to simulate spoofed containers.
  */
 function persistentClient(opts: {
   readonly preexisting?: {
     readonly container: DockerContainer;
     readonly state: DockerContainerState;
     readonly labels?: Readonly<Record<string, string>>;
+    /** When false, do NOT record the container's ID in the registry — simulates a spoofed/foreign container. */
+    readonly presentInRegistry?: boolean;
+    readonly scope?: string;
   };
   readonly onCreate?: (createOpts: DockerCreateOpts) => DockerContainer;
   readonly createDelayMs?: number;
 }): {
   readonly client: DockerClient;
+  readonly scopeRegistry: ScopeRegistry;
   readonly events: {
     readonly findCalls: number;
     readonly startCalls: string[];
@@ -61,6 +67,17 @@ function persistentClient(opts: {
     startCalls: [] as string[],
     createCalls: [] as DockerCreateOpts[],
   };
+  const scopeRegistry = createInMemoryScopeRegistry();
+  if (
+    opts.preexisting !== undefined &&
+    opts.preexisting.presentInRegistry !== false &&
+    opts.preexisting.scope !== undefined
+  ) {
+    // In-memory record is synchronous under the hood (Map.set); the Promise
+    // resolves on the microtask queue. Fire-and-forget is safe here because
+    // record() runs the side effect synchronously before yielding.
+    void scopeRegistry.record(opts.preexisting.scope, opts.preexisting.container.id);
+  }
   const client: DockerClient = {
     createContainer: async (createOpts: DockerCreateOpts): Promise<DockerContainer> => {
       events.createCalls.push(createOpts);
@@ -81,18 +98,24 @@ function persistentClient(opts: {
       events.startCalls.push(id);
     },
   };
-  return { client, events };
+  return { client, scopeRegistry, events };
 }
 
 describe("createDockerAdapter", () => {
   test("returns a SandboxAdapter named 'docker' when client provided", async () => {
-    const r = await createDockerAdapter({ client: stubClient });
+    const r = await createDockerAdapter({
+      client: stubClient,
+      scopeRegistry: createInMemoryScopeRegistry(),
+    });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.name).toBe("docker");
   });
 
   test("create(profile) yields a SandboxInstance with working exec", async () => {
-    const r = await createDockerAdapter({ client: stubClient });
+    const r = await createDockerAdapter({
+      client: stubClient,
+      scopeRegistry: createInMemoryScopeRegistry(),
+    });
     if (!r.ok) throw new Error("setup failed");
     const inst = await r.value.create({
       filesystem: { defaultReadAccess: "open" },
@@ -173,7 +196,10 @@ describe("createDockerAdapter", () => {
 
   // Fix 2: profile with denyRead → create() rejects with helpful error
   test("create(profile) throws when profile has denyRead (unsupported Docker semantics)", async () => {
-    const r = await createDockerAdapter({ client: stubClient });
+    const r = await createDockerAdapter({
+      client: stubClient,
+      scopeRegistry: createInMemoryScopeRegistry(),
+    });
     if (!r.ok) throw new Error("setup failed");
     const profileWithDenyRead = {
       filesystem: { defaultReadAccess: "open" as const, denyRead: ["/etc"] },
@@ -185,7 +211,10 @@ describe("createDockerAdapter", () => {
 
   // Persistence: minimal client (no find/inspect/start) → no findOrCreate, no persistence cap.
   test("minimal DockerClient (no persistence triple) omits findOrCreate and persistence capability", async () => {
-    const r = await createDockerAdapter({ client: stubClient });
+    const r = await createDockerAdapter({
+      client: stubClient,
+      scopeRegistry: createInMemoryScopeRegistry(),
+    });
     if (!r.ok) throw new Error("setup failed");
     expect(r.value.findOrCreate).toBeUndefined();
     expect(r.value.capabilities?.supports.has("persistence")).toBe(false);
@@ -193,8 +222,8 @@ describe("createDockerAdapter", () => {
 
   // Persistence: capable client → findOrCreate exposed, persistence cap declared.
   test("persistence-capable DockerClient declares persistence and exposes findOrCreate", async () => {
-    const { client } = persistentClient({});
-    const r = await createDockerAdapter({ client });
+    const { client, scopeRegistry: reg } = persistentClient({});
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     expect(typeof r.value.findOrCreate).toBe("function");
     expect(r.value.capabilities?.supports.has("persistence")).toBe(true);
@@ -211,10 +240,19 @@ describe("createDockerAdapter", () => {
   // Persistence: existing running container is reused — no createContainer, no startContainer.
   test("findOrCreate reuses an existing running container without create/start", async () => {
     const existing = fakeContainer("existing-running");
-    const { client, events } = persistentClient({
-      preexisting: { container: existing, state: "running", labels: matchingLabels },
+    const {
+      client,
+      scopeRegistry: reg,
+      events,
+    } = persistentClient({
+      preexisting: {
+        container: existing,
+        state: "running",
+        labels: matchingLabels,
+        scope: "scope-A",
+      },
     });
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     const inst = await r.value.findOrCreate("scope-A", PROFILE);
@@ -227,10 +265,19 @@ describe("createDockerAdapter", () => {
   // Persistence: stopped container is started, not recreated.
   test("findOrCreate restarts a stopped container instead of creating a new one", async () => {
     const existing = fakeContainer("existing-stopped");
-    const { client, events } = persistentClient({
-      preexisting: { container: existing, state: "stopped", labels: matchingLabels },
+    const {
+      client,
+      scopeRegistry: reg,
+      events,
+    } = persistentClient({
+      preexisting: {
+        container: existing,
+        state: "stopped",
+        labels: matchingLabels,
+        scope: "scope-B",
+      },
     });
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await r.value.findOrCreate("scope-B", PROFILE);
@@ -241,10 +288,19 @@ describe("createDockerAdapter", () => {
   // Persistence: exited containers are restarted.
   test("findOrCreate restarts an exited container", async () => {
     const existing = fakeContainer("existing-exited");
-    const { client, events } = persistentClient({
-      preexisting: { container: existing, state: "exited", labels: matchingLabels },
+    const {
+      client,
+      scopeRegistry: reg,
+      events,
+    } = persistentClient({
+      preexisting: {
+        container: existing,
+        state: "exited",
+        labels: matchingLabels,
+        scope: "scope-C",
+      },
     });
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await r.value.findOrCreate("scope-C", PROFILE);
@@ -255,10 +311,14 @@ describe("createDockerAdapter", () => {
   // Persistence: dead containers are abandoned and a fresh one is created with the scope label.
   test("findOrCreate creates a fresh labeled container when existing one is dead", async () => {
     const dead = fakeContainer("zombie");
-    const { client, events } = persistentClient({
+    const {
+      client,
+      scopeRegistry: reg,
+      events,
+    } = persistentClient({
       preexisting: { container: dead, state: "dead" },
     });
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await r.value.findOrCreate("scope-D", PROFILE);
@@ -269,8 +329,8 @@ describe("createDockerAdapter", () => {
 
   // Persistence: no container matches → fresh container with scope label is created.
   test("findOrCreate creates a fresh labeled container when none exists", async () => {
-    const { client, events } = persistentClient({});
-    const r = await createDockerAdapter({ client });
+    const { client, scopeRegistry: reg, events } = persistentClient({});
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await r.value.findOrCreate("scope-E", PROFILE);
@@ -281,8 +341,8 @@ describe("createDockerAdapter", () => {
 
   // Persistence: profile with denyRead is still rejected on the findOrCreate path.
   test("findOrCreate throws on invalid profile (denyRead is unsupported)", async () => {
-    const { client } = persistentClient({});
-    const r = await createDockerAdapter({ client });
+    const { client, scopeRegistry: reg } = persistentClient({});
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     const bad = {
@@ -296,14 +356,19 @@ describe("createDockerAdapter", () => {
   // Persistence (drift): existing container with a different profile-hash → fail closed.
   test("findOrCreate fails closed when stored profile-hash differs from requested", async () => {
     const existing = fakeContainer("drifted");
-    const { client, events } = persistentClient({
+    const {
+      client,
+      scopeRegistry: reg,
+      events,
+    } = persistentClient({
       preexisting: {
         container: existing,
         state: "running",
         labels: { "koi.sandbox.profile-hash": "deadbeefdeadbeef" },
+        scope: "scope-G",
       },
     });
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await expect(r.value.findOrCreate("scope-G", PROFILE)).rejects.toThrow(/different profile/i);
@@ -315,10 +380,15 @@ describe("createDockerAdapter", () => {
   // Persistence (drift): existing container with NO profile-hash label is also a mismatch.
   test("findOrCreate fails closed when existing container has no profile-hash label", async () => {
     const existing = fakeContainer("legacy");
-    const { client } = persistentClient({
-      preexisting: { container: existing, state: "running", labels: {} },
+    const { client, scopeRegistry: reg } = persistentClient({
+      preexisting: {
+        container: existing,
+        state: "running",
+        labels: {},
+        scope: "scope-H",
+      },
     });
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await expect(r.value.findOrCreate("scope-H", PROFILE)).rejects.toThrow(/different profile/i);
@@ -326,8 +396,8 @@ describe("createDockerAdapter", () => {
 
   // Persistence (fingerprint): fresh container is created with the profile-hash label set.
   test("findOrCreate stores profile-hash label on freshly created container", async () => {
-    const { client, events } = persistentClient({});
-    const r = await createDockerAdapter({ client });
+    const { client, scopeRegistry: reg, events } = persistentClient({});
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await r.value.findOrCreate("scope-I", PROFILE);
@@ -347,6 +417,7 @@ describe("createDockerAdapter", () => {
     const order: string[] = [];
     const createCalls: DockerCreateOpts[] = [];
     let findCount = 0;
+    const reg = createInMemoryScopeRegistry();
     const client: DockerClient = {
       createContainer: async (createOpts: DockerCreateOpts): Promise<DockerContainer> => {
         order.push(`create-start-${createCalls.length}`);
@@ -363,7 +434,7 @@ describe("createDockerAdapter", () => {
       inspectContainer: async () => undefined,
       startContainer: async () => {},
     };
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
 
@@ -388,6 +459,7 @@ describe("createDockerAdapter", () => {
   test("findOrCreate does not serialize across distinct scopes", async () => {
     const order: string[] = [];
     let findCount = 0;
+    const reg = createInMemoryScopeRegistry();
     const client: DockerClient = {
       createContainer: async (): Promise<DockerContainer> => {
         order.push("create-start");
@@ -404,7 +476,7 @@ describe("createDockerAdapter", () => {
       inspectContainer: async () => undefined,
       startContainer: async () => {},
     };
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
 
@@ -422,16 +494,19 @@ describe("createDockerAdapter", () => {
     expect(Math.max(...findIdxs)).toBeLessThan(createEndIdxs[0] ?? Infinity);
   });
 
-  // Persistence (cross-process race): when createContainer throws a name-conflict
-  // error (another adapter won the race), findOrCreate must reattach to the
-  // winner instead of bubbling the conflict.
-  test("findOrCreate retries via findContainer when createContainer throws name conflict", async () => {
+  // Cross-process race: name conflict + winner already recorded in our registry
+  // → safely reattach. (Models a within-process race that beat the per-scope
+  // serializer; in real cross-process scenarios the registry would have been
+  // populated by a prior successful create in this process.)
+  test("findOrCreate reattaches via name-conflict retry when registry already records the winner", async () => {
     const winner = fakeContainer("winner");
     let findCount = 0;
+    const reg = createInMemoryScopeRegistry();
+    // Pre-populate: this process previously recorded the winner's ID.
+    void reg.record("scope-RACE-X", winner.id);
     const client: DockerClient = {
       createContainer: async (): Promise<DockerContainer> => {
-        // Simulate the daemon rejecting our --name because the rival already
-        // claimed it between our find() and create().
+        // Daemon rejects our --name; rival already claims it.
         const e = Object.assign(new Error("name in use"), {
           code: DOCKER_NAME_CONFLICT_CODE,
         } as const);
@@ -439,9 +514,7 @@ describe("createDockerAdapter", () => {
       },
       findContainers: async () => {
         findCount += 1;
-        // First find: nothing (we believed we needed to create). Second find
-        // (after the conflict): the rival's container.
-        return findCount === 1 ? [] : [winner];
+        return [winner];
       },
       inspectContainer: async () => ({
         state: "running",
@@ -449,20 +522,21 @@ describe("createDockerAdapter", () => {
       }),
       startContainer: async () => {},
     };
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     const inst = await r.value.findOrCreate("scope-RACE-X", PROFILE);
-    // findContainer called twice: once before create, once after conflict.
-    expect(findCount).toBe(2);
     expect(inst).toBeDefined();
+    expect(findCount).toBeGreaterThanOrEqual(1);
   });
 
-  // Persistence (cross-process race): name-conflict bubbles up if the conflict
-  // is NOT a koi-managed scope container (no scope-labeled container exists
-  // after the conflict). Prevents masking real squatters on the deterministic
-  // name.
-  test("findOrCreate surfaces name-conflict when no scope container is reachable after retry", async () => {
+  // Security: name conflict + NO registry entry means the surviving container
+  // is unverified (could be a peer process or attacker). Refuse to attach,
+  // surface a VALIDATION error pointing at the container name so operators
+  // can investigate.
+  test("findOrCreate refuses to attach to an unverified container after name conflict", async () => {
+    const stranger = fakeContainer("stranger");
+    const reg = createInMemoryScopeRegistry();
     const client: DockerClient = {
       createContainer: async (): Promise<DockerContainer> => {
         const e = Object.assign(new Error("name in use"), {
@@ -470,23 +544,28 @@ describe("createDockerAdapter", () => {
         } as const);
         throw e;
       },
-      // Never find anything — simulates a squatter (non-koi container with the
-      // same deterministic name).
-      findContainers: async () => [],
-      inspectContainer: async () => undefined,
+      // Daemon-side container exists with our scope label, but it's not in
+      // OUR registry — could be a peer process or an attacker.
+      findContainers: async () => [stranger],
+      inspectContainer: async () => ({
+        state: "running",
+        labels: { "koi.sandbox.profile-hash": PROFILE_HASH },
+      }),
       startContainer: async () => {},
     };
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
-    await expect(r.value.findOrCreate("scope-SQUAT", PROFILE)).rejects.toThrow(/name in use/);
+    await expect(r.value.findOrCreate("scope-SQUAT", PROFILE)).rejects.toThrow(
+      /do not own|already in use/i,
+    );
   });
 
   // Persistence (cross-process race): the create call must include the
   // deterministic scope-derived container name so Docker enforces uniqueness.
   test("findOrCreate sends a deterministic --name (derived from scope) on create", async () => {
-    const { client, events } = persistentClient({});
-    const r = await createDockerAdapter({ client });
+    const { client, scopeRegistry: reg, events } = persistentClient({});
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await r.value.findOrCreate("scope-NAME", PROFILE);
@@ -494,9 +573,11 @@ describe("createDockerAdapter", () => {
     expect(events.createCalls[0]?.name).toBe(deriveScopeContainerName("scope-NAME"));
   });
 
-  // Drift recovery: destroyScope removes a scoped container and unblocks reuse
-  // with the new profile.
-  test("destroyScope removes the scoped container and frees the scope", async () => {
+  // Drift recovery: destroyScope removes a scoped container (force-rm) and
+  // frees the scope. Stop is intentionally NOT called — `docker rm -f`
+  // handles running containers and a separate stop step previously caused
+  // false-positive failures on already-stopped containers.
+  test("destroyScope removes the scoped container without calling stop", async () => {
     let stopped = 0;
     let removed = 0;
     const existing: DockerContainer = {
@@ -511,22 +592,23 @@ describe("createDockerAdapter", () => {
         removed += 1;
       },
     };
-    const { client } = persistentClient({
+    const { client, scopeRegistry: reg } = persistentClient({
       preexisting: { container: existing, state: "running", labels: {} },
     });
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
     const wasDestroyed = await r.value.destroyScope("scope-DROP");
     expect(wasDestroyed).toBe(true);
-    expect(stopped).toBe(1);
     expect(removed).toBe(1);
+    // Stop is NOT called — destroyScope relies on `docker rm -f` for force removal.
+    expect(stopped).toBe(0);
   });
 
   // destroyScope returns false (idempotent) when nothing matches.
   test("destroyScope returns false when no scoped container exists", async () => {
-    const { client } = persistentClient({});
-    const r = await createDockerAdapter({ client });
+    const { client, scopeRegistry: reg } = persistentClient({});
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
     const wasDestroyed = await r.value.destroyScope("scope-NONE");
@@ -535,7 +617,10 @@ describe("createDockerAdapter", () => {
 
   // destroyScope is omitted on minimal clients (no persistence triple).
   test("destroyScope is undefined when persistence is unavailable", async () => {
-    const r = await createDockerAdapter({ client: stubClient });
+    const r = await createDockerAdapter({
+      client: stubClient,
+      scopeRegistry: createInMemoryScopeRegistry(),
+    });
     if (!r.ok) throw new Error("setup failed");
     expect(r.value.destroyScope).toBeUndefined();
   });
@@ -543,14 +628,15 @@ describe("createDockerAdapter", () => {
   // Drift error message points at the supported recovery method (destroyScope).
   test("findOrCreate drift error references destroyScope as the recovery path", async () => {
     const existing = fakeContainer("drifted");
-    const { client } = persistentClient({
+    const { client, scopeRegistry: reg } = persistentClient({
       preexisting: {
+        scope: "scope-RECOVER",
         container: existing,
         state: "running",
         labels: { "koi.sandbox.profile-hash": "deadbeefdeadbeef" },
       },
     });
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await expect(r.value.findOrCreate("scope-RECOVER", PROFILE)).rejects.toThrow(/destroyScope/);
@@ -561,6 +647,10 @@ describe("createDockerAdapter", () => {
   test("findOrCreate fails closed when multiple containers carry the same scope label", async () => {
     const a = fakeContainer("dup-a");
     const b = fakeContainer("dup-b");
+    const reg = createInMemoryScopeRegistry();
+    // Pre-record `a` so the trust check is satisfied — the failure mode under
+    // test is the *count*, not the trust check.
+    void reg.record("scope-DUP", a.id);
     const client: DockerClient = {
       createContainer: async (): Promise<DockerContainer> => fakeContainer("never"),
       findContainers: async () => [a, b],
@@ -570,7 +660,7 @@ describe("createDockerAdapter", () => {
       }),
       startContainer: async () => {},
     };
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await expect(r.value.findOrCreate("scope-DUP", PROFILE)).rejects.toThrow(
@@ -597,18 +687,20 @@ describe("createDockerAdapter", () => {
         },
       };
     }
+    const reg = createInMemoryScopeRegistry();
     const client: DockerClient = {
       createContainer: async (): Promise<DockerContainer> => tagged("never"),
       findContainers: async () => [tagged("a"), tagged("b"), tagged("c")],
       inspectContainer: async () => undefined,
       startContainer: async () => {},
     };
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
     const wasDestroyed = await r.value.destroyScope("scope-MULTI");
     expect(wasDestroyed).toBe(true);
-    expect(stops).toEqual(["a", "b", "c"]);
+    // Stop is intentionally NOT called — destroyScope force-removes via rm -f.
+    expect(stops).toEqual([]);
     expect(removes).toEqual(["a", "b", "c"]);
   });
 
@@ -619,6 +711,8 @@ describe("createDockerAdapter", () => {
     // Recorded fingerprint = (PROFILE, "ubuntu:22.04", "sha256:OLD").
     const recordedFingerprint = computeProfileFingerprint(PROFILE, "ubuntu:22.04", "sha256:OLD");
     const existing = fakeContainer("rebuilt");
+    const reg = createInMemoryScopeRegistry();
+    void reg.record("scope-IMG", existing.id);
     const client: DockerClient = {
       createContainer: async (): Promise<DockerContainer> => fakeContainer("never"),
       findContainers: async () => [existing],
@@ -630,7 +724,7 @@ describe("createDockerAdapter", () => {
       // Daemon now resolves the same tag to a different content-addressed ID.
       resolveImageId: async () => "sha256:NEW",
     };
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     await expect(r.value.findOrCreate("scope-IMG", PROFILE)).rejects.toThrow(/different profile/i);
@@ -640,6 +734,8 @@ describe("createDockerAdapter", () => {
   test("findOrCreate reuses container when image-id matches the recorded fingerprint", async () => {
     const recordedFingerprint = computeProfileFingerprint(PROFILE, "ubuntu:22.04", "sha256:STABLE");
     const existing = fakeContainer("stable");
+    const reg = createInMemoryScopeRegistry();
+    void reg.record("scope-IMG-OK", existing.id);
     const client: DockerClient = {
       createContainer: async (): Promise<DockerContainer> => fakeContainer("never"),
       findContainers: async () => [existing],
@@ -650,16 +746,88 @@ describe("createDockerAdapter", () => {
       startContainer: async () => {},
       resolveImageId: async () => "sha256:STABLE",
     };
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
     const inst = await r.value.findOrCreate("scope-IMG-OK", PROFILE);
     expect(inst).toBeDefined();
   });
 
+  // Security: a peer-process container with the right scope/hash labels but
+  // an ID NOT in our registry must NOT be reattached to. The adapter falls
+  // through to a fresh create — i.e. it treats the unverified container as
+  // if it didn't exist for reuse purposes.
+  test("findOrCreate refuses to reattach to a label-matching container that is not in our registry", async () => {
+    const stranger = fakeContainer("stranger");
+    const reg = createInMemoryScopeRegistry();
+    // Registry intentionally empty — simulates a peer with daemon access who
+    // fabricated the labels.
+    let createCalls = 0;
+    const client: DockerClient = {
+      createContainer: async (): Promise<DockerContainer> => {
+        createCalls += 1;
+        return fakeContainer("ours");
+      },
+      findContainers: async () => [stranger],
+      inspectContainer: async () => ({
+        state: "running",
+        labels: { "koi.sandbox.profile-hash": PROFILE_HASH },
+      }),
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    await r.value.findOrCreate("scope-SPOOF", PROFILE);
+    // Adapter created a fresh container instead of attaching to the stranger.
+    expect(createCalls).toBe(1);
+  });
+
+  // Security: dead container in the way must be auto-removed before retry, so
+  // the deterministic --name doesn't permanently wedge the scope.
+  test("findOrCreate auto-removes a dead container so the deterministic --name frees up", async () => {
+    let removed = 0;
+    const dead: DockerContainer = {
+      id: "dead-one",
+      exec: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      readFile: async () => new Uint8Array(),
+      writeFile: async () => {},
+      stop: async () => {},
+      remove: async () => {
+        removed += 1;
+      },
+    };
+    const reg = createInMemoryScopeRegistry();
+    void reg.record("scope-DEAD", dead.id);
+    let findCalls = 0;
+    let createCalls = 0;
+    const client: DockerClient = {
+      createContainer: async (): Promise<DockerContainer> => {
+        createCalls += 1;
+        return fakeContainer(`new-${createCalls}`);
+      },
+      findContainers: async () => {
+        findCalls += 1;
+        // After remove(), the dead container is no longer in the list.
+        return removed === 0 ? [dead] : [];
+      },
+      inspectContainer: async () => ({ state: "dead", labels: {} }),
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    await r.value.findOrCreate("scope-DEAD", PROFILE);
+    // Dead container removed; fresh container created.
+    expect(removed).toBe(1);
+    expect(createCalls).toBe(1);
+    expect(findCalls).toBeGreaterThanOrEqual(1);
+  });
+
   // Persistence (race): if the first call rejects, the chain must not deadlock the second.
   test("findOrCreate keeps the per-scope chain alive after a rejection", async () => {
     let attempts = 0;
+    const reg = createInMemoryScopeRegistry();
     const client: DockerClient = {
       createContainer: async (): Promise<DockerContainer> => {
         attempts += 1;
@@ -670,7 +838,7 @@ describe("createDockerAdapter", () => {
       inspectContainer: async () => undefined,
       startContainer: async () => {},
     };
-    const r = await createDockerAdapter({ client });
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
 

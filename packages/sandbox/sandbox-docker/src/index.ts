@@ -2,6 +2,12 @@ export { createDockerAdapter, type DockerSandboxAdapter } from "./adapter.js";
 export { createDefaultDockerClient } from "./default-client.js";
 export { detectDocker } from "./detect.js";
 export {
+  createFileScopeRegistry,
+  createInMemoryScopeRegistry,
+  defaultScopeRegistryPath,
+  type ScopeRegistry,
+} from "./scope-registry.js";
+export {
   type DockerAdapterConfig,
   type DockerClient,
   type DockerContainer,

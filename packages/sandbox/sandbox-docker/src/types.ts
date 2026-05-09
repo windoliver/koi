@@ -157,6 +157,19 @@ export interface DockerAdapterConfig {
    * Only used when client is not provided (the availability-probe code path).
    */
   readonly probe?: () => Promise<number>;
+  /**
+   * Optional ScopeRegistry for the persistence path. Reuse trusts only
+   * containers whose IDs were previously recorded by THIS registry — a
+   * peer process or attacker that can fabricate matching `koi.sandbox.*`
+   * labels cannot hijack a scope, because their container's ID will not
+   * match the recorded one.
+   *
+   * Defaults to a file-backed registry at
+   * `${KOI_SANDBOX_DOCKER_STATE_DIR}/scopes.json` (or
+   * `${XDG_STATE_HOME ?? ~/.local/state}/koi-sandbox-docker/scopes.json`).
+   * Pass `createInMemoryScopeRegistry()` for tests or short-lived adapters.
+   */
+  readonly scopeRegistry?: import("./scope-registry.js").ScopeRegistry;
 }
 
 export interface ResolvedDockerConfig {

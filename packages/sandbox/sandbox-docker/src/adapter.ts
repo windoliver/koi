@@ -13,6 +13,7 @@ import { computeProfileFingerprint } from "./fingerprint.js";
 import { createDockerInstance } from "./instance.js";
 import { mapProfileToDockerOpts } from "./profile-to-opts.js";
 import { deriveScopeContainerName } from "./scope-name.js";
+import { createFileScopeRegistry, type ScopeRegistry } from "./scope-registry.js";
 import {
   type DockerAdapterConfig,
   type DockerClient,
@@ -113,12 +114,16 @@ function createScopeSerializer(): <T>(scope: string, fn: () => Promise<T>) => Pr
 export async function createDockerAdapter(
   config: DockerAdapterConfig,
 ): Promise<Result<DockerSandboxAdapter, KoiError>> {
+  // Default: file-backed registry on disk (cross-process safe). Tests/short-lived
+  // adapters can inject createInMemoryScopeRegistry() instead.
+  const scopeRegistry: ScopeRegistry = config.scopeRegistry ?? createFileScopeRegistry();
+
   // Fast path: client already provided — skip probe.
   if (config.client !== undefined) {
     const validated = validateDockerConfig(config);
     if (!validated.ok) return validated;
     const { client, image } = validated.value;
-    return buildAdapter(client, image);
+    return buildAdapter(client, image, scopeRegistry);
   }
 
   // Slow path: probe Docker availability before constructing default client.
@@ -147,10 +152,14 @@ export async function createDockerAdapter(
 
   const client = createDefaultDockerClient(socketPath !== undefined ? { socketPath } : undefined);
   const image = config.image ?? "ubuntu:22.04";
-  return buildAdapter(client, image);
+  return buildAdapter(client, image, scopeRegistry);
 }
 
-function buildAdapter(client: DockerClient, image: string): Result<DockerSandboxAdapter, KoiError> {
+function buildAdapter(
+  client: DockerClient,
+  image: string,
+  scopeRegistry: ScopeRegistry,
+): Result<DockerSandboxAdapter, KoiError> {
   const { capabilities, canPersist } = buildCapabilities(client);
   const serializeScope = createScopeSerializer();
 
@@ -176,11 +185,13 @@ function buildAdapter(client: DockerClient, image: string): Result<DockerSandbox
             // containers within the same adapter instance. Cross-process races
             // are handled by the deterministic container name + name-conflict
             // retry inside `doFindOrCreate`.
-            serializeScope(scope, () => doFindOrCreate(client, image, scope, profile)),
+            serializeScope(scope, () =>
+              doFindOrCreate(client, image, scope, profile, scopeRegistry),
+            ),
           destroyScope: (scope: string): Promise<boolean> =>
             // Serialize destroyScope through the same chain so concurrent
             // findOrCreate/destroyScope cannot leave the scope in a half-state.
-            serializeScope(scope, () => doDestroyScope(client, scope)),
+            serializeScope(scope, () => doDestroyScope(client, scope, scopeRegistry)),
         }
       : {}),
   };
@@ -193,6 +204,7 @@ async function doFindOrCreate(
   image: string,
   scope: string,
   profile: SandboxProfile,
+  scopeRegistry: ScopeRegistry,
 ): Promise<SandboxInstance> {
   // We've already checked canPersist; the local assertions are sanity checks.
   const findContainers = client.findContainers;
@@ -224,17 +236,19 @@ async function doFindOrCreate(
   const scopeLabels: Readonly<Record<string, string>> = { [SCOPE_LABEL]: scope };
   const containerName = deriveScopeContainerName(scope);
 
-  // First reuse attempt before issuing a create — common path is "scope already
-  // exists, reattach". The same logic also runs after a name-conflict retry
-  // below, so we factor it out.
-  const reused = await tryReuse(
+  // First reuse attempt: only honors a registry-recorded ID, so a peer that
+  // can fabricate scope/hash labels cannot hijack the scope. Common path is
+  // "scope already exists, reattach". The same logic also runs after a
+  // name-conflict retry below, so we factor it out.
+  const reused = await tryReuse({
     findContainers,
     inspectContainer,
     startContainer,
     scopeLabels,
     fingerprint,
     scope,
-  );
+    scopeRegistry,
+  });
   if (reused !== undefined) return reused;
 
   const opts: DockerCreateOpts = {
@@ -248,34 +262,58 @@ async function doFindOrCreate(
   };
   try {
     const container = await client.createContainer(opts);
+    // Record the ID we received so subsequent reuse trusts only this exact
+    // container (forgery-resistant: the registry is private to this process /
+    // host, not a label set anyone with daemon access can write).
+    await scopeRegistry.record(scope, container.id);
     return createDockerInstance(container);
   } catch (e: unknown) {
     if (!isDockerNameConflictError(e)) throw e;
-    // We lost the cross-process race: another adapter created the scoped
-    // container with the same deterministic name. Re-query and reattach to
-    // the winner — this also runs the profile-hash check, so a winner with a
-    // stale profile still surfaces a VALIDATION error rather than silently
-    // attaching to it.
-    const winner = await tryReuse(
+    // We lost the cross-process race OR an attacker / stale dead container is
+    // squatting on the deterministic name. Decide which by consulting the
+    // registry: only reattach if the surviving container's ID matches a
+    // value WE previously recorded.
+    const winner = await tryReuse({
       findContainers,
       inspectContainer,
       startContainer,
       scopeLabels,
       fingerprint,
       scope,
-    );
+      scopeRegistry,
+    });
     if (winner !== undefined) return winner;
-    // Name was taken but no scope-labeled container is reachable — surface
-    // the original conflict so the caller can investigate (e.g. a non-koi
-    // container squatting on the deterministic name).
-    throw e;
+    // Name was taken but the surviving container is not one we own. Refuse
+    // to attach to a stranger and surface the original conflict so the
+    // caller knows the scope is being held by something they need to clean
+    // up (manual `docker rm`, or a separate Koi instance with its own
+    // registry).
+    const error: KoiError = {
+      code: "VALIDATION",
+      message: `sandbox-docker: container name "${containerName}" for scope "${scope}" is already in use by a container we do not own (no matching entry in the scope registry); refusing to reattach to an unverified container — investigate via 'docker ps -a --filter name=${containerName}' and remove it manually if appropriate`,
+      retryable: false,
+      context: { scope, containerName },
+    };
+    throw new Error(error.message, { cause: e });
   }
 }
 
 /**
  * Attempt to reuse an existing scoped container. Returns a SandboxInstance on
- * success, `undefined` when nothing usable exists (no-find, dead, or vanished
- * between find and inspect — the caller should fall through to create).
+ * success, `undefined` when nothing usable exists.
+ *
+ * Reuse trust model: the caller's process must have previously recorded the
+ * container ID via `scopeRegistry.record` (private state, not a forgeable
+ * label). If the daemon-side scope-labeled container's ID does not match the
+ * recorded ID, we treat the daemon container as a stranger and refuse to
+ * reattach to it. This blocks a peer with daemon access from hijacking a
+ * scope by fabricating the public `koi.sandbox.scope`/`koi.sandbox.profile-hash`
+ * labels.
+ *
+ * Side effects:
+ *   - dead/unknown matched container is auto-removed and the registry entry
+ *     forgotten so the next create can reuse the deterministic --name (this
+ *     prevents the scope from wedging on a dead container).
  *
  * Throws a typed VALIDATION error when:
  *   - more than one container carries the scope label (ambiguity → operator
@@ -283,24 +321,32 @@ async function doFindOrCreate(
  *   - the matched container's recorded profile fingerprint differs from the
  *     request (drift → operator must destroyScope or pick a new scope).
  */
-async function tryReuse(
-  findContainers: NonNullable<DockerClient["findContainers"]>,
-  inspectContainer: NonNullable<DockerClient["inspectContainer"]>,
-  startContainer: NonNullable<DockerClient["startContainer"]>,
-  scopeLabels: Readonly<Record<string, string>>,
-  fingerprint: string,
-  scope: string,
-): Promise<SandboxInstance | undefined> {
+async function tryReuse(args: {
+  readonly findContainers: NonNullable<DockerClient["findContainers"]>;
+  readonly inspectContainer: NonNullable<DockerClient["inspectContainer"]>;
+  readonly startContainer: NonNullable<DockerClient["startContainer"]>;
+  readonly scopeLabels: Readonly<Record<string, string>>;
+  readonly fingerprint: string;
+  readonly scope: string;
+  readonly scopeRegistry: ScopeRegistry;
+}): Promise<SandboxInstance | undefined> {
+  const {
+    findContainers,
+    inspectContainer,
+    startContainer,
+    scopeLabels,
+    fingerprint,
+    scope,
+    scopeRegistry,
+  } = args;
   const matches = await findContainers(scopeLabels);
   if (matches.length === 0) return undefined;
 
   if (matches.length > 1) {
     // Ambiguity: two or more containers share the scope label. This shouldn't
-    // happen under normal operation (deterministic --name + per-scope serializer
-    // prevent it within a single adapter; the daemon prevents cross-process
-    // duplicates of the named container) but can arise from manual cloning,
-    // direct docker commands, or a label being applied out-of-band. Fail closed
-    // and direct the operator at the recovery path.
+    // happen under normal operation but can arise from manual cloning, direct
+    // docker commands, or a label being applied out-of-band. Fail closed and
+    // direct the operator at the recovery path.
     const error: KoiError = {
       code: "VALIDATION",
       message: `sandbox-docker: scope "${scope}" matches ${matches.length} containers (expected 1); call adapter.destroyScope("${scope}") to remove ALL stale containers for this scope, then retry findOrCreate`,
@@ -315,15 +361,37 @@ async function tryReuse(
 
   const existing = matches[0];
   if (existing === undefined) return undefined;
+
+  // Trust check: only reattach to a container ID we ourselves recorded for
+  // this scope. A peer that fabricated the scope label has no way to write
+  // to our private registry, so an ID mismatch (or a missing registry entry)
+  // means the matched container is not ours.
+  const expectedId = await scopeRegistry.lookup(scope);
+  if (expectedId === undefined || expectedId !== existing.id) {
+    return undefined;
+  }
+
   const info = await inspectContainer(existing.id);
-  // info === undefined: container vanished between find and inspect.
-  // "dead"/"unknown": cannot be reattached. In all three cases the prior
-  // container is unusable so the caller should fall through to a fresh create
-  // rather than fail closed — there is nothing to reattach to.
-  const reusable =
-    info !== undefined &&
-    (info.state === "running" || info.state === "exited" || info.state === "stopped");
-  if (!reusable || info === undefined) return undefined;
+  // info === undefined: container vanished between find and inspect. Forget
+  // the registry entry so the caller's create path can reuse the --name.
+  if (info === undefined) {
+    await scopeRegistry.forget(scope);
+    return undefined;
+  }
+
+  // dead/unknown: container can't be reattached AND its --name still binds
+  // the scope. Auto-remove so the subsequent create can reuse the name —
+  // otherwise the scope wedges permanently on the dead container.
+  if (info.state === "dead" || info.state === "unknown") {
+    try {
+      await existing.remove();
+    } catch {
+      // Best-effort: if remove fails, the create will throw a name-conflict
+      // and the caller will get an actionable error.
+    }
+    await scopeRegistry.forget(scope);
+    return undefined;
+  }
 
   const recordedHash = info.labels[PROFILE_HASH_LABEL];
   if (recordedHash !== fingerprint) {
@@ -353,31 +421,40 @@ async function tryReuse(
 }
 
 /**
- * Stop and remove ALL containers carrying the scope label. Returns true when
- * any container was destroyed, false when nothing matched.
+ * Remove ALL containers carrying the scope label and forget the registry
+ * entry. Returns true when any container was destroyed, false when nothing
+ * matched.
  *
  * Removing every match (rather than just the first) is intentional: the
  * `tryReuse` ambiguity error explicitly tells operators that destroyScope
  * clears stale siblings for this scope. If we only removed one, a follow-up
  * findOrCreate could still encounter the leftover — leaving the scope
- * permanently poisoned. Best-effort: each container's stop/remove failure is
- * captured; after attempting them all we surface the first error.
+ * permanently poisoned.
+ *
+ * Stop is intentionally skipped: `container.remove()` uses `docker rm -f`
+ * which force-kills running containers, so a separate `stop()` step is
+ * redundant and previously caused destroyScope to surface failure for
+ * already-stopped containers (where `docker stop` legitimately errors) even
+ * after the remove succeeded. Authoritative outcome: only surface an error
+ * if the container is still present after `remove()` failed.
  */
-async function doDestroyScope(client: DockerClient, scope: string): Promise<boolean> {
+async function doDestroyScope(
+  client: DockerClient,
+  scope: string,
+  scopeRegistry: ScopeRegistry,
+): Promise<boolean> {
   const findContainers = client.findContainers;
   if (findContainers === undefined) return false;
   const matches = await findContainers({ [SCOPE_LABEL]: scope });
+  // Always forget the registry entry on a destroy attempt — even if no
+  // containers exist (idempotent cleanup of a stale registry record).
+  await scopeRegistry.forget(scope);
   if (matches.length === 0) return false;
 
   // `let` justified: capture the first failure across the loop so we attempt
   // every cleanup before surfacing.
   let firstError: unknown;
   for (const c of matches) {
-    try {
-      await c.stop();
-    } catch (e: unknown) {
-      if (firstError === undefined) firstError = e;
-    }
     try {
       await c.remove();
     } catch (e: unknown) {
