@@ -572,6 +572,15 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     const result = await call<{ readonly mounts?: readonly string[] }>("list_mounts", {});
     if (!result.ok) return result;
     mounts = result.value.mounts ?? [];
+    // Reconcile the connector-scheme cache: any path that is no longer in
+    // the live mount list must drop its scheme entry so a future add at
+    // the same path cannot inherit stale identity. Paths still live keep
+    // their entries; paths newly observed but never seen in this process
+    // simply have no entry, and consumers fall back to path-prefix.
+    const live = new Set(mounts);
+    for (const path of [...mountConnectors.keys()]) {
+      if (!live.has(path)) mountConnectors.delete(path);
+    }
     return { ok: true, value: mounts };
   }
 
@@ -630,6 +639,19 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     ) {
       mounts = [...mounts, result.value.path];
     }
+    // Keep the connector-scheme map in sync. The bridge populates its own
+    // cache from the URI scheme on add_mount, so result.value.connector
+    // matches that authoritative value and we record it here too. Without
+    // this, post-add lookups via mountConnector() would return undefined
+    // for runtime-added paths and consumers would fall back to the path-
+    // prefix heuristic, regressing identity for aliased mounts.
+    if (
+      result.value.path !== "" &&
+      result.value.pathUnknown !== true &&
+      result.value.connector.length > 0
+    ) {
+      mountConnectors.set(result.value.path, result.value.connector);
+    }
     return result;
   }
 
@@ -649,6 +671,11 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     // successful unmount when the two differ.
     const canonicalRemoved = result.value.path;
     mounts = mounts.filter((m) => m !== path && m !== canonicalRemoved);
+    // Drop connector-scheme cache entries for both raw + canonical forms
+    // so a future add_mount at the same path can't inherit stale identity
+    // from the previous mount.
+    mountConnectors.delete(path);
+    if (canonicalRemoved.length > 0) mountConnectors.delete(canonicalRemoved);
     return result;
   }
 

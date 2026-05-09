@@ -1003,24 +1003,27 @@ async def main():
     import nexus.fs
 
     mount_uris = sys.argv[1:] if len(sys.argv) > 1 else ["local://."]
-    fs = await nexus.fs.mount(*mount_uris)
-
-    # Signal ready with mount info. Also build path -> connector-scheme
-    # mapping from the original URIs so the TS seed layer can advertise
-    # the correct connector type for aliased mounts (e.g. gdrive://x at
-    # /team/docs reports connector "gdrive", not "team"). Best-effort
-    # ordinal pairing: nexus.fs.mount() commits URIs in argv order, and
-    # list_mounts() should return them in the same order. When counts
-    # mismatch we leave the cache empty for the unmatched paths and
-    # fall back to the path-prefix heuristic.
-    mounts = fs.list_mounts()
+    # Mount each URI sequentially, diffing list_mounts() before/after each
+    # call so we can pin the resulting path to its source URI's scheme
+    # without trusting list-order. Positional zipping is unsafe here:
+    # nexus.fs.mount() does not promise that list_mounts() returns paths
+    # in argv order (a sorted backend would silently mislabel schemes
+    # across multi-mount sessions).
     mount_connectors: dict[str, str] = {}
-    for idx, path in enumerate(mounts):
-        if idx < len(mount_uris):
-            uri = mount_uris[idx]
-            scheme = uri.split("://", 1)[0] if "://" in uri else "unknown"
-            mount_connectors[path] = scheme
-            _SESSION_MOUNT_CONNECTORS[path] = scheme
+    fs = await nexus.fs.mount()
+    for uri in mount_uris:
+        before = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
+        await _call_first(_mount_targets(fs), ("add_mount", "mount"), uri)
+        after = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
+        new_paths = [p for p in after if p not in before]
+        scheme = uri.split("://", 1)[0] if "://" in uri else "unknown"
+        if len(new_paths) == 1:
+            mount_connectors[new_paths[0]] = scheme
+            _SESSION_MOUNT_CONNECTORS[new_paths[0]] = scheme
+        # When the diff is ambiguous (zero or many new paths), leave the
+        # connector cache empty for that URI; downstream consumers fall
+        # back to deriving the scheme from the path prefix.
+    mounts = list(await _call_first(_mount_targets(fs), ("list_mounts",)))
     _write({"ready": True, "mounts": mounts, "mount_connectors": mount_connectors})
 
     loop = asyncio.get_event_loop()
