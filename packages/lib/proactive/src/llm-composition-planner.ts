@@ -311,6 +311,7 @@ const compositionStepSchema = z.discriminatedUnion("kind", [
 const llmPlanSchema = z
   .object({
     triggerId: z.string(),
+    triggerEmittedAt: z.number(),
     steps: z.array(compositionStepSchema),
     estimatedCost: z.number().finite().nonnegative(),
   })
@@ -435,9 +436,21 @@ function parseAdapterResponse(
       );
     }
 
+    // The adapter MUST authentically declare which emission of the
+    // trigger it planned against. Synthesizing this from the current
+    // trigger.emittedAt would defeat the executor's stale-plan guard:
+    // a cached/replayed adapter response for a prior emission would be
+    // silently relabeled as current and execute against the wrong run.
+    if (plan.triggerEmittedAt !== trigger.emittedAt) {
+      throw new AdapterPlanParseError(
+        `planner triggerEmittedAt mismatch: expected ${trigger.emittedAt}, got ${plan.triggerEmittedAt} ` +
+          `(adapter likely returned a stale plan for a reused trigger id)`,
+      );
+    }
+
     return {
       triggerId: plan.triggerId,
-      triggerEmittedAt: trigger.emittedAt,
+      triggerEmittedAt: plan.triggerEmittedAt,
       steps: plan.steps as readonly CompositionStep[],
       estimatedCost: plan.estimatedCost,
     };

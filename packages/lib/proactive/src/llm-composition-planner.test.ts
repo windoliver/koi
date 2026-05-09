@@ -189,6 +189,41 @@ describe("createLlmCompositionPlanner", () => {
     expect(plan.requiresApproval).toBe(true);
   });
 
+  test("LLM plan with stale triggerEmittedAt is rejected (no relabeling)", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-stale",
+            // Adapter authored against an older emission; current trigger
+            // is emittedAt=2 (below). Without validation, the planner
+            // would relabel this as current and silently execute stale work.
+            triggerEmittedAt: 1,
+            steps: [
+              { kind: "notify_user", channel: "inbox", message: "x", priority: "normal" },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    await expect(
+      planner.plan(
+        {
+          id: "trigger-stale",
+          source: "test",
+          confidence: 1,
+          moment: { kind: "external_event", source: "x", eventType: "y" },
+          suggestedCapabilities: [],
+          context: {},
+          emittedAt: 2,
+        },
+        { tools: [], agents: [], schedules: [] },
+      ),
+    ).rejects.toThrow(/triggerEmittedAt mismatch/);
+  });
+
   test("planner config can disable Temporal-style gating for non-Temporal backends", async () => {
     const planner = createLlmCompositionPlanner({
       adapter: {
@@ -783,7 +818,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "fs-1",
-      triggerEmittedAt: 1,
+            triggerEmittedAt: 100,
             steps: [
               {
                 kind: "forge_skill",
