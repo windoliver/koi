@@ -6444,9 +6444,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             );
             for (const path of livePaths) {
               if (!known.has(path)) {
+                // Prefer the transport's authoritative URI-scheme map for
+                // aliased mounts (e.g. gdrive://x at /team/docs reports
+                // connector "gdrive", not "team"). Fall back to first
+                // path segment only when the transport has no record.
+                const authoritative = transport.mountConnector?.(path);
                 mountDescriptionsState.addRuntime({
                   path,
-                  connector: path.split("/").filter(Boolean)[0] ?? "unknown",
+                  connector: authoritative ?? path.split("/").filter(Boolean)[0] ?? "unknown",
                 });
               }
             }

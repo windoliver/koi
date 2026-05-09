@@ -165,6 +165,16 @@ export interface NexusTransport {
   ) => Promise<Result<{ readonly path: string; readonly removed: true }, KoiError>>;
   /** List the currently-mounted paths when supported by the backend. */
   readonly listMounts?: () => Promise<Result<readonly string[], KoiError>>;
+  /**
+   * Authoritative connector scheme (e.g. "gdrive", "gmail", "local") for a
+   * mount path the transport committed in the current process — including
+   * startup-seeded manifest mounts and runtime add_mount calls. Returns
+   * `undefined` for paths the transport has no record of, in which case
+   * the caller falls back to deriving the scheme from the path. This
+   * exists so aliased mounts (`gdrive://x` at `/team/docs`) report their
+   * real connector type rather than `path.split("/")[0]`.
+   */
+  readonly mountConnector?: (path: string) => string | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -198,6 +198,11 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   // Any failure here (timeout, process exit, parse error) must clean up the
   // subprocess — without this, a repeated startup failure leaks processes.
   let mounts: readonly string[] = [];
+  // Authoritative path -> connector-scheme map populated from the bridge's
+  // ready payload. Lets the TS seed layer report the original URI scheme
+  // (e.g. "gdrive") for aliased mount paths (e.g. /team/docs) instead of
+  // guessing the first path segment.
+  const mountConnectors = new Map<string, string>();
   try {
     const readyLine = await Promise.race([
       lineReader.nextLine(),
@@ -208,11 +213,19 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     const ready = JSON.parse(readyLine) as {
       readonly ready?: boolean;
       readonly mounts?: readonly string[];
+      readonly mount_connectors?: Readonly<Record<string, string>>;
     };
     if (ready.ready !== true) {
       throw new Error(`Unexpected bridge startup message: ${readyLine}`);
     }
     mounts = ready.mounts ?? [];
+    if (ready.mount_connectors !== undefined) {
+      for (const [path, scheme] of Object.entries(ready.mount_connectors)) {
+        if (typeof scheme === "string" && scheme.length > 0) {
+          mountConnectors.set(path, scheme);
+        }
+      }
+    }
   } catch (e: unknown) {
     lineReader.release();
     try {
@@ -647,6 +660,18 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     close,
     get mounts(): readonly string[] {
       return mounts;
+    },
+    /**
+     * Authoritative connector scheme for a mount path. Returns the scheme
+     * the bridge tracked from its source URI (`gdrive`, `gmail`, `local`,
+     * etc.) for paths committed in the current bridge process — including
+     * startup-seeded manifest mounts and runtime add_mount commits — or
+     * undefined for paths the bridge has no record of (typically pre-
+     * existing mounts shared from another process). Callers that only get
+     * undefined back fall back to deriving the scheme from the path.
+     */
+    mountConnector(path: string): string | undefined {
+      return mountConnectors.get(path);
     },
     describeMount,
     addMount,

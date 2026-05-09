@@ -133,8 +133,17 @@ function canonicalizeMountPath(value: string): string {
   return stripped.length === 0 ? "" : `/${stripped}`;
 }
 
-function cheapMountDescription(path: string): MountDescription {
-  return { path, connector: connectorNameFromPath(path) };
+function cheapMountDescription(
+  path: string,
+  transport?: import("@koi/fs-nexus").NexusTransport,
+): MountDescription {
+  // Prefer the transport's authoritative URI-scheme map (populated at
+  // startup from manifest URIs and at runtime from add_mount). Fall back
+  // to the path-prefix heuristic only when no authoritative entry exists,
+  // which is correct for non-aliased mounts (path's first segment IS the
+  // scheme) and best-effort for aliased ones.
+  const authoritative = transport?.mountConnector?.(path);
+  return { path, connector: authoritative ?? connectorNameFromPath(path) };
 }
 
 /**
@@ -172,7 +181,9 @@ function seedManifestMountDescriptions(
               scopePath.startsWith(`${canonical}/`),
           );
         });
-  return [...filtered.map(cheapMountDescription)].sort((a, b) => a.path.localeCompare(b.path));
+  return [...filtered.map((path) => cheapMountDescription(path, transport))].sort((a, b) =>
+    a.path.localeCompare(b.path),
+  );
 }
 
 /**
