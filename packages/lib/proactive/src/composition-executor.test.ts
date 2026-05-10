@@ -34,14 +34,14 @@ function trigger(): CompositionTrigger {
 function schedulerStub() {
   const calls: { submit: unknown[]; schedule: unknown[] } = { submit: [], schedule: [] };
   const scheduler: SchedulerComponent = {
-    async submit(...args) {
+    async submit(...args: unknown[]) {
       calls.submit.push(args);
       return taskId("task-1");
     },
     async cancel() {
       return true;
     },
-    async schedule(...args) {
+    async schedule(...args: unknown[]) {
       calls.schedule.push(args);
       return scheduleId("schedule-1");
     },
@@ -80,7 +80,7 @@ function failingSubmitSchedulerStub() {
   const { scheduler, calls } = schedulerStub();
   const failingScheduler: SchedulerComponent = {
     ...scheduler,
-    async submit(...args) {
+    async submit(...args: unknown[]) {
       calls.submit.push(args);
       throw new Error("submit failed");
     },
@@ -113,7 +113,7 @@ function failingScheduleSchedulerStub() {
   const { scheduler, calls } = schedulerStub();
   const failingScheduler: SchedulerComponent = {
     ...scheduler,
-    async schedule(...args) {
+    async schedule(...args: unknown[]) {
       calls.schedule.push(args);
       throw new Error("schedule failed");
     },
@@ -857,12 +857,12 @@ describe("createCompositionExecutor", () => {
     let attempt = 0;
     const rejectingThenAccepting: SchedulerComponent = {
       ...base,
-      async submit(input, mode, opts) {
+      async submit(...args: Parameters<SchedulerComponent["submit"]>) {
         attempt += 1;
         if (attempt === 1) {
           throw preCommitRejection("submit() does not enforce timeoutMs or maxRetries.");
         }
-        return base.submit(input, mode, opts);
+        return base.submit(...args);
       },
     };
     const { log, store } = inMemoryExecutionLog();
@@ -1028,14 +1028,14 @@ describe("createCompositionExecutor", () => {
     const { calls } = schedulerStub();
     const { log, store } = inMemoryExecutionLog();
     const failingScheduler: SchedulerComponent = {
-      async submit(...args) {
+      async submit(...args: unknown[]) {
         calls.submit.push(args);
         return taskId("task-1");
       },
       async cancel() {
         return true;
       },
-      async schedule(...args) {
+      async schedule(...args: unknown[]) {
         calls.schedule.push(args);
         throw new Error("ambiguous: timeout");
       },
@@ -1118,14 +1118,14 @@ describe("createCompositionExecutor", () => {
     const { log, store } = inMemoryExecutionLog();
     let attempt = 0;
     const validatingScheduler: SchedulerComponent = {
-      async submit(...args) {
+      async submit(...args: unknown[]) {
         calls.submit.push(args);
         return taskId("task-1");
       },
       async cancel() {
         return true;
       },
-      async schedule(...args) {
+      async schedule(...args: unknown[]) {
         calls.schedule.push(args);
         attempt += 1;
         if (attempt === 1) {
@@ -1197,14 +1197,14 @@ describe("createCompositionExecutor", () => {
     const { calls } = schedulerStub();
     const { log } = inMemoryExecutionLog();
     const failingScheduler: SchedulerComponent = {
-      async submit(...args) {
+      async submit(...args: unknown[]) {
         calls.submit.push(args);
         return taskId("task-1");
       },
       async cancel() {
         return true;
       },
-      async schedule(...args) {
+      async schedule(...args: unknown[]) {
         calls.schedule.push(args);
         throw new Error("ambiguous");
       },
@@ -1277,7 +1277,7 @@ describe("createCompositionExecutor", () => {
       },
     };
     const flakyScheduler: SchedulerComponent = {
-      async submit(...args) {
+      async submit(...args: unknown[]) {
         calls.submit.push(args);
         return taskId("task-1");
       },

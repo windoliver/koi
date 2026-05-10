@@ -293,10 +293,10 @@ describe("E2E: preCommitRejection releases claim, plain Error leaves it pending"
     let attempt = 0;
     const wrapped: SchedulerComponent = {
       ...real,
-      async submit(input, mode, opts) {
+      async submit(...args: Parameters<SchedulerComponent["submit"]>) {
         attempt += 1;
         if (attempt === 1) throw preCommitRejection("simulated bad option");
-        return real.submit(input, mode, opts);
+        return real.submit(...args);
       },
     };
     const sink = makeNotifySink();

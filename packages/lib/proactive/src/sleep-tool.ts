@@ -143,8 +143,11 @@ async function reconcileSleepEntries(
     const tasks = await scheduler.query({ agentId });
     live = new Set(
       tasks
-        .filter((t) => t.status === "pending" || t.status === "running")
-        .map((t) => String(t.id)),
+        .filter(
+          (t: { readonly status: string }) =>
+            t.status === "pending" || t.status === "running",
+        )
+        .map((t: { readonly id: unknown }) => String(t.id)),
     );
   } catch {
     return;
