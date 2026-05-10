@@ -50,6 +50,8 @@ function _assertExhaustiveSystemSignal(signal: SystemSignal): void {
       return;
     case "vfs":
       return;
+    case "frontier":
+      return;
     case "forge_demand":
       return;
     case "schedule":

@@ -28,10 +28,11 @@ describe("createGroveSignalSource", () => {
     expect(targetUrl).toBe("http://localhost:4515");
   });
 
-  test("ignores unsupported frontier events instead of inventing signals", async () => {
+  test("emits a frontier signal when an accepted frontier_changed event arrives", async () => {
     let onMessage: ((event: MessageEvent<string>) => void) | undefined;
     const source = createGroveSignalSource({
       groveUrl: "http://localhost:4515",
+      now: () => 4242,
       eventSourceFactory: () =>
         ({
           close() {},
@@ -50,6 +51,83 @@ describe("createGroveSignalSource", () => {
           type: "frontier_changed",
           metric: "retrieval_quality",
           improvement: 0.22,
+        }),
+      }),
+    );
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen).toEqual([
+      {
+        kind: "frontier",
+        metric: "retrieval_quality",
+        improvement: 0.22,
+        emittedAt: 4242,
+      },
+    ]);
+  });
+
+  test("uses upstream emittedAt when supplied", async () => {
+    let onMessage: ((event: MessageEvent<string>) => void) | undefined;
+    const source = createGroveSignalSource({
+      groveUrl: "http://localhost:4515",
+      now: () => 9999,
+      eventSourceFactory: () =>
+        ({
+          close() {},
+          set onmessage(fn: GroveEventSourceLike["onmessage"]) {
+            onMessage = fn ?? undefined;
+          },
+          set onerror(_fn: GroveEventSourceLike["onerror"]) {},
+        }) satisfies GroveEventSourceLike,
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    onMessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "frontier_changed",
+          metric: "retrieval_quality",
+          improvement: 0.22,
+          emittedAt: 1700,
+        }),
+      }),
+    );
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen[0]).toEqual({
+      kind: "frontier",
+      metric: "retrieval_quality",
+      improvement: 0.22,
+      emittedAt: 1700,
+    });
+  });
+
+  test("does not emit when minImprovement filter rejects the event", async () => {
+    let onMessage: ((event: MessageEvent<string>) => void) | undefined;
+    const source = createGroveSignalSource({
+      groveUrl: "http://localhost:4515",
+      minImprovement: 0.5,
+      eventSourceFactory: () =>
+        ({
+          close() {},
+          set onmessage(fn: GroveEventSourceLike["onmessage"]) {
+            onMessage = fn ?? undefined;
+          },
+          set onerror(_fn: GroveEventSourceLike["onerror"]) {},
+        }) satisfies GroveEventSourceLike,
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    onMessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "frontier_changed",
+          metric: "retrieval_quality",
+          improvement: 0.1,
         }),
       }),
     );

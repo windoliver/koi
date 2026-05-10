@@ -1,4 +1,4 @@
-import type { SystemSignalSource } from "@koi/core";
+import type { SystemSignal, SystemSignalSource } from "@koi/core";
 import { createAsyncEmitter, createSubscriptionController, safeCall } from "./shared.js";
 
 export interface GroveEventSourceLike {
@@ -12,6 +12,8 @@ export interface GroveSignalSourceConfig {
   readonly metrics?: readonly string[] | undefined;
   readonly minImprovement?: number | undefined;
   readonly eventSourceFactory?: ((url: string) => GroveEventSourceLike) | undefined;
+  /** Override for the emittedAt timestamp source. Defaults to Date.now. */
+  readonly now?: (() => number) | undefined;
 }
 
 export function shouldAcceptGroveFrontierEvent(
@@ -56,6 +58,8 @@ export function createGroveSignalSource(config: GroveSignalSourceConfig): System
       const eventSource = config.eventSourceFactory?.(config.groveUrl);
       if (eventSource === undefined) return () => {};
 
+      const now = config.now ?? Date.now;
+
       eventSource.onmessage = (event) => {
         if (closed) return;
 
@@ -71,8 +75,17 @@ export function createGroveSignalSource(config: GroveSignalSourceConfig): System
             return;
           }
 
-          // Grove frontier updates are not representable in the current SystemSignal contract.
-          void emitter;
+          const upstreamEmittedAt =
+            typeof payload.emittedAt === "number" && Number.isFinite(payload.emittedAt)
+              ? payload.emittedAt
+              : undefined;
+
+          emitter.emit({
+            kind: "frontier",
+            metric: metric as string,
+            improvement,
+            emittedAt: upstreamEmittedAt ?? now(),
+          } satisfies SystemSignal);
         } catch (error) {
           safeCall(options?.onError, error);
         }
