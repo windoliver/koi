@@ -9,6 +9,10 @@ const dummyAgent: TaskableAgent = {
   manifest: { name: "researcher", version: "1.0.0", model: { name: "m" } },
 };
 
+function createFailure(message: string) {
+  return { code: "EXTERNAL" as const, message, retryable: true };
+}
+
 const agents = new Map<string, TaskableAgent>([["researcher", dummyAgent]]);
 
 describe("createTaskTool", () => {
@@ -54,7 +58,7 @@ describe("createTaskTool", () => {
   test("formats failed spawn output", async () => {
     const tool = await createTaskTool({
       agents,
-      spawn: async () => ({ ok: false, error: "boom" }),
+      spawn: async () => ({ ok: false, error: createFailure("boom") }),
       defaultAgent: "researcher",
     });
     const out = (await tool.execute({ description: "x" })) as string;

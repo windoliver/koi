@@ -17,6 +17,11 @@ export { validateTaskSpawnConfig } from "./config.js";
 export { extractOutput } from "./output.js";
 export { createTaskSpawnProvider } from "./provider.js";
 export { createRegistryAgentResolver } from "./registry-agent-resolver.js";
+export type {
+  SpawnFitnessOutcome,
+  SpawnFitnessWrapperConfig,
+} from "./spawn-fitness-wrapper.js";
+export { createSpawnFitnessWrapper } from "./spawn-fitness-wrapper.js";
 export { createTaskTool } from "./task-tool.js";
 export type {
   AgentResolver,

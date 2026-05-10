@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { extractOutput } from "./output.js";
 
+function createFailure(message: string) {
+  return { code: "EXTERNAL" as const, message, retryable: true };
+}
+
 describe("extractOutput", () => {
   test("returns the success output text", () => {
     expect(extractOutput({ ok: true, output: "hello" })).toBe("hello");
@@ -11,6 +15,6 @@ describe("extractOutput", () => {
   });
 
   test("returns Task failed for failures", () => {
-    expect(extractOutput({ ok: false, error: "boom" })).toBe("Task failed: boom");
+    expect(extractOutput({ ok: false, error: createFailure("boom") })).toBe("Task failed: boom");
   });
 });

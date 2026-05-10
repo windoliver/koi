@@ -17,5 +17,5 @@ export function extractOutput(result: TaskSpawnResult): string {
   if (result.ok) {
     return result.output.length > 0 ? result.output : EMPTY_OUTPUT_MESSAGE;
   }
-  return `Task failed: ${result.error}`;
+  return `Task failed: ${result.error.message}`;
 }
