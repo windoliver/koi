@@ -27,7 +27,6 @@ The public package is [`@koi/autonomous`](../L3/autonomous.md), but the behavior
 - optional `agentResolver`
 - optional `spawn`
 - optional `spawnFitness`
-- optional `completionNotifier`
 - optional extra middleware
 
 If both `spawn` and `agentResolver` are present, the facade exposes a cached `providers()` array containing the task-spawn provider. If `spawnFitness` is also present, the provider uses the wrapped spawn hook so outcome recording happens through the normal `task` tool path.

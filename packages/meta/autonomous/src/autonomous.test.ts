@@ -180,6 +180,63 @@ describe("@koi/autonomous", () => {
     );
   });
 
+  test("retries failed scheduler disposal on a later dispose call", async () => {
+    let schedulerCalls = 0;
+    let harnessCalls = 0;
+    const harness = createHarnessStub({
+      dispose: async () => {
+        harnessCalls += 1;
+        return ok();
+      },
+    });
+    const scheduler = createSchedulerStub({
+      dispose: async () => {
+        schedulerCalls += 1;
+        if (schedulerCalls === 1) throw new Error("transient");
+      },
+    });
+
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    await expect(agent.dispose()).rejects.toThrow("transient");
+    await agent.dispose();
+
+    expect(schedulerCalls).toBe(2);
+    expect(harnessCalls).toBe(1);
+  });
+
+  test("retries failed harness disposal on a later dispose call", async () => {
+    let schedulerCalls = 0;
+    let harnessCalls = 0;
+    const harnessError = {
+      code: "INTERNAL",
+      message: "transient harness",
+      retryable: true,
+    } as KoiError;
+    const harness = createHarnessStub({
+      dispose: async () => {
+        harnessCalls += 1;
+        if (harnessCalls === 1) {
+          return { ok: false, error: harnessError };
+        }
+        return ok();
+      },
+    });
+    const scheduler = createSchedulerStub({
+      dispose: async () => {
+        schedulerCalls += 1;
+      },
+    });
+
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    await expect(agent.dispose()).rejects.toBe(harnessError);
+    await agent.dispose();
+
+    expect(schedulerCalls).toBe(1);
+    expect(harnessCalls).toBe(2);
+  });
+
   test("dispose is idempotent", async () => {
     let schedulerDisposals = 0;
     let harnessDisposals = 0;

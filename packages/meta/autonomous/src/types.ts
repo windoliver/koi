@@ -1,6 +1,6 @@
 import type { AgentResolver, ComponentProvider, KoiMiddleware } from "@koi/core";
 import type { HarnessScheduler } from "@koi/harness-scheduler";
-import type { CompletionNotifier, LongRunningHarness } from "@koi/long-running";
+import type { LongRunningHarness } from "@koi/long-running";
 import type { SpawnFitnessWrapperConfig, SpawnFn } from "@koi/task-spawn";
 
 export interface AutonomousAgentParts {
@@ -8,7 +8,6 @@ export interface AutonomousAgentParts {
   readonly scheduler: HarnessScheduler;
   readonly agentResolver?: AgentResolver | undefined;
   readonly spawn?: SpawnFn | undefined;
-  readonly completionNotifier?: CompletionNotifier | undefined;
   readonly spawnFitness?: SpawnFitnessWrapperConfig | undefined;
   readonly extraMiddleware?: readonly KoiMiddleware[] | undefined;
 }

@@ -1195,6 +1195,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/task-board": "workspace:*",
       },
     },
     "packages/lib/task-tools": {
@@ -1368,6 +1369,17 @@
         "@koi/harness-synth": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/middleware-policy-cache": "workspace:*",
+      },
+    },
+    "packages/meta/autonomous": {
+      "name": "@koi/autonomous",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/harness-scheduler": "workspace:*",
+        "@koi/long-running": "workspace:*",
+        "@koi/task-board": "workspace:*",
+        "@koi/task-spawn": "workspace:*",
       },
     },
     "packages/meta/cli": {
@@ -2702,6 +2714,8 @@
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
 
     "@koi/auto-harness": ["@koi/auto-harness@workspace:packages/meta/auto-harness"],
+
+    "@koi/autonomous": ["@koi/autonomous@workspace:packages/meta/autonomous"],
 
     "@koi/bash-ast": ["@koi/bash-ast@workspace:packages/lib/bash-ast"],
 

@@ -65,7 +65,7 @@ describe("reconcileTaskBoard", () => {
     ]);
   });
 
-  test("stale metadata.delegatedTo on pending tasks emits a recovery action", () => {
+  test("stale metadata.delegatedTo on pending tasks emits a recovery action when caller marks it stale", () => {
     const board = createTaskBoard().add({
       id: taskItemId("stale"),
       subject: "recover me",
@@ -78,9 +78,61 @@ describe("reconcileTaskBoard", () => {
     });
     if (!board.ok) throw board.error;
 
-    const result = reconcileTaskBoard(serializeBoard(board.value));
+    const result = reconcileTaskBoard(serializeBoard(board.value), {
+      isDelegationStale: () => true,
+    });
     expect(result.actions).toEqual([
       { kind: "clearDelegation", taskId: taskItemId("stale"), delegatedTo: "worker-1" },
+    ]);
+  });
+
+  test("does not clear active delegations without a staleness signal", () => {
+    const board = createTaskBoard().add({
+      id: taskItemId("live"),
+      subject: "in flight",
+      description: "currently being worked",
+      metadata: {
+        delegation: "spawn",
+        agentType: "reviewer",
+        delegatedTo: "worker-1",
+      },
+    });
+    if (!board.ok) throw board.error;
+
+    const result = reconcileTaskBoard(serializeBoard(board.value));
+    expect(result.actions).toEqual([]);
+  });
+
+  test("isDelegationStale predicate decides per-task whether to recover", () => {
+    const board = createTaskBoard().addAll([
+      {
+        id: taskItemId("alive"),
+        subject: "still working",
+        description: "active worker",
+        metadata: {
+          delegation: "spawn",
+          agentType: "reviewer",
+          delegatedTo: "worker-alive",
+        },
+      },
+      {
+        id: taskItemId("dead"),
+        subject: "abandoned",
+        description: "worker died",
+        metadata: {
+          delegation: "spawn",
+          agentType: "reviewer",
+          delegatedTo: "worker-dead",
+        },
+      },
+    ]);
+    if (!board.ok) throw board.error;
+
+    const result = reconcileTaskBoard(serializeBoard(board.value), {
+      isDelegationStale: (_task, delegatedTo) => delegatedTo === "worker-dead",
+    });
+    expect(result.actions).toEqual([
+      { kind: "clearDelegation", taskId: taskItemId("dead"), delegatedTo: "worker-dead" },
     ]);
   });
 });

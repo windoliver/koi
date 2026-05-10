@@ -10,6 +10,7 @@
 
 export type {
   AutonomousReconcileAction,
+  AutonomousReconcileOptions,
   AutonomousReconcileResult,
 } from "./autonomous-reconciler.js";
 export { reconcileTaskBoard } from "./autonomous-reconciler.js";

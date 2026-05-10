@@ -25,7 +25,8 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
       : [],
   ) as readonly ComponentProvider[];
 
-  let disposed = false;
+  let schedulerDisposed = false;
+  let harnessDisposed = false;
 
   return {
     harness: parts.harness,
@@ -33,29 +34,30 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     middleware: () => middleware,
     providers: () => providers,
     dispose: async () => {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-
       let schedulerError: unknown;
 
-      try {
-        await parts.scheduler.dispose();
-      } catch (error) {
-        schedulerError = error;
+      if (!schedulerDisposed) {
+        try {
+          await parts.scheduler.dispose();
+          schedulerDisposed = true;
+        } catch (error) {
+          schedulerError = error;
+        }
       }
 
-      try {
-        assertOk(await parts.harness.dispose());
-      } catch (error) {
-        if (schedulerError !== undefined) {
-          throw new AggregateError(
-            [schedulerError, error],
-            "autonomous dispose failed during scheduler and harness cleanup",
-          );
+      if (!harnessDisposed) {
+        try {
+          assertOk(await parts.harness.dispose());
+          harnessDisposed = true;
+        } catch (error) {
+          if (schedulerError !== undefined) {
+            throw new AggregateError(
+              [schedulerError, error],
+              "autonomous dispose failed during scheduler and harness cleanup",
+            );
+          }
+          throw error;
         }
-        throw error;
       }
 
       if (schedulerError !== undefined) {

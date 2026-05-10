@@ -13,6 +13,10 @@ export interface AutonomousReconcileResult {
   readonly actions: readonly AutonomousReconcileAction[];
 }
 
+export interface AutonomousReconcileOptions {
+  readonly isDelegationStale?: ((task: Task, delegatedTo: string) => boolean) | undefined;
+}
+
 function metadataString(task: Task, key: string): string | undefined {
   const value = task.metadata?.[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -24,28 +28,38 @@ function delegatedAgentType(task: Task): string | undefined {
   return metadataString(task, "agentType");
 }
 
-function staleDelegatedTo(task: Task): string | undefined {
+function pendingDelegatedTo(task: Task): string | undefined {
   if (task.status !== "pending") return undefined;
   return metadataString(task, "delegatedTo");
 }
 
-export function reconcileTaskBoard(snapshot: TaskBoardSnapshot): AutonomousReconcileResult {
+export function reconcileTaskBoard(
+  snapshot: TaskBoardSnapshot,
+  options: AutonomousReconcileOptions = {},
+): AutonomousReconcileResult {
   const board = deserializeBoard(snapshot);
   const itemsById = new Map<TaskItemId, Task>(snapshot.items.map((task) => [task.id, task]));
   const orderedIds = topologicalSort(snapshotToItemsMap(board));
   const readyIds = new Set(board.ready().map((task) => task.id));
   const recoveringIds = new Set<TaskItemId>();
   const actions: AutonomousReconcileAction[] = [];
+  const isStale = options.isDelegationStale;
 
+  const activeDelegations = new Set<TaskItemId>();
   for (const task of snapshot.items) {
-    const delegatedTo = staleDelegatedTo(task);
+    const delegatedTo = pendingDelegatedTo(task);
     if (delegatedTo === undefined) continue;
-    recoveringIds.add(task.id);
-    actions.push({ kind: "clearDelegation", taskId: task.id, delegatedTo });
+    if (isStale?.(task, delegatedTo)) {
+      recoveringIds.add(task.id);
+      actions.push({ kind: "clearDelegation", taskId: task.id, delegatedTo });
+    } else {
+      activeDelegations.add(task.id);
+    }
   }
 
   for (const taskId of orderedIds) {
-    if (!readyIds.has(taskId) || recoveringIds.has(taskId)) continue;
+    if (!readyIds.has(taskId)) continue;
+    if (recoveringIds.has(taskId) || activeDelegations.has(taskId)) continue;
     const task = itemsById.get(taskId);
     if (task === undefined) continue;
     const agentType = delegatedAgentType(task);
