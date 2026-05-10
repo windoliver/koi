@@ -37,7 +37,23 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   let schedulerDisposed = false;
   let harnessDisposed = false;
   let inFlight: Promise<void> | undefined;
-  let pendingLease: SessionLease | undefined;
+  // All leases supplied by callers, ordered: highest-epoch first. The harness
+  // validates lease identity (WeakSet) so a higher-epoch lease may still be
+  // poisoned/stale; on STALE_REF we discard the failed candidate and fall
+  // through to the next, preserving real lower-epoch leases that callers
+  // supplied concurrently.
+  const candidateLeases: SessionLease[] = [];
+
+  function recordLease(lease: SessionLease): void {
+    if (candidateLeases.some((l) => l === lease)) return;
+    let i = 0;
+    while (i < candidateLeases.length) {
+      const existing = candidateLeases[i];
+      if (existing === undefined || existing.epoch < lease.epoch) break;
+      i += 1;
+    }
+    candidateLeases.splice(i, 0, lease);
+  }
 
   async function runDispose(): Promise<void> {
     if (!schedulerDisposed) {
@@ -49,29 +65,30 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     }
 
     while (!harnessDisposed) {
-      const leaseAtCall = pendingLease;
+      const leaseAtCall = candidateLeases[0];
+      const candidateCountAtCall = candidateLeases.length;
       try {
         assertOk(await parts.harness.dispose(leaseAtCall));
         harnessDisposed = true;
-        pendingLease = undefined;
+        candidateLeases.length = 0;
       } catch (error) {
-        // STALE_REF means the harness rejected the lease (poisoned
-        // high-epoch / fabricated / from a previous session). Drop it so a
-        // later caller's real lease isn't blocked by epoch comparison from
-        // ever replacing the bad one.
-        if (
+        const isStaleRef =
           typeof error === "object" &&
           error !== null &&
           "code" in error &&
-          (error as { code: unknown }).code === "STALE_REF"
-        ) {
-          if (pendingLease === leaseAtCall) pendingLease = undefined;
+          (error as { code: unknown }).code === "STALE_REF";
+        if (isStaleRef && leaseAtCall !== undefined) {
+          // The harness rejected this specific lease. Try the next candidate
+          // (a real lower-epoch lease may have been suppressed behind a
+          // poisoned higher-epoch one).
+          const idx = candidateLeases.indexOf(leaseAtCall);
+          if (idx >= 0) candidateLeases.splice(idx, 1);
+          continue;
         }
-        if (pendingLease !== leaseAtCall) {
+        if (candidateLeases.length !== candidateCountAtCall) {
           // A concurrent caller supplied a newer lease while the in-flight
-          // harness.dispose was running with a stale/undefined one, or we
-          // just cleared a poisoned lease above. Retry with the updated
-          // value so the live session is actually revoked.
+          // harness.dispose was running with a stale/undefined one. Retry
+          // with the new candidate so the live session is actually revoked.
           continue;
         }
         throw error;
@@ -85,15 +102,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     middleware: () => middleware,
     providers: () => providers,
     dispose: (lease?: SessionLease) => {
-      if (lease !== undefined) {
-        // Only accept a strictly newer lease. SessionLease.epoch is monotonic
-        // per harness instance across sessions, so the higher epoch always
-        // wins regardless of sessionId. Equal-epoch leases keep the existing
-        // pending value so a stale caller cannot clobber the active one.
-        if (pendingLease === undefined || lease.epoch > pendingLease.epoch) {
-          pendingLease = lease;
-        }
-      }
+      if (lease !== undefined) recordLease(lease);
       if (inFlight !== undefined) return inFlight;
       const attempt = runDispose().finally(() => {
         if (inFlight === attempt) inFlight = undefined;
