@@ -60,6 +60,13 @@ export type AutonomousReconcileAction =
 
 export interface AutonomousReconcileResult {
   readonly actions: readonly AutonomousReconcileAction[];
+  /**
+   * Task IDs that the reconciler could not order because the persisted graph
+   * is not a DAG (e.g. cycle, missing dependency). Recovery actions are
+   * intentionally NOT emitted for these tasks; the caller must surface the
+   * malformed-board state to operators before any further autonomous run.
+   */
+  readonly unorderedTaskIds: readonly TaskItemId[];
 }
 
 export interface AutonomousReconcileOptions {
@@ -102,7 +109,13 @@ export function reconcileTaskBoard(
   options: AutonomousReconcileOptions = {},
 ): AutonomousReconcileResult {
   const board = deserializeBoard(snapshot);
-  const orderedIds = topologicalSort(snapshotToItemsMap(board));
+  const itemsMap = snapshotToItemsMap(board);
+  const orderedIds = topologicalSort(itemsMap);
+  const orderedSet = new Set<TaskItemId>(orderedIds);
+  const unorderedTaskIds: TaskItemId[] = [];
+  for (const id of itemsMap.keys()) {
+    if (!orderedSet.has(id)) unorderedTaskIds.push(id);
+  }
   const readyIds = new Set(board.ready().map((task) => task.id));
   const actions: AutonomousReconcileAction[] = [];
   const isStale = options.isDelegationStale;
@@ -203,5 +216,5 @@ export function reconcileTaskBoard(
     }
   }
 
-  return { actions };
+  return { actions, unorderedTaskIds };
 }

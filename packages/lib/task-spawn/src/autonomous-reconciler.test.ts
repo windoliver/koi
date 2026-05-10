@@ -364,6 +364,38 @@ describe("reconcileTaskBoard", () => {
     ]);
   });
 
+  test("reports tasks the reconciler could not order so callers can escalate corrupt graphs", () => {
+    // Construct a snapshot the topological sort cannot fully order. Two tasks
+    // mutually depending on each other simulate a corrupt persisted graph
+    // (createTaskBoard would reject this at build time, so we splice it
+    // directly into the serialized snapshot shape).
+    const malformed = {
+      items: [
+        {
+          id: taskItemId("a"),
+          subject: "a",
+          description: "a",
+          dependencies: [taskItemId("b")],
+          status: "pending" as const,
+          version: 1,
+        },
+        {
+          id: taskItemId("b"),
+          subject: "b",
+          description: "b",
+          dependencies: [taskItemId("a")],
+          status: "pending" as const,
+          version: 1,
+        },
+      ],
+      results: [],
+    };
+
+    const result = reconcileTaskBoard(malformed as never);
+    expect(result.unorderedTaskIds.length).toBeGreaterThan(0);
+    expect(result.actions).toEqual([]);
+  });
+
   test("dispatch actions include the task version as an OCC token", () => {
     const board = createTaskBoard().add({
       id: taskItemId("ready"),
