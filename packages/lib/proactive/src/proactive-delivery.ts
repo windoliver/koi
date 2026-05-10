@@ -60,6 +60,24 @@ function selectPreferred(
   return { name, adapter };
 }
 
+function selectHighOrder(
+  channels: ReadonlyMap<string, ChannelAdapter>,
+  preferredName: string | undefined,
+): readonly { name: string; adapter: ChannelAdapter }[] {
+  const out: { name: string; adapter: ChannelAdapter }[] = [];
+  if (preferredName !== undefined) {
+    const adapter = channels.get(preferredName);
+    if (adapter !== undefined) {
+      out.push({ name: preferredName, adapter });
+    }
+  }
+  for (const [name, adapter] of channels) {
+    if (name === preferredName) continue;
+    out.push({ name, adapter });
+  }
+  return out;
+}
+
 async function sendOne(
   channel: { name: string; adapter: ChannelAdapter },
   msg: OutboundMessage,
@@ -198,6 +216,27 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
       }
       if (notification.priority === "normal" && isQuietNow(t)) {
         return { ok: false, reason: "quiet_hours" };
+      }
+      if (notification.priority === "high") {
+        if (!reserveSlot(t, notification.priority)) {
+          return { ok: false, reason: "rate_limited" };
+        }
+        const order = selectHighOrder(config.channels, preferences?.preferredChannel);
+        if (order.length === 0) {
+          refundSlot(t, notification.priority);
+          return { ok: false, reason: "no_channels" };
+        }
+        const msg = buildOutbound(notification);
+        const failures: DeliveryFailure[] = [];
+        for (const target of order) {
+          const failure = await sendOne(target, msg);
+          if (failure === undefined) {
+            return { ok: true, delivered: [target.name] };
+          }
+          failures.push(failure);
+        }
+        refundSlot(t, notification.priority);
+        return { ok: false, reason: "all_failed", failures };
       }
       if (!reserveSlot(t, notification.priority)) {
         return { ok: false, reason: "rate_limited" };
