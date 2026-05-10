@@ -11,6 +11,7 @@ import {
   validateNexusPermissionEscalationConfig,
 } from "./config.js";
 import {
+  computeEscalationRequestFingerprint,
   PERMISSION_ESCALATION_DECISION_TYPE,
   PERMISSION_ESCALATION_REQUEST_TYPE,
   type PermissionEscalationDecisionRecord,
@@ -74,6 +75,7 @@ function isDecisionRecord(value: unknown): value is PermissionEscalationDecision
     typeof candidate.workerAgentId === "string" &&
     typeof candidate.coordinatorAgentId === "string" &&
     typeof candidate.resolvedAt === "number" &&
+    typeof candidate.requestFingerprint === "string" &&
     typeof candidate.decision === "object" &&
     candidate.decision !== null &&
     typeof candidate.decision.decision === "string"
@@ -101,7 +103,8 @@ function matchesDecisionEnvelope(
     isDecisionRecord(message.payload) &&
     message.payload.requestId === req.requestId &&
     message.payload.workerAgentId === req.agentId &&
-    message.payload.coordinatorAgentId === coordinatorAgentId
+    message.payload.coordinatorAgentId === coordinatorAgentId &&
+    message.payload.requestFingerprint === computeEscalationRequestFingerprint(req)
   );
 }
 
@@ -156,6 +159,22 @@ export function createNexusPermissionEscalation(
       }
       if (req.agentId !== config.agentId) {
         return rejectDecision("permission escalation agentId does not match bound client identity");
+      }
+
+      // Reconnect-safe resume: check inbox for an already-persisted decision
+      // matching this requestId before sending a new request. Avoids duplicate
+      // approval prompts when a worker retries the same logical escalation.
+      const existingInbox = await mailbox.list(String(req.agentId), 50);
+      if (!existingInbox.ok) {
+        return existingInbox.error.code === "VALIDATION"
+          ? malformedInboxDecision()
+          : rejectDecision(existingInbox.error.message);
+      }
+      const existingDecision = existingInbox.value.find((message) =>
+        matchesDecisionEnvelope(message, req, config.coordinatorAgentId),
+      );
+      if (existingDecision !== undefined) {
+        return existingDecision.payload.decision;
       }
 
       const sendResult = await mailbox.send({

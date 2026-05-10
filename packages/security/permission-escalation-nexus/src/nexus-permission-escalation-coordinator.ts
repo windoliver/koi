@@ -5,6 +5,7 @@ import {
   validateNexusPermissionEscalationCoordinatorConfig,
 } from "./config.js";
 import {
+  computeEscalationRequestFingerprint,
   PERMISSION_ESCALATION_DECISION_TYPE,
   PERMISSION_ESCALATION_REQUEST_TYPE,
   type PermissionEscalationDecisionRecord,
@@ -193,6 +194,7 @@ export function createNexusPermissionEscalationCoordinator(
             coordinatorAgentId: config.coordinatorAgentId,
             decision,
             resolvedAt: clock(),
+            requestFingerprint: computeEscalationRequestFingerprint(record.request),
           } satisfies PermissionEscalationDecisionRecord,
         });
 

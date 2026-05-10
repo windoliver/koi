@@ -18,6 +18,31 @@ export interface PermissionEscalationDecisionRecord {
   readonly coordinatorAgentId: AgentId;
   readonly decision: EscalationDecision;
   readonly resolvedAt: number;
+  /**
+   * Canonical fingerprint of the EscalationRequest the coordinator approved.
+   * Workers replay a persisted decision only when the current request produces
+   * the same fingerprint — prevents requestId reuse with mutated purpose/grants
+   * from inheriting a stale approval.
+   */
+  readonly requestFingerprint: string;
+}
+
+/**
+ * Computes a canonical fingerprint over the security-relevant fields of an
+ * EscalationRequest. Stable across object key order and grant ordering so the
+ * coordinator and worker derive the same value.
+ */
+export function computeEscalationRequestFingerprint(req: EscalationRequest): string {
+  const sortedGrants = [...req.requestedGrants].sort();
+  const canonical = {
+    requestId: req.requestId,
+    agentId: req.agentId,
+    requestedGrants: sortedGrants,
+    purposeStatement: req.purposeStatement,
+    expiresAt: req.expiresAt,
+    context: req.context ?? null,
+  };
+  return JSON.stringify(canonical);
 }
 
 export type PermissionEscalationRecord =

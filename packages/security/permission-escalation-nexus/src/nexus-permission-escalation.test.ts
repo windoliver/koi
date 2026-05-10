@@ -6,6 +6,22 @@ import {
   validateNexusPermissionEscalationCoordinatorConfig,
 } from "./config.js";
 import { createNexusPermissionEscalation } from "./nexus-permission-escalation.js";
+import { computeEscalationRequestFingerprint } from "./types.js";
+
+const REQ_1_FP = computeEscalationRequestFingerprint({
+  requestId: "req-1",
+  agentId: "agent:worker" as never,
+  requestedGrants: ["fs:write"],
+  purposeStatement: "Need to patch a file",
+  expiresAt: 60_000,
+});
+const REQ_SAME_FP = computeEscalationRequestFingerprint({
+  requestId: "req-same",
+  agentId: "agent:worker" as never,
+  requestedGrants: ["fs:write"],
+  purposeStatement: "resume test",
+  expiresAt: 60_000,
+});
 
 function ok<T>(value: T): Result<T, KoiError> {
   return { ok: true, value };
@@ -226,6 +242,7 @@ describe("createNexusPermissionEscalation", () => {
                         coordinatorAgentId: "agent:leader",
                         decision: { decision: "approved", grantedGrants: ["fs:write"] },
                         resolvedAt: 1_000,
+                        requestFingerprint: REQ_1_FP,
                       },
                       createdAt: "2026-05-09T00:00:00.000Z",
                     },
@@ -322,6 +339,7 @@ describe("createNexusPermissionEscalation", () => {
                         coordinatorAgentId: "agent:leader",
                         decision: { decision: "approved", grantedGrants: ["fs:write"] },
                         resolvedAt: 1_000,
+                        requestFingerprint: REQ_1_FP,
                       },
                       createdAt: "2026-05-09T00:00:00.000Z",
                     },
@@ -337,6 +355,7 @@ describe("createNexusPermissionEscalation", () => {
                         coordinatorAgentId: "agent:leader",
                         decision: { decision: "approved", grantedGrants: ["fs:write"] },
                         resolvedAt: 1_000,
+                        requestFingerprint: REQ_1_FP,
                       },
                       createdAt: "2026-05-09T00:00:00.000Z",
                     },
@@ -354,6 +373,7 @@ describe("createNexusPermissionEscalation", () => {
                         coordinatorAgentId: "agent:leader",
                         decision: { decision: "approved", grantedGrants: ["fs:write"] },
                         resolvedAt: 1_000,
+                        requestFingerprint: REQ_1_FP,
                       },
                       createdAt: "2026-05-09T00:00:00.000Z",
                     },
@@ -471,6 +491,7 @@ describe("createNexusPermissionEscalation", () => {
                   coordinatorAgentId: "agent:leader",
                   decision: { decision: "approved", grantedGrants: ["fs:write"] },
                   resolvedAt: 1_000,
+                  requestFingerprint: REQ_SAME_FP,
                 },
                 createdAt: "2026-05-09T00:00:00.000Z",
               },
@@ -502,5 +523,82 @@ describe("createNexusPermissionEscalation", () => {
       decision: "approved",
       grantedGrants: ["fs:write"],
     });
+  });
+
+  test("does not replay a persisted decision when the current request payload differs", async () => {
+    let sent = 0;
+    let listed = 0;
+    const transport: NexusTransport = {
+      kind: "http",
+      call: async <T>(method: string, params: Record<string, unknown>) => {
+        if (method === "ipc.send") {
+          sent += 1;
+          return ok({ id: `msg-${sent}`, ...params } as T);
+        }
+        if (method === "ipc.list") {
+          listed += 1;
+          // Always return the original approval, even after the worker re-sends.
+          return ok({
+            messages: [
+              {
+                id: "decision-old",
+                from: "agent:leader",
+                to: "agent:worker",
+                kind: "response",
+                type: "permission_escalation_decision",
+                payload: {
+                  requestId: "req-replay",
+                  workerAgentId: "agent:worker",
+                  coordinatorAgentId: "agent:leader",
+                  decision: { decision: "approved", grantedGrants: ["fs:write"] },
+                  resolvedAt: 1_000,
+                  requestFingerprint: computeEscalationRequestFingerprint({
+                    requestId: "req-replay",
+                    agentId: "agent:worker" as never,
+                    requestedGrants: ["fs:write"],
+                    purposeStatement: "original purpose",
+                    expiresAt: 60_000,
+                  }),
+                },
+                createdAt: "2026-05-09T00:00:00.000Z",
+              },
+            ],
+          } as T);
+        }
+        throw new Error(`unexpected method ${method}`);
+      },
+      close: () => {},
+    };
+
+    let now = 0;
+    const escalation = createNexusPermissionEscalation({
+      transport,
+      agentId: "agent:worker" as never,
+      coordinatorAgentId: "agent:leader" as never,
+      pollIntervalMs: 0,
+      clock: () => now,
+    });
+
+    // Mutated request reuses requestId but changes purposeStatement.
+    // The persisted decision must NOT be replayed; the worker must time out
+    // (no new fingerprint-matching decision arrives in our stub).
+    now = 0;
+    const promise = escalation.request({
+      requestId: "req-replay",
+      agentId: "agent:worker" as never,
+      requestedGrants: ["fs:write"],
+      purposeStatement: "MUTATED purpose",
+      expiresAt: 100,
+    });
+    // Advance clock past expiry so the polling loop terminates.
+    now = 200;
+    await expect(promise).resolves.toEqual({
+      decision: "expired",
+      reason: "permission escalation timed out",
+    });
+    // The worker must have sent a fresh request because the cached decision
+    // did not match the mutated fingerprint.
+    expect(sent).toBeGreaterThanOrEqual(1);
+    expect(listed).toBeGreaterThanOrEqual(1);
   });
 });
