@@ -87,7 +87,11 @@ export function reconcileTaskBoard(
     actions.push({ kind: "dispatch", taskId, agentType });
   }
 
-  const cancelled = new Set<TaskItemId>();
+  interface CancellationOrigin {
+    readonly blockedBy: TaskItemId;
+    readonly reason: "upstream-failed" | "upstream-killed";
+  }
+  const cancelled = new Map<TaskItemId, CancellationOrigin>();
   for (const taskId of orderedIds) {
     const task = itemsById.get(taskId);
     if (task === undefined) continue;
@@ -95,15 +99,22 @@ export function reconcileTaskBoard(
     for (const depId of task.dependencies) {
       const dep = itemsById.get(depId);
       if (dep === undefined) continue;
-      const blocked = dep.status === "failed" || dep.status === "killed";
-      const blockedTransitively = cancelled.has(depId);
-      if (!blocked && !blockedTransitively) continue;
-      cancelled.add(taskId);
+      let origin: CancellationOrigin | undefined;
+      if (dep.status === "killed") {
+        origin = { blockedBy: depId, reason: "upstream-killed" };
+      } else if (dep.status === "failed") {
+        origin = { blockedBy: depId, reason: "upstream-failed" };
+      } else {
+        const inherited = cancelled.get(depId);
+        if (inherited !== undefined) origin = inherited;
+      }
+      if (origin === undefined) continue;
+      cancelled.set(taskId, origin);
       actions.push({
         kind: "cancelDownstream",
         taskId,
-        blockedBy: depId,
-        reason: dep.status === "killed" ? "upstream-killed" : "upstream-failed",
+        blockedBy: origin.blockedBy,
+        reason: origin.reason,
       });
       break;
     }

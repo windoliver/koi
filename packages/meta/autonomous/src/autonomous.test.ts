@@ -90,6 +90,42 @@ describe("@koi/autonomous", () => {
     ]);
   });
 
+  test("retries harness disposal with a fresh lease that arrives mid-flight", async () => {
+    const harnessCalls: Array<SessionLease | undefined> = [];
+    let releaseFirstHarness!: () => void;
+    const firstHarnessGate = new Promise<void>((resolve) => {
+      releaseFirstHarness = resolve;
+    });
+    const freshLease = { sessionId: "fresh" } as unknown as SessionLease;
+    const staleError = {
+      code: "STALE_REF",
+      message: "stale session lease",
+      retryable: true,
+    } as KoiError;
+
+    const harness = createHarnessStub({
+      dispose: async (lease) => {
+        harnessCalls.push(lease);
+        if (harnessCalls.length === 1) {
+          await firstHarnessGate;
+          return { ok: false, error: staleError };
+        }
+        return ok();
+      },
+    });
+    const scheduler = createSchedulerStub();
+
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    const first = agent.dispose();
+    await Promise.resolve();
+    const second = agent.dispose(freshLease);
+    releaseFirstHarness();
+    await Promise.all([first, second]);
+
+    expect(harnessCalls).toEqual([undefined, freshLease]);
+  });
+
   test("retains the supplied lease across a scheduler-failure retry", async () => {
     const received: Array<SessionLease | undefined> = [];
     let schedulerCalls = 0;

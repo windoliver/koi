@@ -43,12 +43,19 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
       }
     }
 
-    if (!harnessDisposed) {
+    while (!harnessDisposed) {
+      const leaseAtCall = pendingLease;
       try {
-        assertOk(await parts.harness.dispose(pendingLease));
+        assertOk(await parts.harness.dispose(leaseAtCall));
         harnessDisposed = true;
         pendingLease = undefined;
       } catch (error) {
+        if (pendingLease !== leaseAtCall) {
+          // A concurrent caller supplied a newer lease while the in-flight
+          // harness.dispose was running with a stale/undefined one. Retry once
+          // with the updated lease so the live session is actually revoked.
+          continue;
+        }
         if (schedulerError !== undefined) {
           throw new AggregateError(
             [schedulerError, error],

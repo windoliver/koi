@@ -148,8 +148,50 @@ describe("reconcileTaskBoard", () => {
       {
         kind: "cancelDownstream",
         taskId: taskItemId("grandchild"),
-        blockedBy: taskItemId("child"),
+        blockedBy: taskItemId("root"),
         reason: "upstream-failed",
+      },
+    ]);
+  });
+
+  test("propagates the killed-ancestor reason through transitive descendants", () => {
+    const board = createTaskBoard().addAll([
+      {
+        id: taskItemId("root"),
+        subject: "killed root",
+        description: "killed by operator",
+      },
+      {
+        id: taskItemId("child"),
+        subject: "blocked child",
+        description: "depends on root",
+        dependencies: [taskItemId("root")],
+      },
+      {
+        id: taskItemId("grandchild"),
+        subject: "blocked grandchild",
+        description: "depends on child",
+        dependencies: [taskItemId("child")],
+      },
+    ]);
+    if (!board.ok) throw board.error;
+
+    const killed = board.value.kill(taskItemId("root"));
+    if (!killed.ok) throw killed.error;
+
+    const result = reconcileTaskBoard(serializeBoard(killed.value));
+    expect(result.actions).toEqual([
+      {
+        kind: "cancelDownstream",
+        taskId: taskItemId("child"),
+        blockedBy: taskItemId("root"),
+        reason: "upstream-killed",
+      },
+      {
+        kind: "cancelDownstream",
+        taskId: taskItemId("grandchild"),
+        blockedBy: taskItemId("root"),
+        reason: "upstream-killed",
       },
     ]);
   });
