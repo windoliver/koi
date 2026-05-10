@@ -401,4 +401,49 @@ describe("createProactiveDelivery", () => {
     expect(blocked).toHaveLength(1);
     expect(blocked[0]).toEqual({ ok: false, reason: "rate_limited" });
   });
+
+  test("cross-midnight window (22, 6): hours 23, 0, 5 quiet; 6, 21 not", async () => {
+    const slack = stubAdapter("slack", async () => {});
+    const make = (t: number) =>
+      createProactiveDelivery({
+        channels: new Map([["slack", slack]]),
+        preferences: { quietHoursStart: 22, quietHoursEnd: 6, timezone: "UTC" },
+        now: () => t,
+      });
+    const at = (h: number) => Date.UTC(2026, 4, 10, h, 0, 0);
+    const send = (t: number) =>
+      make(t).send({ priority: "normal", content: [{ kind: "text", text: "x" }] });
+
+    expect((await send(at(23))).ok).toBe(false);
+    expect((await send(at(0))).ok).toBe(false);
+    expect((await send(at(5))).ok).toBe(false);
+    expect((await send(at(6))).ok).toBe(true);
+    expect((await send(at(21))).ok).toBe(true);
+  });
+
+  test("quiet-suppressed normal does not consume rate-limit slot", async () => {
+    const slack = stubAdapter("slack", async () => {});
+    let t = Date.UTC(2026, 4, 10, 3, 0, 0); // quiet
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: {
+        quietHoursStart: 22,
+        quietHoursEnd: 6,
+        timezone: "UTC",
+        maxNotificationsPerHour: 1,
+      },
+      now: () => t,
+    });
+
+    // Two suppressed sends inside quiet window — should not fill bucket.
+    const r1 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "1" }] });
+    const r2 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "2" }] });
+    expect(r1).toEqual({ ok: false, reason: "quiet_hours" });
+    expect(r2).toEqual({ ok: false, reason: "quiet_hours" });
+
+    // Move outside quiet window; cap=1 should still permit one delivery.
+    t = Date.UTC(2026, 4, 10, 14, 0, 0);
+    const r3 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "3" }] });
+    expect(r3).toEqual({ ok: true, delivered: ["slack"] });
+  });
 });
