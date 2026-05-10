@@ -573,4 +573,54 @@ describe("createProactiveDelivery", () => {
     expect(r).toEqual({ ok: true, delivered: ["slack"] });
     expect(calls).toEqual(["slack"]);
   });
+
+  test("high fallback consumes exactly 1 rate-limit slot regardless of attempts", async () => {
+    const t = 1_700_000_000_000;
+    const slack = stubAdapter("slack", async () => {
+      throw new Error("net");
+    });
+    const email = stubAdapter("email", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { maxNotificationsPerHour: 1 },
+      now: () => t,
+    });
+
+    // First high send walks slack→email; should consume 1 slot, not 2.
+    const r1 = await delivery.send({ priority: "high", content: [{ kind: "text", text: "1" }] });
+    expect(r1).toEqual({ ok: true, delivered: ["email"] });
+
+    // Bucket is now full at 1/1; next non-urgent must be rate-limited.
+    const r2 = await delivery.send({ priority: "high", content: [{ kind: "text", text: "2" }] });
+    expect(r2).toEqual({ ok: false, reason: "rate_limited" });
+  });
+
+  test("normal does NOT fall back — preferred fails → all_failed after one attempt", async () => {
+    const calls: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      calls.push("slack");
+    });
+    const email = stubAdapter("email", async () => {
+      calls.push("email");
+      throw new Error("smtp");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { preferredChannel: "email" },
+    });
+
+    const r = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
+    expect(r).toEqual({
+      ok: false,
+      reason: "all_failed",
+      failures: [{ channel: "email", error: "smtp" }],
+    });
+    expect(calls).toEqual(["email"]);
+  });
 });
