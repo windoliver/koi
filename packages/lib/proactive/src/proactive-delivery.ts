@@ -74,12 +74,52 @@ async function sendOne(
 
 export function createProactiveDelivery(config: ProactiveDeliveryConfig): ProactiveDelivery {
   const preferences = config.preferences;
+  const now = config.now ?? Date.now;
+  const cap = preferences?.maxNotificationsPerHour;
+  const WINDOW_MS = 3_600_000;
+  // let: window mutates on every successful non-urgent send and on every gate
+  // check (slides out entries older than now() - WINDOW_MS).
+  const window: number[] = [];
+
+  function pruneWindow(t: number): void {
+    while (window.length > 0) {
+      const head = window[0];
+      if (head === undefined || head > t - WINDOW_MS) break;
+      window.shift();
+    }
+  }
+
+  function reserveSlot(t: number, priority: DeliveryPriority): boolean {
+    if (priority === "urgent") return true;
+    if (cap === undefined) return true;
+    pruneWindow(t);
+    if (window.length >= cap) return false;
+    // Reserve synchronously so concurrent same-instant sends cannot both pass.
+    window.push(t);
+    return true;
+  }
+
+  function refundSlot(t: number, priority: DeliveryPriority): void {
+    if (priority === "urgent" || cap === undefined) return;
+    // Remove the most-recent matching entry — undoes a failed delivery so it
+    // does not consume capacity.
+    for (let i = window.length - 1; i >= 0; i--) {
+      if (window[i] === t) {
+        window.splice(i, 1);
+        return;
+      }
+    }
+  }
+
   return {
     send: async (notification) => {
       if (config.channels.size === 0) {
         return { ok: false, reason: "no_channels" };
       }
+      const t = now();
       if (notification.priority === "urgent") {
+        // Urgent is its own path — fan-out, never gated by rate limit, never
+        // consumes window capacity.
         const msg = buildOutbound(notification);
         const entries = Array.from(config.channels.entries(), ([name, adapter]) => ({ name, adapter }));
         const results = await Promise.all(entries.map((c) => sendOne(c, msg)));
@@ -100,13 +140,18 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
         }
         return { ok: true, delivered };
       }
+      if (!reserveSlot(t, notification.priority)) {
+        return { ok: false, reason: "rate_limited" };
+      }
       const target = selectPreferred(config.channels, preferences?.preferredChannel);
       if (target === undefined) {
+        refundSlot(t, notification.priority);
         return { ok: false, reason: "no_channels" };
       }
       const msg = buildOutbound(notification);
       const failure = await sendOne(target, msg);
       if (failure !== undefined) {
+        refundSlot(t, notification.priority);
         return { ok: false, reason: "all_failed", failures: [failure] };
       }
       return { ok: true, delivered: [target.name] };
