@@ -8,6 +8,11 @@
  * this package free of L1 engine imports.
  */
 
+export type {
+  AutonomousReconcileAction,
+  AutonomousReconcileResult,
+} from "./autonomous-reconciler.js";
+export { reconcileTaskBoard } from "./autonomous-reconciler.js";
 export { validateTaskSpawnConfig } from "./config.js";
 export { extractOutput } from "./output.js";
 export { createTaskSpawnProvider } from "./provider.js";
