@@ -83,6 +83,19 @@ describe("createSpawnFitnessWrapper", () => {
     await expect(wrapped(createRequest())).resolves.toBe(result);
   });
 
+  test("swallows synchronous recorder throws", async () => {
+    const result: SpawnResult = { ok: true, output: "done" };
+    const spawn = mock(async (_request: SpawnRequest): Promise<SpawnResult> => result);
+    const wrapped = createSpawnFitnessWrapper(spawn, {
+      recordOutcome: () => {
+        throw new Error("recorder offline");
+      },
+    });
+
+    await expect(wrapped(createRequest())).resolves.toBe(result);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
   test("does not block spawn return on a hung recorder", async () => {
     const result: SpawnResult = { ok: true, output: "done" };
     const spawn = mock(async (_request: SpawnRequest): Promise<SpawnResult> => result);

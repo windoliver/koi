@@ -47,6 +47,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
       try {
         assertOk(await parts.harness.dispose(pendingLease));
         harnessDisposed = true;
+        pendingLease = undefined;
       } catch (error) {
         if (schedulerError !== undefined) {
           throw new AggregateError(
@@ -69,13 +70,14 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     middleware: () => middleware,
     providers: () => providers,
     dispose: (lease?: SessionLease) => {
-      if (lease !== undefined && pendingLease === undefined) {
-        pendingLease = lease;
+      if (lease !== undefined) {
+        if (inFlight === undefined || pendingLease === undefined) {
+          pendingLease = lease;
+        }
       }
       if (inFlight !== undefined) return inFlight;
       const attempt = runDispose().finally(() => {
         if (inFlight === attempt) inFlight = undefined;
-        pendingLease = undefined;
       });
       inFlight = attempt;
       return attempt;

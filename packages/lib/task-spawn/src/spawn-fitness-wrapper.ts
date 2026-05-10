@@ -29,14 +29,16 @@ function getErrorMessage(error: unknown): string {
   return typeof error === "string" ? error : "Unknown spawn error";
 }
 
-async function recordOutcomeBestEffort(
+function recordOutcomeBestEffort(
   config: SpawnFitnessWrapperConfig,
   outcome: SpawnFitnessOutcome,
 ): Promise<void> {
-  await Promise.resolve(config.recordOutcome(outcome)).then(
-    () => undefined,
-    () => undefined,
-  );
+  return Promise.resolve()
+    .then(() => config.recordOutcome(outcome))
+    .then(
+      () => undefined,
+      () => undefined,
+    );
 }
 
 export function createSpawnFitnessWrapper(

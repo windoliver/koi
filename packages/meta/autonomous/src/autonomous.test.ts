@@ -90,6 +90,31 @@ describe("@koi/autonomous", () => {
     ]);
   });
 
+  test("retains the supplied lease across a scheduler-failure retry", async () => {
+    const received: Array<SessionLease | undefined> = [];
+    let schedulerCalls = 0;
+    const lease = { sessionId: "session-active" } as unknown as SessionLease;
+    const harness = createHarnessStub({
+      dispose: async (l) => {
+        received.push(l);
+        return ok();
+      },
+    });
+    const scheduler = createSchedulerStub({
+      dispose: async () => {
+        schedulerCalls += 1;
+        if (schedulerCalls === 1) throw new Error("transient");
+      },
+    });
+
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    await expect(agent.dispose(lease)).rejects.toThrow("transient");
+    await agent.dispose();
+
+    expect(received).toEqual([lease]);
+  });
+
   test("a later concurrent dispose call cannot overwrite an active lease with a stale one", async () => {
     const received: Array<SessionLease | undefined> = [];
     let releaseScheduler!: () => void;
