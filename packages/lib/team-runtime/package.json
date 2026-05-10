@@ -1,6 +1,6 @@
 {
   "name": "@koi/team-runtime",
-  "description": "Parallel multi-agent team orchestration with event replay, dependency-aware scheduling, and conflict-managed shared resources",
+  "description": "Parallel multi-agent team orchestration with event replay, dependency-aware scheduling, and resource locking",
   "version": "0.0.0",
   "private": true,
   "type": "module",
