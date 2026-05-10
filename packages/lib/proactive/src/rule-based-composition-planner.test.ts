@@ -50,10 +50,10 @@ describe("createRuleBasedCompositionPlanner", () => {
 
     expect(plan.steps).toEqual([{ kind: "forge_skill", demand: forgeDemand }]);
     expect(plan.estimatedCost).toBe(4);
-    expect(plan.requiresApproval).toBe(false);
+    expect(plan.requiresApproval).toBe(true);
   });
 
-  test("plans diagnostic spawn for error_rate thresholds", async () => {
+  test("plans only the auto-executable notify for error_rate thresholds even when a diagnostic agent exists", async () => {
     const planner = createRuleBasedCompositionPlanner();
     const trigger: CompositionTrigger = {
       id: "gov-1",
@@ -77,12 +77,18 @@ describe("createRuleBasedCompositionPlanner", () => {
       schedules: [],
     });
 
-    expect(plan.steps).toContainEqual({
-      kind: "spawn_agent",
-      agentType: "diagnostic",
-      input: { kind: "text", text: "Investigate elevated error_rate and summarize root causes." },
-      delivery: DEFAULT_DELIVERY_POLICY,
-    });
+    // Until the executor supports spawn_agent, the planner intentionally
+    // omits the diagnostic step so the notify_user can auto-execute
+    // without being blocked by the unsupported-step approval gate.
+    expect(plan.steps).toEqual([
+      {
+        kind: "notify_user",
+        channel: "inbox",
+        message: "Error rate crossed its configured threshold.",
+        priority: "high",
+      },
+    ]);
+    expect(plan.requiresApproval).toBe(false);
   });
 
   test("plans recovery spawn for failed task terminals", async () => {
@@ -118,7 +124,7 @@ describe("createRuleBasedCompositionPlanner", () => {
         delivery: DEFAULT_DELIVERY_POLICY,
       },
     ]);
-    expect(plan.requiresApproval).toBe(false);
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("plans deferred frontier research for frontier changes", async () => {

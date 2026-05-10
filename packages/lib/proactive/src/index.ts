@@ -9,6 +9,40 @@ export {
   computeCompositionApproval,
   DEFAULT_COMPOSITION_APPROVAL_POLICY,
 } from "./composition-approval.js";
+export {
+  type SqliteDatabaseLike,
+  type SqliteStatementLike,
+  sqliteCompositionExecutionLog,
+} from "./composition-execution-log-sqlite.js";
+export {
+  type CompositionExecutionContext,
+  type CompositionExecutionLog,
+  type CompositionExecutionStatus,
+  type CompositionForgeRequest,
+  type CompositionNotification,
+  type CompositionPreCommitRejection,
+  type CompositionSpawnRequest,
+  type CompositionToolCallRequest,
+  createCompositionExecutor,
+  inMemoryCompositionExecutionLog,
+  isPreCommitRejection,
+  preCommitRejection,
+} from "./composition-executor.js";
+export {
+  type CompositionGovernance,
+  DEFAULT_COMPOSITION_GOVERNANCE,
+  defaultPatternKey,
+  evaluateCompositionGate,
+  extractCapabilityGapsFromPlan,
+  type GateDecision,
+  inferCompositionGap,
+  inferMissingCapabilities,
+  inMemoryNoveltyTracker,
+  inMemorySessionRateTracker,
+  type NoveltyTracker,
+  type OutcomeRecorder,
+  type SessionRateTracker,
+} from "./composition-governance.js";
 export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
 export {

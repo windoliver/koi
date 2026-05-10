@@ -138,3 +138,14 @@ All tests run without a live Temporal server — `TemporalClientLike` and `Worke
 ```bash
 bun run test --filter=@koi/temporal
 ```
+
+## Changelog
+
+- 2026-05-09: Test fixtures cleanup. The ambient `@koi/core` augmentation
+  used by `workflows-boundary.test.ts` was a global-script `.d.ts` that
+  silently *replaced* the package's typings instead of augmenting them,
+  so 8 stale `@ts-expect-error` pragmas had been masking the gap. The
+  fixture now begins with `export {};` so it is a proper module, the
+  pragmas were removed from `agent-workflow.ts`, `retry-workflow.ts`,
+  and `scheduled-task-workflow.ts`, and `temporal-scheduler.ts` was
+  retypechecked against the real surface. No public-API change.

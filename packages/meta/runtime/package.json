@@ -135,6 +135,7 @@
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
     "@koi/permissions-nexus": "workspace:*",
+    "@koi/proactive": "workspace:*",
     "@koi/redaction": "workspace:*",
     "@koi/plugins": "workspace:*",
     "@koi/query-engine": "workspace:*",

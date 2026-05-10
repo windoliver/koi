@@ -89,10 +89,7 @@ function stepsForCapabilityGap(trigger: CompositionTrigger): readonly Compositio
   return forgeDemand === undefined ? [] : [{ kind: "forge_skill", demand: forgeDemand }];
 }
 
-function stepsForThresholdCrossed(
-  trigger: CompositionTrigger,
-  capabilities: CompositionCapabilities,
-): readonly CompositionStep[] {
+function stepsForThresholdCrossed(trigger: CompositionTrigger): readonly CompositionStep[] {
   if (
     trigger.moment.kind !== "threshold_crossed" ||
     trigger.moment.sensor !== "error_rate" ||
@@ -100,25 +97,20 @@ function stepsForThresholdCrossed(
   ) {
     return [];
   }
-  const steps: CompositionStep[] = [];
-  if (hasAgentType(capabilities, "diagnostic")) {
-    steps.push({
-      kind: "spawn_agent",
-      agentType: "diagnostic",
-      input: {
-        kind: "text",
-        text: "Investigate elevated error_rate and summarize root causes.",
-      },
-      delivery: DEFAULT_DELIVERY_POLICY,
-    });
-  }
-  steps.push({
-    kind: "notify_user",
-    channel: "inbox",
-    message: "Error rate crossed its configured threshold.",
-    priority: "high",
-  });
-  return steps;
+  // Emit only the safe operator-facing notification. The MVP executor
+  // fail-closes on spawn_agent, and the planner's approval gate would
+  // then route the entire mixed plan through approval — blocking even
+  // the safe notification. Until the executor supports diagnostic
+  // spawning, the rule planner intentionally drops that suffix so the
+  // notification continues to auto-deliver on the failure signal.
+  return [
+    {
+      kind: "notify_user",
+      channel: "inbox",
+      message: "Error rate crossed its configured threshold.",
+      priority: "high",
+    },
+  ];
 }
 
 function stepsForTaskTerminal(
@@ -174,7 +166,7 @@ function stepsForTrigger(
     case "capability_gap":
       return stepsForCapabilityGap(trigger);
     case "threshold_crossed":
-      return stepsForThresholdCrossed(trigger, capabilities);
+      return stepsForThresholdCrossed(trigger);
     case "task_terminal":
       return stepsForTaskTerminal(trigger, capabilities);
     case "frontier_changed":
@@ -183,6 +175,19 @@ function stepsForTrigger(
     case "external_event":
       return [];
   }
+}
+
+// Step kinds the composition executor currently does not run; auto-
+// approving plans containing any of these would deterministically fail
+// at execute time. Force them through approval so unsupported automation
+// is gated rather than silently failing.
+const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>(["spawn_agent", "forge_skill", "tool_call"]);
+
+function planContainsUnsupported(steps: readonly CompositionStep[]): boolean {
+  for (const step of steps) {
+    if (EXECUTOR_UNSUPPORTED_KINDS.has(step.kind)) return true;
+  }
+  return false;
 }
 
 export function createRuleBasedCompositionPlanner(
@@ -197,10 +202,12 @@ export function createRuleBasedCompositionPlanner(
       const estimatedCost = estimateCost(steps);
       return {
         triggerId: trigger.id,
+        triggerEmittedAt: trigger.emittedAt,
         steps,
         estimatedCost,
         requiresApproval:
           steps.length === 0 ||
+          planContainsUnsupported(steps) ||
           computeCompositionApproval(trigger, estimatedCost, approvalPolicy, {
             isNovel: classifyNovelty(trigger),
           }),

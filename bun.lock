@@ -1642,6 +1642,7 @@
         "@koi/playbook-store-nexus": "workspace:*",
         "@koi/playbook-store-sqlite": "workspace:*",
         "@koi/plugins": "workspace:*",
+        "@koi/proactive": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/redaction": "workspace:*",
         "@koi/registry-nexus": "workspace:*",

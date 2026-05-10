@@ -338,6 +338,50 @@ requireApprovalOnNovelty: true }`. The rule planner additionally
 short-circuits to `requiresApproval: true` whenever it produces a
 zero-step plan, so the runtime never executes an empty plan silently.
 
+## Composition executor (issue #1300, MVP)
+
+`@koi/proactive` now also exposes an execution layer that consumes
+`CompositionPlan` values after planning. The executor is intentionally thin:
+it enforces the plan approval gate, executes steps sequentially, and
+delegates work into injected runtime seams rather than owning new
+infrastructure.
+
+### Public API
+
+```typescript
+createCompositionExecutor(
+  context: CompositionExecutionContext,
+): CompositionExecutor
+
+interface CompositionExecutionContext {
+  readonly agentId: AgentId;
+  readonly scheduler: SchedulerComponent;
+  readonly notify: (notification: CompositionNotification) => Promise<unknown>;
+  readonly spawn?: ((request: CompositionSpawnRequest) => Promise<unknown>) | undefined;
+  readonly forge?: ((request: CompositionForgeRequest) => Promise<unknown>) | undefined;
+}
+```
+
+The `agentId` anchor is part of the approved execution contract. Step-level
+`submit_task` and `create_schedule` requests are validated against the
+attached context `agentId` before they are dispatched.
+
+Supported MVP step kinds:
+
+- `submit_task`
+- `create_schedule`
+- `notify_user`
+
+Unsupported in the MVP:
+
+- `spawn_agent`
+- `forge_skill`
+- `tool_call`
+
+Execution stops on the first unsupported or failed step. No rollback is
+attempted in this version; the result reports any successfully executed
+prefix.
+
 ## Future Phases (out of scope here)
 
 Phase 3a tracker (this issue): sleep / wake / cron tools.
@@ -348,7 +392,7 @@ Phase 3a tracker (this issue): sleep / wake / cron tools.
 | 3a | #1297 | `SystemSignal` L0 contract |
 | 3a | #1298 | System signal adapters |
 | 3a (now) | #1299 | `CompositionTrigger` + `CompositionPlanner` (rule + LLM) — landed in this package |
-| 3a | #1300 | `CompositionExecutor` + governance gate |
+| 3a (now) | #1300 | `CompositionExecutor` MVP + governance gate |
 | 3-4 | #1301 | Proactive delivery + temporal durability |
 
 `brief` / `notify` / `monitor` tools are blocked on channel + webhook restoration and

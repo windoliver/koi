@@ -153,6 +153,7 @@
     { "path": "../../security/nexus-delegation" },
     { "path": "../../security/permissions" },
     { "path": "../../security/permissions-nexus" },
+    { "path": "../../lib/proactive" },
     { "path": "../../security/redaction" },
     { "path": "../../lib/skill-distiller" },
     { "path": "../../security/skill-scanner" },

@@ -1,10 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  type AgentDefinition,
-  agentId,
-  type CompositionTrigger,
-  DEFAULT_DELIVERY_POLICY,
-} from "@koi/core";
+import { type AgentDefinition, agentId, type CompositionTrigger } from "@koi/core";
 import { createLlmCompositionPlanner } from "./llm-composition-planner.js";
 import { createRuleBasedCompositionPlanner } from "./rule-based-composition-planner.js";
 
@@ -26,6 +21,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "gov-1",
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "notify_user",
@@ -65,6 +61,7 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan).toEqual({
       triggerId: "gov-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "notify_user",
@@ -112,23 +109,307 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan.steps).toEqual([
       {
-        kind: "spawn_agent",
-        agentType: "diagnostic",
-        input: {
-          kind: "text",
-          text: "Investigate elevated error_rate and summarize root causes.",
-        },
-        delivery: DEFAULT_DELIVERY_POLICY,
-      },
-      {
         kind: "notify_user",
         channel: "inbox",
         message: "Error rate crossed its configured threshold.",
         priority: "high",
       },
     ]);
-    expect(plan.estimatedCost).toBe(6);
+    // Rule planner emits only the safe notify step (diagnostic spawn
+    // dropped until executor supports it), so the fallback plan is
+    // auto-executable.
     expect(plan.requiresApproval).toBe(false);
+  });
+
+  test("empty LLM plan forces requiresApproval=true (executor rejects empty non-approval)", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-empty",
+            triggerEmittedAt: 1,
+            steps: [],
+            estimatedCost: 0,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-empty",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.steps).toHaveLength(0);
+    expect(plan.requiresApproval).toBe(true);
+  });
+
+  test("LLM plan with notify_user channel outside the safe set is forced to approval", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-channel",
+            triggerEmittedAt: 1,
+            steps: [{ kind: "notify_user", channel: "slack", message: "hi", priority: "normal" }],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-channel",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.requiresApproval).toBe(true);
+  });
+
+  test("LLM plan with stale triggerEmittedAt is rejected (no relabeling)", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-stale",
+            // Adapter authored against an older emission; current trigger
+            // is emittedAt=2 (below). Without validation, the planner
+            // would relabel this as current and silently execute stale work.
+            triggerEmittedAt: 1,
+            steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    await expect(
+      planner.plan(
+        {
+          id: "trigger-stale",
+          source: "test",
+          confidence: 1,
+          moment: { kind: "external_event", source: "x", eventType: "y" },
+          suggestedCapabilities: [],
+          context: {},
+          emittedAt: 2,
+        },
+        { tools: [], agents: [], schedules: [] },
+      ),
+    ).rejects.toThrow(/triggerEmittedAt mismatch/);
+  });
+
+  test("LLM plan without triggerEmittedAt back-compat: synthesize from current trigger", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          // Pre-emittedAt adapter contract: no triggerEmittedAt field.
+          return JSON.stringify({
+            triggerId: "trigger-legacy",
+            steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-legacy",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 42,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.triggerEmittedAt).toBe(42);
+  });
+
+  test("planner config can disable Temporal-style gating for non-Temporal backends", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-flex",
+            triggerEmittedAt: 1,
+            steps: [
+              {
+                kind: "submit_task",
+                agentId: "agent-1",
+                mode: "spawn",
+                input: { kind: "text", text: "go" },
+                taskOptions: { maxRetries: 3 },
+              },
+              { kind: "notify_user", channel: "slack", message: "x", priority: "normal" },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+      // In-process scheduler accepts maxRetries; host has wired the
+      // slack channel into the executor's allowedNotifyChannels.
+      unsafeSubmitOptionKeys: [],
+      unsafeScheduleOptionKeys: [],
+      safeNotifyChannels: ["inbox", "slack"],
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-flex",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.requiresApproval).toBe(false);
+  });
+
+  test("LLM plan with submit_task unsupported taskOptions is forced to approval", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-submit",
+            triggerEmittedAt: 1,
+            steps: [
+              {
+                kind: "submit_task",
+                agentId: "agent-1",
+                mode: "spawn",
+                input: { kind: "text", text: "go" },
+                taskOptions: { maxRetries: 3 },
+              },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-submit",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.requiresApproval).toBe(true);
+  });
+
+  test("LLM plan with create_schedule unsupported taskOptions is forced to approval", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-sched",
+            triggerEmittedAt: 1,
+            steps: [
+              {
+                kind: "create_schedule",
+                expression: "0 9 * * *",
+                agentId: "agent-1",
+                mode: "spawn",
+                input: { kind: "text", text: "daily" },
+                taskOptions: { maxRetries: 2 },
+              },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-sched",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.requiresApproval).toBe(true);
+  });
+
+  test("LLM plan with unsupported-before-supported is forced to approval", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-1",
+            triggerEmittedAt: 1,
+            // Adversarial ordering: unsupported step BEFORE the
+            // user-facing notification. Executor fail-closes on
+            // unsupported, so without normalization the notify drops.
+            steps: [
+              {
+                kind: "spawn_agent",
+                agentType: "diagnostic",
+                input: { kind: "text", text: "diagnose" },
+                delivery: { kind: "deferred" },
+              },
+              { kind: "notify_user", channel: "inbox", message: "alert", priority: "high" },
+            ],
+            estimatedCost: 6,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-1",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    // Order is preserved (no semantic-changing reorder), but the plan is
+    // forced through approval so the unsupported leading step doesn't
+    // silently swallow the supported notification.
+    expect(plan.steps[0]?.kind).toBe("spawn_agent");
+    expect(plan.steps[1]?.kind).toBe("notify_user");
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("trigger-id mismatch falls back to the rule planner when configured", async () => {
@@ -137,6 +418,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "wrong-id",
+            triggerEmittedAt: 1,
             steps: [],
             estimatedCost: 0,
           });
@@ -167,9 +449,10 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan).toEqual({
       triggerId: "event-1",
+      triggerEmittedAt: 1,
       steps: [],
       estimatedCost: 0,
-      requiresApproval: false,
+      requiresApproval: true,
     });
   });
 
@@ -179,6 +462,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "event-2",
+            triggerEmittedAt: 1,
             steps: "not-an-array",
             estimatedCost: 0,
           });
@@ -209,9 +493,10 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan).toEqual({
       triggerId: "event-2",
+      triggerEmittedAt: 1,
       steps: [],
       estimatedCost: 0,
-      requiresApproval: false,
+      requiresApproval: true,
     });
   });
 
@@ -221,6 +506,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "event-3",
+            triggerEmittedAt: 1,
             steps: [],
             estimatedCost: -1,
           });
@@ -251,9 +537,10 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan).toEqual({
       triggerId: "event-3",
+      triggerEmittedAt: 1,
       steps: [],
       estimatedCost: 0,
-      requiresApproval: false,
+      requiresApproval: true,
     });
   });
 
@@ -305,22 +592,15 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan.steps).toEqual([
       {
-        kind: "spawn_agent",
-        agentType: "diagnostic",
-        input: {
-          kind: "text",
-          text: "Investigate elevated error_rate and summarize root causes.",
-        },
-        delivery: DEFAULT_DELIVERY_POLICY,
-      },
-      {
         kind: "notify_user",
         channel: "inbox",
         message: "Error rate crossed its configured threshold.",
         priority: "high",
       },
     ]);
-    expect(plan.estimatedCost).toBe(6);
+    // Outer LLM policy reclassifies: classifyNovelty=true +
+    // requireApprovalOnNovelty=true forces approval even though the
+    // fallback plan would auto-execute under the inner rule policy.
     expect(plan.requiresApproval).toBe(true);
   });
 
@@ -330,6 +610,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "bad-nested-1",
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "spawn_agent",
@@ -382,6 +663,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "low-1",
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "notify_user",
@@ -430,6 +712,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "tc-1",
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "tool_call",
@@ -465,6 +748,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "st-1",
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "submit_task",
@@ -509,6 +793,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "cs-1",
+            triggerEmittedAt: 1,
             steps: [
               {
                 kind: "create_schedule",
@@ -554,6 +839,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "fs-1",
+            triggerEmittedAt: 100,
             steps: [
               {
                 kind: "forge_skill",
@@ -602,6 +888,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "local-bug-1",
+            triggerEmittedAt: 1,
             steps: [],
             estimatedCost: 0,
           });

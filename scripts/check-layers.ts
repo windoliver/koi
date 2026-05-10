@@ -111,6 +111,10 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   // (no side effects, operates only on L0 types) — same category as
   // validateSupervisionConfig and validateSpawnRequest.
   "worker-ipc.ts",
+  // composition-executor.ts: preCommitRejection() factory + isPreCommitRejection()
+  // type guard. Both are pure, side-effect-free L0 data constructors so
+  // any package can throw the branded error without an L2-to-L2 import.
+  "composition-executor.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

@@ -12,22 +12,23 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname } from "node:path";
-import type {
-  AgentId,
-  CronSchedule,
-  EngineInput,
-  KoiError,
-  ScheduledTask,
-  ScheduledTaskStatus,
-  ScheduleId,
-  SchedulerEvent,
-  SchedulerStats,
-  TaskFilter,
-  TaskHistoryFilter,
-  TaskId,
-  TaskOptions,
-  TaskRunRecord,
-  TaskScheduler,
+import {
+  type AgentId,
+  type CronSchedule,
+  type EngineInput,
+  type KoiError,
+  preCommitRejection,
+  type ScheduledTask,
+  type ScheduledTaskStatus,
+  type ScheduleId,
+  type SchedulerEvent,
+  type SchedulerStats,
+  type TaskFilter,
+  type TaskHistoryFilter,
+  type TaskId,
+  type TaskOptions,
+  type TaskRunRecord,
+  type TaskScheduler,
 } from "@koi/core";
 import type { IncomingMessage, ScheduledInputPayload, ScheduledTaskWorkflowArgs } from "./types.js";
 import { AGENT_WORKFLOW_NAME, SCHEDULED_TASK_WORKFLOW_NAME } from "./workflows/index.js";
@@ -1150,25 +1151,39 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     ): Promise<TaskId> {
       assertDurabilityOk();
       if (mode === "dispatch" && options?.delayMs !== undefined) {
-        throw new Error(
+        throw preCommitRejection(
           "delayMs is not supported for dispatch mode — dispatch targets a running workflow and cannot defer signal delivery",
         );
       }
       if (options?.timeoutMs !== undefined || options?.maxRetries !== undefined) {
-        throw new Error(
+        throw preCommitRejection(
           "submit() does not enforce timeoutMs or maxRetries. Remove these options or implement them inside the target workflow.",
         );
       }
       // Validate metadata before the remote call so a non-serializable value does not cause
       // persist() to fail after the workflow has already been accepted by Temporal.
       if (options?.metadata !== undefined) {
-        assertJsonSafeValue(options.metadata, "options.metadata");
-        assertJsonSerializable(options.metadata);
+        try {
+          assertJsonSafeValue(options.metadata, "options.metadata");
+          assertJsonSerializable(options.metadata);
+        } catch (e) {
+          throw preCommitRejection(
+            e instanceof Error ? e.message : "options.metadata is not JSON-serializable",
+            e,
+          );
+        }
       }
       // Validate the input payload before the remote call — matches the schedule() path.
       // A non-serializable resume.state (or message content) must be rejected up front
       // rather than discovered during persist() after the workflow has already been accepted.
-      assertJsonSerializable(mapEngineInputToScheduledPayload(input));
+      try {
+        assertJsonSerializable(mapEngineInputToScheduledPayload(input));
+      } catch (e) {
+        throw preCommitRejection(
+          e instanceof Error ? e.message : "submit input is not JSON-serializable",
+          e,
+        );
+      }
 
       // Use caller-supplied idempotency key as the task ID so message IDs derived from it
       // are stable across retries, enabling workflow-side deduplication after ACK-lost failures.
@@ -1177,13 +1192,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       // between (agentA, "x") and (agentB, "agentA:mode:x") with different components.
       if (options?.idempotencyKey !== undefined) {
         if (options.idempotencyKey.includes(":")) {
-          throw new Error(
+          throw preCommitRejection(
             `idempotencyKey must not contain ':' — it is used as a delimiter in the stable ` +
               `task ID. Received: "${options.idempotencyKey}"`,
           );
         }
         if (String(agentId).includes(":")) {
-          throw new Error(
+          throw preCommitRejection(
             `agentId must not contain ':' when using idempotencyKey — it is used as a ` +
               `delimiter in the stable task ID. Received: "${String(agentId)}"`,
           );
@@ -1815,7 +1830,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         options?.metadata !== undefined ||
         options?.idempotencyKey !== undefined
       ) {
-        throw new Error(
+        // Branded as a composition pre-commit rejection: this is a
+        // deterministic validation failure with no side effect, so any
+        // composition executor reservation can be released and the
+        // caller can retry with corrected input.
+        throw preCommitRejection(
           "schedule() does not support timeoutMs, maxRetries, delayMs, priority, metadata, " +
             "or idempotencyKey — these options cannot be persisted or enforced by Temporal " +
             "schedule policies. Remove them or implement the constraints inside the target workflow.",
@@ -1826,8 +1845,16 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
       // Strip non-serializable EngineInput fields and deep-validate JSON safety.
       // Done before building the schedule object so the snapshot is validated.
-      const scheduledPayload = mapEngineInputToScheduledPayload(input);
-      assertJsonSerializable(scheduledPayload);
+      // Both calls can throw plain Errors on bad input — wrap them as
+      // composition pre-commit rejections since no remote side effect has
+      // been initiated yet.
+      let scheduledPayload: EngineInput;
+      try {
+        scheduledPayload = mapEngineInputToScheduledPayload(input);
+        assertJsonSerializable(scheduledPayload);
+      } catch (e) {
+        throw preCommitRejection(e instanceof Error ? e.message : String(e), e);
+      }
       // Deep-clone via JSON round-trip to prevent caller mutations from poisoning future
       // persist() calls. Already validated as JSON-serializable above.
       const snapshotPayload = JSON.parse(JSON.stringify(scheduledPayload)) as EngineInput;

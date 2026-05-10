@@ -239,6 +239,21 @@ export type {
 export { DEFAULT_SPAWN_CHANNEL_POLICY } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
+export type {
+  CompositionExecutionError,
+  CompositionExecutionResult,
+  CompositionExecutor,
+  CompositionGap,
+  CompositionPreCommitRejection,
+  CompositionStepResult,
+  SuccessfulCompositionStepResult,
+} from "./composition-executor.js";
+export {
+  COMPOSITION_PRE_COMMIT_BRAND,
+  COMPOSITION_PRE_COMMIT_BRAND_KEY,
+  isPreCommitRejection,
+  preCommitRejection,
+} from "./composition-executor.js";
 // composition planner — trigger and planning contracts
 export type {
   CompositionApprovalContext,

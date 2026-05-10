@@ -241,7 +241,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     expect(r.ok).toBe(true);
 
     const live = await h.scheduler.querySchedules(h.aid);
-    expect(live.some((s) => s.id === r.schedule_id)).toBe(true);
+    expect(live.some((s: { readonly id: string }) => s.id === r.schedule_id)).toBe(true);
 
     const cancelled = (await tools.cancelSchedule.execute({
       schedule_id: r.schedule_id,
@@ -249,7 +249,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     expect(cancelled.removed).toBe(true);
 
     const liveAfter = await h.scheduler.querySchedules(h.aid);
-    expect(liveAfter.some((s) => s.id === r.schedule_id)).toBe(false);
+    expect(liveAfter.some((s: { readonly id: string }) => s.id === r.schedule_id)).toBe(false);
   });
 
   test("7. provider reattach against fresh scheduler — sleep heals via query, cron freshens per attach", async () => {

@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   type AgentDefinition,
-  DEFAULT_DELIVERY_POLICY,
   type KoiError,
   RETRYABLE_DEFAULTS,
   type SystemSignal,
@@ -54,15 +53,6 @@ describe("composition pipeline (signal → trigger → plan → approval)", () =
     expect(plan.triggerId).toBe(trigger.id);
     expect(plan.steps).toEqual([
       {
-        kind: "spawn_agent",
-        agentType: "diagnostic",
-        input: {
-          kind: "text",
-          text: "Investigate elevated error_rate and summarize root causes.",
-        },
-        delivery: DEFAULT_DELIVERY_POLICY,
-      },
-      {
         kind: "notify_user",
         channel: "inbox",
         message: "Error rate crossed its configured threshold.",
@@ -95,7 +85,7 @@ describe("composition pipeline (signal → trigger → plan → approval)", () =
       kind: "spawn_agent",
       agentType: "recovery",
     });
-    expect(plan.requiresApproval).toBe(false);
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("schedule task:cancelled flows to a no-op plan that requires approval", async () => {
