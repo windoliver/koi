@@ -32,11 +32,36 @@ function formatFailedMessage(status: HarnessStatus, error: KoiError): string {
   return `Long-running session ${status.harnessId} failed: ${error.message}`;
 }
 
+/**
+ * Default transport-error classifier for completion notifications. Treats
+ * thrown errors as transient unless the caller provides a stricter classifier
+ * via `retry.isTransientError`. This keeps the common case (timeouts, 5xx,
+ * connection blips on a webhook/chat sender) retried out of the box.
+ */
+const RETRY_NEVER_PATTERNS: readonly RegExp[] = [
+  /\b401\b|unauthorized/i,
+  /\b403\b|forbidden/i,
+  /\b400\b|bad request/i,
+  /\b404\b|not found/i,
+];
+
+function defaultIsTransient(error: Error): boolean {
+  const text = `${error.name} ${error.message}`;
+  for (const pattern of RETRY_NEVER_PATTERNS) {
+    if (pattern.test(text)) return false;
+  }
+  return true;
+}
+
 async function deliverOrSignal(
   config: CompletionNotifierConfig,
   message: string,
 ): Promise<RetrySendResult> {
-  const result = await sendWithRetry(config.send, message, config.retry);
+  const retry: RetrySendOptions = {
+    ...(config.retry ?? {}),
+    isTransientError: config.retry?.isTransientError ?? defaultIsTransient,
+  };
+  const result = await sendWithRetry(config.send, message, retry);
   if (!result.ok) {
     if (config.onSendFailure !== undefined) {
       await config.onSendFailure(result);

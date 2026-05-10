@@ -27,6 +27,20 @@ export type AutonomousReconcileAction =
       readonly reason: "upstream-failed" | "upstream-killed";
       /** OCC token — the task.version observed when the action was emitted. */
       readonly version: number;
+    }
+  | {
+      /**
+       * Live (in_progress) descendant of a failed/killed ancestor. Carries
+       * the assigned agent so consumers can drive `killOwnedTask(owner, ...)`
+       * or equivalent lease-aware revocation; pure status/owner-blind
+       * cancellation is not safe here.
+       */
+      readonly kind: "revokeOwnedDownstream";
+      readonly taskId: TaskItemId;
+      readonly blockedBy: TaskItemId;
+      readonly reason: "upstream-failed" | "upstream-killed";
+      readonly owner: string;
+      readonly version: number;
     };
 
 export interface AutonomousReconcileResult {
@@ -119,14 +133,11 @@ export function reconcileTaskBoard(
   for (const taskId of orderedIds) {
     const task = board.get(taskId);
     if (task === undefined) continue;
-    // Only cancel pending descendants. in_progress tasks have a live owner;
-    // killing them requires status/version/owner-aware mutations
-    // (killOwnedTask) that this reconciler cannot safely express.
-    if (task.status !== "pending") continue;
+    if (task.status !== "pending" && task.status !== "in_progress") continue;
     // A task already receiving clearDelegation in this pass cannot also carry
-    // a version-locked cancelDownstream — applying clearDelegation bumps
-    // task.version and would invalidate the OCC token. Defer cancellation to
-    // a follow-up reconciliation after the cleanup mutation lands.
+    // a version-locked cancel/revoke action — applying clearDelegation bumps
+    // task.version and would invalidate the OCC token. Defer to a follow-up
+    // reconciliation after the cleanup mutation lands.
     if (recoveringIds.has(taskId)) continue;
     for (const depId of task.dependencies) {
       const dep = board.get(depId);
@@ -142,6 +153,17 @@ export function reconcileTaskBoard(
       }
       if (origin === undefined) continue;
       cancelled.set(taskId, origin);
+      if (task.status === "in_progress" && typeof task.assignedTo === "string") {
+        actions.push({
+          kind: "revokeOwnedDownstream",
+          taskId,
+          blockedBy: origin.blockedBy,
+          reason: origin.reason,
+          owner: task.assignedTo,
+          version: task.version,
+        });
+        break;
+      }
       actions.push({
         kind: "cancelDownstream",
         taskId,
