@@ -80,8 +80,15 @@ function metadataString(task: Task, key: string): string | undefined {
 
 function delegatedAgentType(task: Task): string | undefined {
   if (task.status !== "pending") return undefined;
-  if (task.metadata?.delegation !== "spawn") return undefined;
-  return metadataString(task, "agentType");
+  // Dispatch still requires an explicit agent target — either via the
+  // explicit `delegation: "spawn"` + `agentType` shape, or via the
+  // task_delegate persisted shape (`agentType` on a pending task that
+  // also carries `delegatedTo`).
+  const agentType = metadataString(task, "agentType");
+  if (agentType === undefined) return undefined;
+  if (task.metadata?.delegation === "spawn") return agentType;
+  if (Object.hasOwn(task.metadata ?? {}, "delegatedTo")) return agentType;
+  return undefined;
 }
 
 interface DelegationMarker {
@@ -92,11 +99,15 @@ interface DelegationMarker {
 function pendingDelegationMarker(task: Task): DelegationMarker | undefined {
   if (task.status !== "pending") return undefined;
   if (task.metadata === undefined) return undefined;
-  // Only treat tasks that are explicitly spawn-delegated as autonomous
-  // recovery state. Otherwise an unrelated domain-level `delegatedTo` field
-  // would be silently cleared as if it were a stale spawn marker.
-  if (task.metadata.delegation !== "spawn") return undefined;
   if (!Object.hasOwn(task.metadata, "delegatedTo")) return undefined;
+  // Recover delegations from any known writer: the autonomous spawn shape
+  // (`delegation: "spawn"`) and the task_delegate persisted shape (carries
+  // `agentType` alongside `delegatedTo`). A pending task with only an
+  // unrelated `delegatedTo` field and no other delegation signal is left
+  // alone — that data may belong to an external/domain consumer.
+  const isSpawnShape = task.metadata.delegation === "spawn";
+  const isDelegateShape = metadataString(task, "agentType") !== undefined;
+  if (!isSpawnShape && !isDelegateShape) return undefined;
   const raw = task.metadata.delegatedTo;
   if (typeof raw === "string" && raw.length > 0) {
     return { delegatedTo: raw, malformed: false };

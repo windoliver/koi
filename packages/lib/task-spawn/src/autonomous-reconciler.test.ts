@@ -417,6 +417,42 @@ describe("reconcileTaskBoard", () => {
     expect(result.actions).toEqual([]);
   });
 
+  test("recovers stale delegations written by task_delegate (no explicit delegation marker)", () => {
+    // task_delegate persists { delegatedTo, agentType } on a pending task
+    // without a `delegation: "spawn"` marker.
+    const board = createTaskBoard().add({
+      id: taskItemId("delegated"),
+      subject: "delegated work",
+      description: "task_delegate output",
+      metadata: { agentType: "reviewer", delegatedTo: "worker-1" },
+    });
+    if (!board.ok) throw board.error;
+
+    const result = reconcileTaskBoard(serializeBoard(board.value), {
+      isDelegationStale: () => true,
+    });
+    expect(result.actions).toMatchObject([
+      { kind: "clearDelegation", taskId: taskItemId("delegated"), delegatedTo: "worker-1" },
+    ]);
+  });
+
+  test("dispatches task_delegate-shaped tasks when the delegate is no longer present", () => {
+    const board = createTaskBoard().add({
+      id: taskItemId("dispatchable"),
+      subject: "needs work",
+      description: "previously delegated",
+      metadata: { agentType: "coder", delegatedTo: "worker-x" },
+    });
+    if (!board.ok) throw board.error;
+
+    const result = reconcileTaskBoard(serializeBoard(board.value), {
+      isDelegationStale: () => true,
+    });
+    // Same pass emits clearDelegation only; dispatch waits for the next
+    // reconciliation after the OCC mutation lands.
+    expect(result.actions).toMatchObject([{ kind: "clearDelegation" }]);
+  });
+
   test("dispatch actions include the task version as an OCC token", () => {
     const board = createTaskBoard().add({
       id: taskItemId("ready"),
