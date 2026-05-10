@@ -51,6 +51,16 @@ export {
   createLlmCompositionPlanner,
   type LlmCompositionPlannerConfig,
 } from "./llm-composition-planner.js";
+export {
+  createProactiveDelivery,
+  type DeliveryFailure,
+  type DeliveryPreferences,
+  type DeliveryPriority,
+  type DeliveryResult,
+  type ProactiveDelivery,
+  type ProactiveDeliveryConfig,
+  type ProactiveNotification,
+} from "./proactive-delivery.js";
 export { createProactiveToolsProvider } from "./provider.js";
 export {
   createRuleBasedCompositionPlanner,
