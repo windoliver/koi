@@ -2081,6 +2081,15 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/security/approval-zones": {
+      "name": "@koi/approval-zones",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/bash-ast": "workspace:*",
+        "@koi/bash-classifier": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/security/audit-sink-ndjson": {
       "name": "@koi/audit-sink-ndjson",
       "version": "0.0.0",
@@ -2702,6 +2711,8 @@
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
     "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
+
+    "@koi/approval-zones": ["@koi/approval-zones@workspace:packages/security/approval-zones"],
 
     "@koi/artifacts": ["@koi/artifacts@workspace:packages/lib/artifacts"],
 

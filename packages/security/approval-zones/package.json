@@ -1,0 +1,28 @@
+{
+  "name": "@koi/approval-zones",
+  "description": "Approval zones with risk scoring — converts ask verdicts into auto / sandbox-then-auto / ask",
+  "version": "0.0.0",
+  "private": true,
+  "koi": {
+    "optional": true
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../../scripts/run-tsup.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/bash-ast": "workspace:*",
+    "@koi/bash-classifier": "workspace:*",
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {}
+}
