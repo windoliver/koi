@@ -382,6 +382,25 @@ Execution stops on the first unsupported or failed step. No rollback is
 attempted in this version; the result reports any successfully executed
 prefix.
 
+## System Signal Sources (issue #1298)
+
+Three `SystemSignalSource` adapters expose external operational events to a
+`CompositionPlanner` consumer. All three share a close-aware async emitter
+that defends against post-unsubscribe deliveries and catches handler
+exceptions, routing them to `onError` when supplied:
+
+| Factory | Signal | Upstream |
+|---------|--------|----------|
+| `createGovernanceSignalSource(controller, thresholds, config?)` | `{ kind: "governance" }` | Polls `GovernanceController.snapshot()` on a serialized `inFlight` / `pollRequested` drain loop, emitting on strict-`>` (or strict-`<`) threshold crossing with optional `cooldownMs`. `replay: true` emits a synthetic on-subscribe signal if a sensor is already alerting. |
+| `createGroveSignalSource(config)` | `{ kind: "frontier" }` | SSE subscription to a Grove `frontier_changed` event stream; filters by `metrics` allowlist and `minImprovement` floor (rejects `NaN`/`Infinity`). Falls back to `config.now()` (default `Date.now`) when upstream omits `emittedAt`. |
+| `createNexusSignalSource(config)` | `{ kind: "vfs" }` / `{ kind: "agent_lifecycle" }` | EventBus subscription mapping VFS `write`/`delete`/`rename` (with optional `pathFilters` glob suffix) and agent transition events validated against the L0 `ProcessState`, `VALID_TRANSITIONS`, and `TransitionReason` contracts. Self-loops and unknown reasons are dropped. |
+
+Adapters fail open: malformed payloads route to `options.onError` (when
+provided) and never break the source loop. Subscriptions are idempotent —
+`unsubscribe()` may be called multiple times safely. The shared emitter
+honors the L0 `SystemSignalSourceOptions` contract (`sampleRateMs`,
+`replay`, `onError`, `onDisconnect`).
+
 ## Future Phases (out of scope here)
 
 Phase 3a tracker (this issue): sleep / wake / cron tools.
@@ -389,8 +408,8 @@ Phase 3a tracker (this issue): sleep / wake / cron tools.
 | Phase | Issue | What |
 |-------|-------|------|
 | 3a (now) | #1195 | This package — sleep + cron |
-| 3a | #1297 | `SystemSignal` L0 contract |
-| 3a | #1298 | System signal adapters |
+| 3a (now) | #1297 | `SystemSignal` L0 contract (extended with `frontier` variant in #1298) |
+| 3a (now) | #1298 | System signal adapters — landed in this package |
 | 3a (now) | #1299 | `CompositionTrigger` + `CompositionPlanner` (rule + LLM) — landed in this package |
 | 3a (now) | #1300 | `CompositionExecutor` MVP + governance gate |
 | 3-4 | #1301 | Proactive delivery + temporal durability |
