@@ -34,16 +34,6 @@ export const PROACTIVE_TOOL_NAMES = [
   "notify",
 ] as const;
 
-/**
- * Collect channel names for `notify`'s available_channels error response.
- * The provider supplies a `channelNames` callback closing over its snapshot;
- * standalone callers without it get an empty list (the resolveChannel they
- * provided still works for the success path).
- */
-function collectChannelNames(config: ProactiveToolsConfig): readonly string[] {
-  return config.channelNames !== undefined ? config.channelNames() : [];
-}
-
 export interface ProactiveToolStates {
   readonly sleepState: SleepToolState;
   readonly cronState: CronToolState;
@@ -55,7 +45,8 @@ export function assembleProactiveTools(
   states: ProactiveToolStates,
 ): readonly Tool[] {
   const { sleepState, cronState, monitorState } = states;
-  const tools: Tool[] = [
+  const { resolveChannel } = config;
+  return [
     createSleepTool(config, sleepState),
     createCancelSleepTool(config, sleepState),
     createScheduleCronTool(config, cronState),
@@ -64,17 +55,15 @@ export function assembleProactiveTools(
     createListMonitorsTool(monitorState),
     createUpdateMonitorTool(config, monitorState),
     createCancelMonitorTool(config, monitorState),
+    ...(resolveChannel !== undefined
+      ? [
+          createNotifyTool({
+            resolveChannel,
+            names: () => config.channelNames?.() ?? [],
+          }),
+        ]
+      : []),
   ];
-  if (config.resolveChannel !== undefined) {
-    const resolve = config.resolveChannel;
-    tools.push(
-      createNotifyTool({
-        resolveChannel: resolve,
-        names: () => collectChannelNames(config),
-      }),
-    );
-  }
-  return tools;
 }
 
 export function createProactiveTools(config: ProactiveToolsConfig): readonly Tool[] {

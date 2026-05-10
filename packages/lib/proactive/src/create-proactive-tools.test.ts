@@ -1,15 +1,41 @@
 import { describe, expect, test } from "bun:test";
-import { createProactiveTools, PROACTIVE_TOOL_NAMES } from "./create-proactive-tools.js";
+import { createProactiveTools } from "./create-proactive-tools.js";
 import { createSchedulerStub } from "./test-helpers.js";
 
 describe("createProactiveTools", () => {
   test("returns sleep, cron, and monitor tools in stable order", () => {
     const stub = createSchedulerStub();
     const tools = createProactiveTools({ scheduler: stub.component });
-    // notify is omitted when resolveChannel is not set; filter it out for comparison.
-    expect(tools.map((t) => t.descriptor.name)).toEqual(
-      PROACTIVE_TOOL_NAMES.filter((n) => n !== "notify"),
-    );
+    expect(tools.map((t) => t.descriptor.name)).toEqual([
+      "sleep",
+      "cancel_sleep",
+      "schedule_cron",
+      "cancel_schedule",
+      "create_monitor",
+      "list_monitors",
+      "update_monitor",
+      "cancel_monitor",
+    ]);
+  });
+
+  test("includes notify when resolveChannel is supplied", () => {
+    const stub = createSchedulerStub();
+    const tools = createProactiveTools({
+      scheduler: stub.component,
+      resolveChannel: () => undefined,
+      channelNames: () => ["slack"],
+    });
+    expect(tools.map((t) => t.descriptor.name)).toEqual([
+      "sleep",
+      "cancel_sleep",
+      "schedule_cron",
+      "cancel_schedule",
+      "create_monitor",
+      "list_monitors",
+      "update_monitor",
+      "cancel_monitor",
+      "notify",
+    ]);
   });
 
   test("all tools share the primordial origin", () => {

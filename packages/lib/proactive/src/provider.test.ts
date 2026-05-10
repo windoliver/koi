@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent, SchedulerComponent, SubsystemToken } from "@koi/core";
 import { COMPONENT_PRIORITY, SCHEDULER, toolToken } from "@koi/core";
-import { PROACTIVE_TOOL_NAMES } from "./create-proactive-tools.js";
 import { createProactiveToolsProvider } from "./provider.js";
 import { createSchedulerStub } from "./test-helpers.js";
 
@@ -64,10 +63,16 @@ describe("createProactiveToolsProvider", () => {
 
     const result = await provider.attach(agent);
     const components = "components" in result ? result.components : result;
-    // notify is omitted when no channel:* components are attached.
-    const expectedKeys = PROACTIVE_TOOL_NAMES.filter((n) => n !== "notify").map(
-      (name) => toolToken(name) as string,
-    );
+    const expectedKeys = [
+      "sleep",
+      "cancel_sleep",
+      "schedule_cron",
+      "cancel_schedule",
+      "create_monitor",
+      "list_monitors",
+      "update_monitor",
+      "cancel_monitor",
+    ].map((name) => toolToken(name) as string);
     expect(components.size).toBe(expectedKeys.length);
     expect([...components.keys()]).toEqual(expectedKeys);
   });
