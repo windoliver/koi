@@ -102,6 +102,34 @@ describe("createCompletionNotifier", () => {
     expect(captured?.ok).toBe(false);
   });
 
+  it("forwards an AbortSignal to the transport so abort-aware sends can avoid duplicates", async () => {
+    const seen: AbortSignal[] = [];
+    let calls = 0;
+    const notifier = createCompletionNotifier({
+      send: async (_message, signal) => {
+        if (signal !== undefined) seen.push(signal);
+        calls += 1;
+        if (calls === 1) {
+          // Stuck transport — only resolves if the signal aborts.
+          await new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("aborted by signal")));
+          });
+        }
+      },
+      retry: {
+        maxRetries: 1,
+        delayMs: 0,
+        attemptTimeoutMs: 5,
+        isTransientError: () => true,
+      },
+    });
+
+    const result = await notifier.notifyCompleted(makeStatus("completed"));
+    expect(result.ok).toBe(true);
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    expect(seen[0]).toBeInstanceOf(AbortSignal);
+  });
+
   it("allows custom message formatters", async () => {
     const sent: string[] = [];
     const notifier = createCompletionNotifier({

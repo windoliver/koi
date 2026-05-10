@@ -1,8 +1,19 @@
 import type { HarnessStatus, KoiError } from "@koi/core";
-import { type RetrySendOptions, type RetrySendResult, sendWithRetry } from "./retry-send.js";
+import {
+  type RetrySendOptions,
+  type RetrySendResult,
+  type SendFn,
+  sendWithRetry,
+} from "./retry-send.js";
 
 export interface CompletionNotifierConfig {
-  readonly send: (message: string) => Promise<void>;
+  /**
+   * Transport callback. The optional second argument is an AbortSignal
+   * raised when a per-attempt `retry.attemptTimeoutMs` fires; transports
+   * MUST honor it (or be idempotent) when timeouts are enabled to avoid
+   * duplicate completion/failure deliveries on slow-but-not-dead links.
+   */
+  readonly send: SendFn<string>;
   readonly retry?: RetrySendOptions | undefined;
   readonly formatCompleted?: ((status: HarnessStatus) => string) | undefined;
   readonly formatFailed?: ((status: HarnessStatus, error: KoiError) => string) | undefined;
