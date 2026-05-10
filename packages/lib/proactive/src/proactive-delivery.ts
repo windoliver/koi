@@ -12,6 +12,9 @@ export interface ProactiveNotification {
 export interface DeliveryPreferences {
   readonly preferredChannel?: string;
   readonly maxNotificationsPerHour?: number;
+  readonly quietHoursStart?: number;
+  readonly quietHoursEnd?: number;
+  readonly timezone?: string;
 }
 
 export interface ProactiveDeliveryConfig {
@@ -26,7 +29,7 @@ export type DeliveryResult =
   | { readonly ok: true; readonly delivered: readonly string[] }
   | {
       readonly ok: false;
-      readonly reason: "no_channels" | "rate_limited" | "all_failed";
+      readonly reason: "no_channels" | "rate_limited" | "all_failed" | "quiet_hours";
       readonly failures?: readonly DeliveryFailure[];
     };
 
@@ -72,7 +75,37 @@ async function sendOne(
   }
 }
 
+function validateQuietHours(prefs: DeliveryPreferences | undefined): void {
+  if (prefs === undefined) return;
+  const { quietHoursStart: s, quietHoursEnd: e, timezone } = prefs;
+  const sSet = s !== undefined;
+  const eSet = e !== undefined;
+  if (sSet !== eSet) {
+    throw new Error("quietHoursStart and quietHoursEnd must both be set or both omitted");
+  }
+  if (sSet && eSet) {
+    if (!Number.isInteger(s) || !Number.isInteger(e) || s < 0 || s > 23 || e < 0 || e > 23) {
+      throw new Error("quietHoursStart and quietHoursEnd must be integers in [0, 23]");
+    }
+    if (s === e) {
+      throw new Error("quietHoursStart must not equal quietHoursEnd");
+    }
+  }
+  if (timezone !== undefined) {
+    try {
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        hour: "2-digit",
+        hourCycle: "h23",
+      }).format(new Date(0));
+    } catch (cause: unknown) {
+      throw new Error(`invalid timezone: ${timezone}`, { cause });
+    }
+  }
+}
+
 export function createProactiveDelivery(config: ProactiveDeliveryConfig): ProactiveDelivery {
+  validateQuietHours(config.preferences);
   const preferences = config.preferences;
   const now = config.now ?? Date.now;
   const cap = preferences?.maxNotificationsPerHour;
