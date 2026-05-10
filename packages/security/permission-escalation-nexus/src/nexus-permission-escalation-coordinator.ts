@@ -148,7 +148,11 @@ export function createNexusPermissionEscalationCoordinator(
 
   const mailbox = createNexusMailboxClient(config.transport, config.requestMethodPrefix ?? "ipc");
   const clock = config.clock ?? Date.now;
-  const seenRequestIds = new Set<string>();
+  // Dedup key: workerAgentId + requestId + fingerprint. Keying on requestId
+  // alone is unsafe — two workers can collide on the same id, and a mutated
+  // retry (same id, different purpose/grants) must be reprocessed because the
+  // worker won't replay a stale fingerprint-mismatched decision.
+  const seenKeys = new Set<string>();
 
   return {
     async pollOnce(
@@ -166,7 +170,9 @@ export function createNexusPermissionEscalationCoordinator(
         }
 
         const record = message.payload;
-        if (seenRequestIds.has(record.request.requestId)) {
+        const fingerprint = computeEscalationRequestFingerprint(record.request);
+        const dedupKey = `${record.workerAgentId}\x00${record.request.requestId}\x00${fingerprint}`;
+        if (seenKeys.has(dedupKey)) {
           continue;
         }
         const decision =
@@ -194,12 +200,12 @@ export function createNexusPermissionEscalationCoordinator(
             coordinatorAgentId: config.coordinatorAgentId,
             decision,
             resolvedAt: clock(),
-            requestFingerprint: computeEscalationRequestFingerprint(record.request),
+            requestFingerprint: fingerprint,
           } satisfies PermissionEscalationDecisionRecord,
         });
 
         if (sendResult.ok) {
-          seenRequestIds.add(record.request.requestId);
+          seenKeys.add(dedupKey);
           handled += 1;
         }
       }
