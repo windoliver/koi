@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent, ChannelAdapter, SchedulerComponent, SubsystemToken } from "@koi/core";
+import type {
+  Agent,
+  ChannelAdapter,
+  JsonObject,
+  SchedulerComponent,
+  SubsystemToken,
+} from "@koi/core";
 import { COMPONENT_PRIORITY, SCHEDULER, toolToken } from "@koi/core";
 import { createProactiveToolsProvider } from "./provider.js";
 import { createSchedulerStub } from "./test-helpers.js";
@@ -350,5 +356,44 @@ describe("createProactiveToolsProvider", () => {
     const result = await provider.attach(agent);
     const map = "components" in result ? result.components : result;
     expect(map.has(toolToken("notify") as string)).toBe(false);
+  });
+
+  test("notify uses snapshot — channels added after attach are not visible", async () => {
+    const provider = createProactiveToolsProvider();
+    const slack: ChannelAdapter = {
+      name: "slack",
+      capabilities: {
+        text: true,
+        images: false,
+        files: false,
+        buttons: false,
+        audio: false,
+        video: false,
+        threads: true,
+        supportsA2ui: false,
+      },
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async () => {},
+      onMessage: () => () => {},
+    };
+    const channels = new Map<string, ChannelAdapter>([["slack", slack]]);
+    const agent = makeAgent(createSchedulerStub().component, "agent-1", channels);
+
+    const result = await provider.attach(agent);
+    const map = "components" in result ? result.components : result;
+    const notify = map.get(toolToken("notify") as string) as {
+      execute: (args: JsonObject) => Promise<unknown>;
+    };
+
+    // Mutate the agent's components AFTER attach — should not change snapshot.
+    (agent.components() as Map<string, unknown>).set("channel:email", slack);
+
+    const res = await notify.execute({ channel: "email", text: "hi" });
+    expect(res).toEqual({
+      ok: false,
+      error: "unknown channel: email",
+      available_channels: ["slack"],
+    });
   });
 });
