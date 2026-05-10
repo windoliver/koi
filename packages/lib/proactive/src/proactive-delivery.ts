@@ -1,4 +1,5 @@
 import type { ChannelAdapter, ContentBlock, JsonObject, OutboundMessage } from "@koi/core";
+import type { InboxEnvelope, InboxSink } from "./inbox-sink.js";
 
 export type DeliveryPriority = "low" | "normal" | "high" | "urgent";
 
@@ -21,6 +22,7 @@ export interface ProactiveDeliveryConfig {
   readonly channels: ReadonlyMap<string, ChannelAdapter>;
   readonly preferences?: DeliveryPreferences;
   readonly now?: () => number;
+  readonly inbox?: InboxSink;
 }
 
 export type DeliveryFailure = { readonly channel: string; readonly error: string };
@@ -182,12 +184,37 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
     }
   }
 
+  const inbox = config.inbox;
+
   return {
     send: async (notification) => {
+      const t = now();
+      if (notification.priority === "low" && inbox !== undefined) {
+        const envelope: InboxEnvelope = {
+          content: notification.content,
+          ...(notification.threadId !== undefined ? { threadId: notification.threadId } : {}),
+          ...(notification.metadata !== undefined ? { metadata: notification.metadata } : {}),
+          enqueuedAt: t,
+        };
+        try {
+          await inbox.enqueue(envelope);
+          return { ok: true, delivered: ["inbox"] };
+        } catch (e: unknown) {
+          return {
+            ok: false,
+            reason: "all_failed",
+            failures: [
+              {
+                channel: "inbox",
+                error: e instanceof Error ? e.message : "inbox.enqueue failed",
+              },
+            ],
+          };
+        }
+      }
       if (config.channels.size === 0) {
         return { ok: false, reason: "no_channels" };
       }
-      const t = now();
       if (notification.priority === "urgent") {
         // Urgent is its own path — fan-out, never gated by rate limit, never
         // consumes window capacity.

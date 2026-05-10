@@ -45,6 +45,7 @@ export {
 } from "./composition-governance.js";
 export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
+export type { InboxEnvelope, InboxSink } from "./inbox-sink.js";
 export {
   type CompositionPlannerAdapter,
   type CompositionPlannerAdapterInput,
