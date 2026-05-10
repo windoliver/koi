@@ -71,9 +71,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     providers: () => providers,
     dispose: (lease?: SessionLease) => {
       if (lease !== undefined) {
-        if (inFlight === undefined || pendingLease === undefined) {
-          pendingLease = lease;
-        }
+        pendingLease = lease;
       }
       if (inFlight !== undefined) return inFlight;
       const attempt = runDispose().finally(() => {

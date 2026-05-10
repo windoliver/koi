@@ -58,7 +58,6 @@ export function reconcileTaskBoard(
   const itemsById = new Map<TaskItemId, Task>(snapshot.items.map((task) => [task.id, task]));
   const orderedIds = topologicalSort(snapshotToItemsMap(board));
   const readyIds = new Set(board.ready().map((task) => task.id));
-  const recoveringIds = new Set<TaskItemId>();
   const actions: AutonomousReconcileAction[] = [];
   const isStale = options.isDelegationStale;
 
@@ -68,7 +67,6 @@ export function reconcileTaskBoard(
     if (marker === undefined) continue;
     const stale = marker.malformed || (isStale?.(task, marker.delegatedTo) ?? false);
     if (stale) {
-      recoveringIds.add(task.id);
       actions.push({
         kind: "clearDelegation",
         taskId: task.id,
@@ -81,7 +79,7 @@ export function reconcileTaskBoard(
 
   for (const taskId of orderedIds) {
     if (!readyIds.has(taskId)) continue;
-    if (recoveringIds.has(taskId) || activeDelegations.has(taskId)) continue;
+    if (activeDelegations.has(taskId)) continue;
     const task = itemsById.get(taskId);
     if (task === undefined) continue;
     const agentType = delegatedAgentType(task);

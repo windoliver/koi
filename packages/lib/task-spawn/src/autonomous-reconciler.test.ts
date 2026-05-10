@@ -65,7 +65,7 @@ describe("reconcileTaskBoard", () => {
     ]);
   });
 
-  test("stale metadata.delegatedTo on pending tasks emits a recovery action when caller marks it stale", () => {
+  test("stale delegations are cleared and immediately redispatched in the same pass", () => {
     const board = createTaskBoard().add({
       id: taskItemId("stale"),
       subject: "recover me",
@@ -83,6 +83,7 @@ describe("reconcileTaskBoard", () => {
     });
     expect(result.actions).toEqual([
       { kind: "clearDelegation", taskId: taskItemId("stale"), delegatedTo: "worker-1" },
+      { kind: "dispatch", taskId: taskItemId("stale"), agentType: "reviewer" },
     ]);
   });
 
@@ -223,6 +224,7 @@ describe("reconcileTaskBoard", () => {
     });
     expect(result.actions).toEqual([
       { kind: "clearDelegation", taskId: taskItemId("dead"), delegatedTo: "worker-dead" },
+      { kind: "dispatch", taskId: taskItemId("dead"), agentType: "reviewer" },
     ]);
   });
 });
