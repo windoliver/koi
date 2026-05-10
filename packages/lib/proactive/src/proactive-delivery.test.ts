@@ -31,4 +31,41 @@ describe("createProactiveDelivery", () => {
     });
     expect(result).toEqual({ ok: false, reason: "no_channels" });
   });
+
+  test("high priority routes to preferredChannel", async () => {
+    const sent: { channel: string; msg: OutboundMessage }[] = [];
+    const slack = stubAdapter("slack", async (m) => { sent.push({ channel: "slack", msg: m }); });
+    const email = stubAdapter("email", async (m) => { sent.push({ channel: "email", msg: m }); });
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack], ["email", email]]),
+      preferences: { preferredChannel: "email" },
+    });
+
+    const result = await delivery.send({
+      priority: "high",
+      content: [{ kind: "text", text: "hi" }],
+    });
+
+    expect(result).toEqual({ ok: true, delivered: ["email"] });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.channel).toBe("email");
+    expect(sent[0]?.msg.content).toEqual([{ kind: "text", text: "hi" }]);
+  });
+
+  test("high priority falls back to first channel when no preferred", async () => {
+    const sent: string[] = [];
+    const slack = stubAdapter("slack", async () => { sent.push("slack"); });
+    const email = stubAdapter("email", async () => { sent.push("email"); });
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack], ["email", email]]),
+    });
+
+    const result = await delivery.send({
+      priority: "high",
+      content: [{ kind: "text", text: "hi" }],
+    });
+
+    expect(result).toEqual({ ok: true, delivered: ["slack"] });
+    expect(sent).toEqual(["slack"]);
+  });
 });
