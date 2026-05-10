@@ -103,6 +103,7 @@ describe("sendWithRetry", () => {
       "job failed",
       {
         maxRetries: 0,
+        isTransientError: () => true,
       },
     );
 
@@ -128,6 +129,7 @@ describe("sendWithRetry", () => {
       {
         maxRetries: 1,
         delayMs: 1,
+        isTransientError: () => true,
       },
     );
 
@@ -135,5 +137,25 @@ describe("sendWithRetry", () => {
       ok: true,
       attempts: 2,
     });
+  });
+
+  it("does not retry by default — caller must opt in via isTransientError", async () => {
+    let attempts = 0;
+
+    const result = await sendWithRetry(
+      async () => {
+        attempts += 1;
+        throw new Error("ambiguous transport failure");
+      },
+      "job completed",
+      { maxRetries: 5, delayMs: 0 },
+    );
+
+    expect(attempts).toBe(1);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.transient).toBe(false);
+      expect(result.exhausted).toBe(false);
+    }
   });
 });

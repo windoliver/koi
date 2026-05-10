@@ -2,7 +2,17 @@ import type { Task, TaskBoardSnapshot, TaskItemId } from "@koi/core";
 import { deserializeBoard, snapshotToItemsMap, topologicalSort } from "@koi/task-board";
 
 export type AutonomousReconcileAction =
-  | { readonly kind: "dispatch"; readonly taskId: TaskItemId; readonly agentType: string }
+  | {
+      readonly kind: "dispatch";
+      readonly taskId: TaskItemId;
+      readonly agentType: string;
+      /**
+       * Snapshot of `task.version` at reconciliation time. Callers MUST use
+       * this as an OCC token when claiming/delegating the task before spawn
+       * so duplicate dispatches across concurrent reconcilers are rejected.
+       */
+      readonly version: number;
+    }
   | {
       readonly kind: "clearDelegation";
       readonly taskId: TaskItemId;
@@ -84,7 +94,7 @@ export function reconcileTaskBoard(
     if (task === undefined) continue;
     const agentType = delegatedAgentType(task);
     if (agentType === undefined) continue;
-    actions.push({ kind: "dispatch", taskId, agentType });
+    actions.push({ kind: "dispatch", taskId, agentType, version: task.version });
   }
 
   interface CancellationOrigin {

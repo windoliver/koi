@@ -51,7 +51,7 @@ export async function sendWithRetry<T>(
       return { ok: true, attempts };
     } catch (error: unknown) {
       const normalizedError = toError(error);
-      const transient = options.isTransientError?.(normalizedError) ?? true;
+      const transient = options.isTransientError?.(normalizedError) ?? false;
 
       if (!transient) {
         return {

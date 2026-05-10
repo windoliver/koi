@@ -59,10 +59,15 @@ describe("reconcileTaskBoard", () => {
     if (!completed.ok) throw completed.error;
 
     const result = reconcileTaskBoard(serializeBoard(completed.value));
-    expect(result.actions).toEqual([
+    expect(result.actions).toMatchObject([
       { kind: "dispatch", taskId: taskItemId("c"), agentType: "researcher" },
       { kind: "dispatch", taskId: taskItemId("b"), agentType: "coder" },
     ]);
+    for (const action of result.actions) {
+      if (action.kind === "dispatch") {
+        expect(typeof action.version).toBe("number");
+      }
+    }
   });
 
   test("stale delegations are cleared and immediately redispatched in the same pass", () => {
@@ -81,7 +86,7 @@ describe("reconcileTaskBoard", () => {
     const result = reconcileTaskBoard(serializeBoard(board.value), {
       isDelegationStale: () => true,
     });
-    expect(result.actions).toEqual([
+    expect(result.actions).toMatchObject([
       { kind: "clearDelegation", taskId: taskItemId("stale"), delegatedTo: "worker-1" },
       { kind: "dispatch", taskId: taskItemId("stale"), agentType: "reviewer" },
     ]);
@@ -264,9 +269,28 @@ describe("reconcileTaskBoard", () => {
     const result = reconcileTaskBoard(serializeBoard(board.value), {
       isDelegationStale: (_task, delegatedTo) => delegatedTo === "worker-dead",
     });
-    expect(result.actions).toEqual([
+    expect(result.actions).toMatchObject([
       { kind: "clearDelegation", taskId: taskItemId("dead"), delegatedTo: "worker-dead" },
       { kind: "dispatch", taskId: taskItemId("dead"), agentType: "reviewer" },
     ]);
+  });
+
+  test("dispatch actions include the task version as an OCC token", () => {
+    const board = createTaskBoard().add({
+      id: taskItemId("ready"),
+      subject: "ready to dispatch",
+      description: "ready",
+      metadata: { delegation: "spawn", agentType: "researcher" },
+    });
+    if (!board.ok) throw board.error;
+
+    const snapshot = serializeBoard(board.value);
+    const taskVersion = snapshot.items.find((t) => t.id === taskItemId("ready"))?.version;
+    expect(typeof taskVersion).toBe("number");
+
+    const result = reconcileTaskBoard(snapshot);
+    const dispatch = result.actions.find((a) => a.kind === "dispatch");
+    if (dispatch?.kind !== "dispatch") throw new Error("expected dispatch action");
+    expect(dispatch.version).toBe(taskVersion as number);
   });
 });
