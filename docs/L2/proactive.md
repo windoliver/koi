@@ -458,7 +458,7 @@ Routing rules:
 | `urgent` | every channel in parallel; success if at least one delivered | no — bypasses cap and does not consume window capacity | no |
 | `high` | preferred channel first; on failure, walks remaining channels in Map insertion order; first success wins | yes — exactly 1 slot per send call regardless of attempts | no |
 | `normal` | `preferredChannel` if configured, else first channel by Map insertion order; single attempt (no fallback) | yes | yes — see Quiet hours below |
-| `low` | `preferredChannel` if configured, else first channel by Map insertion order; single attempt (no fallback) | yes | no (inbox routing is a separate Phase 4 follow-up) |
+| `low` | `inbox.enqueue` if `inbox` configured (delivered=`["inbox"]`); else `preferredChannel` or first by insertion order, single attempt | only when falling through to channel; inbox writes do NOT consume the cap | no |
 
 Failures are wrapped: an adapter `send` rejection becomes `{ ok: false,
 reason: "all_failed", failures: [{ channel, error }] }`. Adapter
@@ -507,3 +507,38 @@ attempt fails (Phase 3 invariant).
 
 `normal` and `low` retain single-attempt routing — there is no
 fallback for those priorities.
+
+### Inbox routing (Phase 4)
+
+Set `inbox: InboxSink` on `ProactiveDeliveryConfig` to redirect
+`low`-priority sends to a host-supplied sink (memory queue, persistent
+store, scratchpad, etc.) instead of waking a channel. The sink is
+called with an `InboxEnvelope` carrying the original `content`,
+`threadId`, `metadata`, plus `enqueuedAt` (from the injected `now()`).
+
+```typescript
+import type { InboxSink } from "@koi/proactive";
+
+const inbox: InboxSink = {
+  enqueue: (envelope) => {
+    queue.push(envelope);
+  },
+};
+
+const delivery = createProactiveDelivery({ channels, inbox });
+```
+
+Successful inbox writes return `{ ok: true, delivered: ["inbox"] }`.
+A sync throw or async rejection wraps into
+`{ ok: false, reason: "all_failed", failures: [{ channel: "inbox", error }] }`
+— there is no automatic fallback to channels because the caller
+explicitly chose inbox routing.
+
+Inbox writes do **not** consume the rate-limit window: an inbox write
+is not a user-facing dispatch until the agent reads it. With no inbox
+configured, `low` retains Phase-3 single-channel routing including the
+rate-limit slot.
+
+If `channels` is empty but `inbox` is set, `low` still succeeds via
+the inbox — the `no_channels` early-return only applies when the
+priority requires a channel.
