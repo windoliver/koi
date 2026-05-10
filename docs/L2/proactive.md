@@ -453,10 +453,12 @@ const result = await delivery.send({
 
 Routing rules:
 
-| Priority | Routes to | Rate-limited |
-|---|---|---|
-| `urgent` | every channel in parallel; success if at least one delivered | no — bypasses cap and does not consume window capacity |
-| `high` / `normal` / `low` | `preferredChannel` if configured, else first channel by Map insertion order | yes — counted against the sliding 1-hour cap |
+| Priority | Routes to | Rate-limited | Quiet-hours gated |
+|---|---|---|---|
+| `urgent` | every channel in parallel; success if at least one delivered | no — bypasses cap and does not consume window capacity | no |
+| `high` | `preferredChannel` if configured, else first channel by Map insertion order | yes — counted against the sliding 1-hour cap | no |
+| `normal` | same as `high` | yes | yes — see Quiet hours below |
+| `low` | same as `high` | yes | no (inbox routing is a separate Phase 4 follow-up) |
 
 Failures are wrapped: an adapter `send` rejection becomes `{ ok: false,
 reason: "all_failed", failures: [{ channel, error }] }`. Adapter
