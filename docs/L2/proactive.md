@@ -397,3 +397,40 @@ Phase 3a tracker (this issue): sleep / wake / cron tools.
 
 `brief` / `notify` / `monitor` tools are blocked on channel + webhook restoration and
 are deliberately not included here.
+
+## Composition triggers — `createGovernanceSignalSource`
+
+Wraps a `GovernanceController` as a `SystemSignalSource`. Polls the
+controller at `pollIntervalMs` (default 1 s), detects per-sensor
+threshold crossings (rising or falling edges), and emits
+`SystemSignal{kind: "governance"}` to subscribers. Per-sensor cooldown
+(default 60 s) suppresses repeated emissions.
+
+```typescript
+import { createGovernanceSignalSource } from "@koi/proactive";
+
+const source = createGovernanceSignalSource({
+  controller: governance,
+  thresholds: [
+    { sensor: "error_rate", limit: 0.3, direction: "above" },
+    { sensor: "context_occupancy", limit: 0.8, direction: "above", cooldownMs: 30_000 },
+    { sensor: "spawn_count", limit: 1, direction: "below" },
+  ],
+});
+
+const off = source.watch(
+  (signal) => planner.handle(signal),
+  { onError: (e) => log.warn({ err: e }, "governance signal source error") },
+);
+// later: off()
+```
+
+The source uses a single shared polling loop. It starts on the first
+`watch()` call and is cleared on the last unsubscribe; subsequent
+`watch()` calls reuse the running loop. Per-sensor edge state resets
+when the loop stops, so a fresh subscription treats the next reading
+as the start of a new crossing series.
+
+Failure modes are fail-open: unknown sensor names, controller read
+exceptions, and handler exceptions all forward to the subscriber's
+`onError` callback and the polling loop continues.
