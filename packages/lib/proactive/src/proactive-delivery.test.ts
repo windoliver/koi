@@ -155,4 +155,75 @@ describe("createProactiveDelivery", () => {
       { channel: "slack", error: "boom" },
     ]);
   });
+
+  test("rate limit blocks normal priority after cap", async () => {
+    let t = 1_700_000_000_000;
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { maxNotificationsPerHour: 2 },
+      now: () => t,
+    });
+
+    const a = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "1" }] });
+    const b = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "2" }] });
+    const c = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "3" }] });
+
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    expect(c).toEqual({ ok: false, reason: "rate_limited" });
+  });
+
+  test("rate-limit window slides — old entries drop, new send goes through", async () => {
+    let t = 1_700_000_000_000;
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { maxNotificationsPerHour: 1 },
+      now: () => t,
+    });
+
+    const a = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "1" }] });
+    expect(a.ok).toBe(true);
+
+    // Same instant → still at cap.
+    const b = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "2" }] });
+    expect(b).toEqual({ ok: false, reason: "rate_limited" });
+
+    // Advance just past 1 hour → previous entry slides out.
+    t += 3_600_001;
+    const c = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "3" }] });
+    expect(c.ok).toBe(true);
+  });
+
+  test("urgent bypasses rate limit even at cap", async () => {
+    const t = 1_700_000_000_000;
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { maxNotificationsPerHour: 0 },
+      now: () => t,
+    });
+
+    const r = await delivery.send({ priority: "urgent", content: [{ kind: "text", text: "alert" }] });
+    expect(r.ok).toBe(true);
+  });
+
+  test("urgent does not consume rate-limit window capacity", async () => {
+    const t = 1_700_000_000_000;
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { maxNotificationsPerHour: 1 },
+      now: () => t,
+    });
+
+    // Two urgent sends do NOT fill the bucket.
+    await delivery.send({ priority: "urgent", content: [{ kind: "text", text: "u1" }] });
+    await delivery.send({ priority: "urgent", content: [{ kind: "text", text: "u2" }] });
+
+    // A normal send still passes — cap is not reached.
+    const r = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
+    expect(r.ok).toBe(true);
+  });
 });
