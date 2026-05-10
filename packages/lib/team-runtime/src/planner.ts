@@ -48,9 +48,28 @@ function topologicalTaskOrder(tasks: readonly TeamRuntimeTask[]): readonly strin
 }
 
 export function planRunnableTasks(snapshot: TeamRuntimeSnapshot): readonly TeamRuntimeTask[] {
-  const runnableById = new Map(snapshot.board.ready().map((task) => [task.taskId, task] as const));
+  const blocked = new Set(snapshot.blockedTaskIds);
+  const runnableById = new Map(
+    snapshot.board
+      .ready()
+      .filter((task) => !blocked.has(task.taskId))
+      .map((task) => [task.taskId, task] as const),
+  );
 
-  return topologicalTaskOrder(snapshot.board.all())
-    .map((taskId) => runnableById.get(taskId))
-    .filter((task): task is TeamRuntimeTask => task !== undefined);
+  const reservedResources = new Set(snapshot.activeResources);
+  const ordered: TeamRuntimeTask[] = [];
+
+  if (snapshot.hasUnknownActiveResources) return [];
+
+  for (const taskId of topologicalTaskOrder(snapshot.board.all())) {
+    const task = runnableById.get(taskId);
+    if (task === undefined) continue;
+    const resources = task.sharedResources ?? [];
+    const conflicts = resources.some((resource) => reservedResources.has(resource));
+    if (conflicts) continue;
+    for (const resource of resources) reservedResources.add(resource);
+    ordered.push(task);
+  }
+
+  return ordered;
 }

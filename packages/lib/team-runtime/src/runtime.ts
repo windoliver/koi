@@ -24,6 +24,7 @@ export interface TeamRunHandle {
 
 export interface TeamRuntimeDependencies {
   readonly scheduler?: unknown;
+  readonly idFactory?: () => string;
 }
 
 export interface TeamRuntime {
@@ -42,18 +43,29 @@ function createRunHandle(snapshot: TeamRuntimeSnapshot): TeamRunHandle {
   };
 }
 
-export function createTeamRuntime(
-  spec: TeamSpec,
-  _deps: TeamRuntimeDependencies = {},
-): TeamRuntime {
+export function createTeamRuntime(spec: TeamSpec, deps: TeamRuntimeDependencies = {}): TeamRuntime {
   const validatedSpec = validateTeamSpec(spec);
+  const idFactory = deps.idFactory ?? (() => crypto.randomUUID());
+  const seenRunIds = new Set<string>();
   let snapshot = replayTeamRun([]);
-  let startCount = 0;
 
   return {
     async start(_goal) {
-      startCount += 1;
-      const teamRunId = `${validatedSpec.name}:run:${startCount}`;
+      const maxAttempts = 16;
+      let teamRunId = "";
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const candidate = idFactory();
+        if (!seenRunIds.has(candidate)) {
+          teamRunId = candidate;
+          break;
+        }
+      }
+      if (teamRunId === "") {
+        throw new Error(
+          `idFactory returned duplicate teamRunId on every retry; gave up after ${maxAttempts} attempts`,
+        );
+      }
+      seenRunIds.add(teamRunId);
       snapshot = replayTeamRun([
         {
           kind: "team.created",
@@ -67,6 +79,7 @@ export function createTeamRuntime(
     },
     async resume(input) {
       snapshot = replayTeamRun(input.events);
+      if (snapshot.teamRunId !== "") seenRunIds.add(snapshot.teamRunId);
       return createRunHandle(snapshot);
     },
     replay(events) {

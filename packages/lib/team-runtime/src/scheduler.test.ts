@@ -239,12 +239,21 @@ test("runtime replay delegates to the shared replay reducer for resumable snapsh
 });
 
 test("runtime handles expose snapshot-only semantics for start and resume", async () => {
-  const runtime = createTeamRuntime({
-    name: "surface-team",
-    agents: [{ agentType: "coder" }],
-    budget: { total: 100, defaultSlice: 25 },
-    workspacePolicy: { mode: "hybrid" },
-  });
+  let counter = 0;
+  const runtime = createTeamRuntime(
+    {
+      name: "surface-team",
+      agents: [{ agentType: "coder" }],
+      budget: { total: 100, defaultSlice: 25 },
+      workspacePolicy: { mode: "hybrid" },
+    },
+    {
+      idFactory: () => {
+        counter += 1;
+        return `surface-team:run:${counter}`;
+      },
+    },
+  );
   const resumedEvents = [
     {
       kind: "team.created" as const,
@@ -357,4 +366,85 @@ test("runtime returns detached snapshots so caller mutation does not leak back i
   expect(handleResult.events[0]?.eventId).toBe(`team.created:${started.teamRunId}`);
   expect(handleResult.outputs).not.toBe(handleSnapshot.outputs);
   expect(handleResult.activeAssignments).not.toBe(handleSnapshot.activeAssignments);
+});
+
+test("rejects duplicate teamRunId returned by injected idFactory", async () => {
+  const runtime = createTeamRuntime(
+    {
+      name: "dup-team",
+      agents: [{ agentType: "coder" }],
+      budget: { total: 100, defaultSlice: 25 },
+      workspacePolicy: { mode: "isolated" },
+    },
+    {
+      idFactory: () => "fixed-run-id",
+    },
+  );
+
+  await runtime.start({ goal: "first" });
+  expect(runtime.start({ goal: "second" })).rejects.toThrow(/duplicate teamRunId/i);
+});
+
+test("replay() does not poison subsequent start() calls", async () => {
+  let started = 0;
+  const runtime = createTeamRuntime(
+    {
+      name: "replay-pure-team",
+      agents: [{ agentType: "coder" }],
+      budget: { total: 100, defaultSlice: 25 },
+      workspacePolicy: { mode: "isolated" },
+    },
+    {
+      idFactory: () => {
+        started += 1;
+        return `replay-pure-${started}`;
+      },
+    },
+  );
+
+  runtime.replay([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "replay-pure-1",
+      timestamp: 1,
+      payload: { specName: "replay-pure-team" },
+    },
+  ]);
+
+  const handle = await runtime.start({ goal: "after-replay" });
+  expect(handle.teamRunId).toBe("replay-pure-1");
+});
+
+test("recovers from idFactory collision with a previously resumed teamRunId", async () => {
+  let started = 0;
+  const runtime = createTeamRuntime(
+    {
+      name: "resume-collide-team",
+      agents: [{ agentType: "coder" }],
+      budget: { total: 100, defaultSlice: 25 },
+      workspacePolicy: { mode: "isolated" },
+    },
+    {
+      idFactory: () => {
+        started += 1;
+        return `resumed-run-${started}`;
+      },
+    },
+  );
+
+  await runtime.resume({
+    events: [
+      {
+        kind: "team.created",
+        eventId: "e1",
+        teamRunId: "resumed-run-1",
+        timestamp: 1,
+        payload: { specName: "resume-collide-team" },
+      },
+    ],
+  });
+
+  const handle = await runtime.start({ goal: "after-resume" });
+  expect(handle.teamRunId).toBe("resumed-run-2");
 });

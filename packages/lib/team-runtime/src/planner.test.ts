@@ -815,3 +815,166 @@ test("reducer rejects mixed runs, conflicting replays, and invalid event transit
     ]),
   ).toThrow(/Unhandled team event/i);
 });
+
+test("planner skips tasks whose shared resources are already in use", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_res_plan",
+      timestamp: 1,
+      payload: { specName: "res-plan-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_res_plan",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: {
+        subject: "A",
+        description: "A",
+        dependencies: [],
+        sharedResources: ["pkg/foo.ts"],
+      },
+    },
+    {
+      kind: "task.added",
+      eventId: "e3",
+      teamRunId: "run_res_plan",
+      timestamp: 3,
+      taskId: "task_b",
+      payload: {
+        subject: "B",
+        description: "B",
+        dependencies: [],
+        sharedResources: ["pkg/foo.ts"],
+      },
+    },
+    {
+      kind: "task.assigned",
+      eventId: "e4",
+      teamRunId: "run_res_plan",
+      timestamp: 4,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: {},
+    },
+  ]);
+
+  expect(planRunnableTasks(snapshot).map((task) => task.taskId)).toEqual([]);
+});
+
+test("planner serializes runnable tasks contending for the same resource", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_res_serial",
+      timestamp: 1,
+      payload: { specName: "res-serial-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_res_serial",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: {
+        subject: "A",
+        description: "A",
+        dependencies: [],
+        sharedResources: ["pkg/foo.ts"],
+      },
+    },
+    {
+      kind: "task.added",
+      eventId: "e3",
+      teamRunId: "run_res_serial",
+      timestamp: 3,
+      taskId: "task_b",
+      payload: {
+        subject: "B",
+        description: "B",
+        dependencies: [],
+        sharedResources: ["pkg/foo.ts"],
+      },
+    },
+  ]);
+
+  expect(planRunnableTasks(snapshot).map((task) => task.taskId)).toEqual(["task_a"]);
+});
+
+test("planner halts all dispatch while unknown-resource assignments are active", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_unknown_plan",
+      timestamp: 1,
+      payload: { specName: "unknown-plan-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_unknown_plan",
+      timestamp: 2,
+      taskId: "task_legacy",
+      payload: { subject: "Legacy", description: "Legacy", dependencies: [] },
+    },
+    {
+      kind: "task.added",
+      eventId: "e3",
+      teamRunId: "run_unknown_plan",
+      timestamp: 3,
+      taskId: "task_resource",
+      payload: {
+        subject: "Resource",
+        description: "Resource",
+        dependencies: [],
+        sharedResources: ["pkg/foo.ts"],
+      },
+    },
+    {
+      kind: "task.added",
+      eventId: "e4",
+      teamRunId: "run_unknown_plan",
+      timestamp: 4,
+      taskId: "task_free",
+      payload: { subject: "Free", description: "Free", dependencies: [] },
+    },
+    {
+      kind: "task.assigned",
+      eventId: "e5",
+      teamRunId: "run_unknown_plan",
+      timestamp: 5,
+      taskId: "task_legacy",
+      agentId: "coder-1",
+      payload: {},
+    },
+  ]);
+
+  expect(planRunnableTasks(snapshot)).toEqual([]);
+});
+
+test("planner excludes blocked tasks even if they appear runnable by status", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_block",
+      timestamp: 1,
+      payload: { specName: "block-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_block",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: ["task_missing"] },
+    },
+  ]);
+
+  expect(planRunnableTasks(snapshot)).toEqual([]);
+});

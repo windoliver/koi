@@ -632,3 +632,571 @@ test("rejects malformed event kinds during replay", () => {
     ]),
   ).toThrow(/unhandled team event/i);
 });
+
+test("reports cyclic tasks as blocked instead of throwing during replay", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_cycle",
+      timestamp: 1,
+      payload: { specName: "cycle-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_cycle",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: ["task_b"] },
+    },
+    {
+      kind: "task.added",
+      eventId: "e3",
+      teamRunId: "run_cycle",
+      timestamp: 3,
+      taskId: "task_b",
+      payload: { subject: "B", description: "B", dependencies: ["task_a"] },
+    },
+  ]);
+
+  expect([...snapshot.blockedTaskIds].sort()).toEqual(["task_a", "task_b"]);
+});
+
+test("surfaces tasks with unknown dependencies as blocked", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_blocked",
+      timestamp: 1,
+      payload: { specName: "blocked-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_blocked",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: ["task_missing"] },
+    },
+  ]);
+
+  expect(snapshot.blockedTaskIds).toEqual(["task_a"]);
+});
+
+test("duplicate task.added replays cleanly even after later events backfill sharedResources", () => {
+  const baseEvents = [
+    {
+      kind: "team.created" as const,
+      eventId: "e1",
+      teamRunId: "run_replay_safe",
+      timestamp: 1,
+      payload: { specName: "replay-safe-team" },
+    },
+    {
+      kind: "task.added" as const,
+      eventId: "e2",
+      teamRunId: "run_replay_safe",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: [] },
+    },
+    {
+      kind: "task.assigned" as const,
+      eventId: "e3",
+      teamRunId: "run_replay_safe",
+      timestamp: 3,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: { sharedResources: ["pkg/foo.ts"] },
+    },
+  ];
+
+  const snapshot = reduceTeamEvents([
+    ...baseEvents,
+    {
+      kind: "task.added",
+      eventId: "e2-replay",
+      teamRunId: "run_replay_safe",
+      timestamp: 4,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: [] },
+    },
+  ]);
+
+  expect(snapshot.board.get("task_a")?.sharedResources).toEqual(["pkg/foo.ts"]);
+});
+
+test("backfills sharedResources when a duplicate task.added carries them later", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_added_backfill",
+      timestamp: 1,
+      payload: { specName: "added-backfill-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_added_backfill",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: [] },
+    },
+    {
+      kind: "task.added",
+      eventId: "e3",
+      teamRunId: "run_added_backfill",
+      timestamp: 3,
+      taskId: "task_a",
+      payload: {
+        subject: "A",
+        description: "A",
+        dependencies: [],
+        sharedResources: ["pkg/foo.ts"],
+      },
+    },
+  ]);
+
+  expect(snapshot.board.get("task_a")?.sharedResources).toEqual(["pkg/foo.ts"]);
+});
+
+test("rejects task.completed that backfills resources held by another active task", () => {
+  expect(() =>
+    reduceTeamEvents([
+      {
+        kind: "team.created",
+        eventId: "e1",
+        teamRunId: "run_complete_overlap",
+        timestamp: 1,
+        payload: { specName: "complete-overlap" },
+      },
+      {
+        kind: "task.added",
+        eventId: "e2",
+        teamRunId: "run_complete_overlap",
+        timestamp: 2,
+        taskId: "task_a",
+        payload: { subject: "A", description: "A", dependencies: [] },
+      },
+      {
+        kind: "task.added",
+        eventId: "e3",
+        teamRunId: "run_complete_overlap",
+        timestamp: 3,
+        taskId: "task_b",
+        payload: {
+          subject: "B",
+          description: "B",
+          dependencies: [],
+          sharedResources: ["pkg/foo.ts"],
+        },
+      },
+      {
+        kind: "task.assigned",
+        eventId: "e4",
+        teamRunId: "run_complete_overlap",
+        timestamp: 4,
+        taskId: "task_a",
+        agentId: "coder-1",
+        payload: {},
+      },
+      {
+        kind: "task.assigned",
+        eventId: "e5",
+        teamRunId: "run_complete_overlap",
+        timestamp: 5,
+        taskId: "task_b",
+        agentId: "coder-2",
+        payload: {},
+      },
+      {
+        kind: "task.completed",
+        eventId: "e6",
+        teamRunId: "run_complete_overlap",
+        timestamp: 6,
+        taskId: "task_a",
+        agentId: "coder-1",
+        payload: { output: "done", sharedResources: ["pkg/foo.ts"] },
+      },
+    ]),
+  ).toThrow(/already held by/i);
+});
+
+test("flags hasUnknownActiveResources when an in-progress task has no declared resources", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_unknown",
+      timestamp: 1,
+      payload: { specName: "unknown-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_unknown",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: [] },
+    },
+    {
+      kind: "task.assigned",
+      eventId: "e3",
+      teamRunId: "run_unknown",
+      timestamp: 3,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: {},
+    },
+  ]);
+
+  expect(snapshot.hasUnknownActiveResources).toBe(true);
+});
+
+test("treats reordered sharedResources as equivalent during reconciliation", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_reorder",
+      timestamp: 1,
+      payload: { specName: "reorder-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_reorder",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: {
+        subject: "A",
+        description: "A",
+        dependencies: [],
+        sharedResources: ["a", "b"],
+      },
+    },
+    {
+      kind: "task.assigned",
+      eventId: "e3",
+      teamRunId: "run_reorder",
+      timestamp: 3,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: { sharedResources: ["b", "a"] },
+    },
+    {
+      kind: "task.completed",
+      eventId: "e4",
+      teamRunId: "run_reorder",
+      timestamp: 4,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: { output: "done", sharedResources: ["b", "a"] },
+    },
+  ]);
+
+  expect(snapshot.board.get("task_a")?.status).toBe("completed");
+});
+
+test("backfills sharedResources when a duplicate task.assigned carries them", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_dup_assign",
+      timestamp: 1,
+      payload: { specName: "dup-assign-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_dup_assign",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: [] },
+    },
+    {
+      kind: "task.assigned",
+      eventId: "e3",
+      teamRunId: "run_dup_assign",
+      timestamp: 3,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: {},
+    },
+    {
+      kind: "task.assigned",
+      eventId: "e4",
+      teamRunId: "run_dup_assign",
+      timestamp: 4,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: { sharedResources: ["pkg/foo.ts"] },
+    },
+  ]);
+
+  expect(snapshot.board.get("task_a")?.sharedResources).toEqual(["pkg/foo.ts"]);
+  expect([...snapshot.activeResources]).toEqual(["pkg/foo.ts"]);
+});
+
+test("rejects duplicate task.assigned with conflicting sharedResources", () => {
+  expect(() =>
+    reduceTeamEvents([
+      {
+        kind: "team.created",
+        eventId: "e1",
+        teamRunId: "run_assign_conflict",
+        timestamp: 1,
+        payload: { specName: "assign-conflict" },
+      },
+      {
+        kind: "task.added",
+        eventId: "e2",
+        teamRunId: "run_assign_conflict",
+        timestamp: 2,
+        taskId: "task_a",
+        payload: {
+          subject: "A",
+          description: "A",
+          dependencies: [],
+          sharedResources: ["pkg/foo.ts"],
+        },
+      },
+      {
+        kind: "task.assigned",
+        eventId: "e3",
+        teamRunId: "run_assign_conflict",
+        timestamp: 3,
+        taskId: "task_a",
+        agentId: "coder-1",
+        payload: {},
+      },
+      {
+        kind: "task.assigned",
+        eventId: "e4",
+        teamRunId: "run_assign_conflict",
+        timestamp: 4,
+        taskId: "task_a",
+        agentId: "coder-1",
+        payload: { sharedResources: ["pkg/bar.ts"] },
+      },
+    ]),
+  ).toThrow(/conflicting sharedresources/i);
+});
+
+test("rejects duplicate task.completed with conflicting sharedResources", () => {
+  expect(() =>
+    reduceTeamEvents([
+      {
+        kind: "team.created",
+        eventId: "e1",
+        teamRunId: "run_complete_conflict",
+        timestamp: 1,
+        payload: { specName: "complete-conflict" },
+      },
+      {
+        kind: "task.added",
+        eventId: "e2",
+        teamRunId: "run_complete_conflict",
+        timestamp: 2,
+        taskId: "task_a",
+        payload: { subject: "A", description: "A", dependencies: [] },
+      },
+      {
+        kind: "task.assigned",
+        eventId: "e3",
+        teamRunId: "run_complete_conflict",
+        timestamp: 3,
+        taskId: "task_a",
+        agentId: "coder-1",
+        payload: {},
+      },
+      {
+        kind: "task.completed",
+        eventId: "e4",
+        teamRunId: "run_complete_conflict",
+        timestamp: 4,
+        taskId: "task_a",
+        agentId: "coder-1",
+        payload: { output: "done", sharedResources: ["pkg/foo.ts"] },
+      },
+      {
+        kind: "task.completed",
+        eventId: "e5",
+        teamRunId: "run_complete_conflict",
+        timestamp: 5,
+        taskId: "task_a",
+        agentId: "coder-1",
+        payload: { output: "done", sharedResources: ["pkg/bar.ts"] },
+      },
+    ]),
+  ).toThrow(/conflicting sharedresources/i);
+});
+
+test("rejects concurrent task.assigned events claiming the same resource", () => {
+  expect(() =>
+    reduceTeamEvents([
+      {
+        kind: "team.created",
+        eventId: "e1",
+        teamRunId: "run_excl",
+        timestamp: 1,
+        payload: { specName: "excl-team" },
+      },
+      {
+        kind: "task.added",
+        eventId: "e2",
+        teamRunId: "run_excl",
+        timestamp: 2,
+        taskId: "task_a",
+        payload: {
+          subject: "A",
+          description: "A",
+          dependencies: [],
+          sharedResources: ["pkg/foo.ts"],
+        },
+      },
+      {
+        kind: "task.added",
+        eventId: "e3",
+        teamRunId: "run_excl",
+        timestamp: 3,
+        taskId: "task_b",
+        payload: {
+          subject: "B",
+          description: "B",
+          dependencies: [],
+          sharedResources: ["pkg/foo.ts"],
+        },
+      },
+      {
+        kind: "task.assigned",
+        eventId: "e4",
+        teamRunId: "run_excl",
+        timestamp: 4,
+        taskId: "task_a",
+        agentId: "coder-1",
+        payload: {},
+      },
+      {
+        kind: "task.assigned",
+        eventId: "e5",
+        teamRunId: "run_excl",
+        timestamp: 5,
+        taskId: "task_b",
+        agentId: "coder-2",
+        payload: {},
+      },
+    ]),
+  ).toThrow(/shared resource pkg\/foo\.ts already held/i);
+});
+
+test("hydrates sharedResources from task.completed payload for legacy streams", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_legacy_complete",
+      timestamp: 1,
+      payload: { specName: "legacy-complete-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_legacy_complete",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: [] },
+    },
+    {
+      kind: "task.assigned",
+      eventId: "e3",
+      teamRunId: "run_legacy_complete",
+      timestamp: 3,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: {},
+    },
+    {
+      kind: "task.completed",
+      eventId: "e4",
+      teamRunId: "run_legacy_complete",
+      timestamp: 4,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: { output: "done", sharedResources: ["pkg/foo.ts"] },
+    },
+  ]);
+
+  expect(snapshot.board.get("task_a")?.sharedResources).toEqual(["pkg/foo.ts"]);
+});
+
+test("hydrates sharedResources from task.assigned for in-progress legacy streams", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_legacy_assign",
+      timestamp: 1,
+      payload: { specName: "legacy-assign-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_legacy_assign",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: { subject: "A", description: "A", dependencies: [] },
+    },
+    {
+      kind: "task.assigned",
+      eventId: "e3",
+      teamRunId: "run_legacy_assign",
+      timestamp: 3,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: { sharedResources: ["pkg/bar.ts"] },
+    },
+  ]);
+
+  expect([...snapshot.activeResources]).toEqual(["pkg/bar.ts"]);
+});
+
+test("tracks active resources from in-progress assignments", () => {
+  const snapshot = reduceTeamEvents([
+    {
+      kind: "team.created",
+      eventId: "e1",
+      teamRunId: "run_res",
+      timestamp: 1,
+      payload: { specName: "res-team" },
+    },
+    {
+      kind: "task.added",
+      eventId: "e2",
+      teamRunId: "run_res",
+      timestamp: 2,
+      taskId: "task_a",
+      payload: {
+        subject: "A",
+        description: "A",
+        dependencies: [],
+        sharedResources: ["lockfile.json"],
+      },
+    },
+    {
+      kind: "task.assigned",
+      eventId: "e3",
+      teamRunId: "run_res",
+      timestamp: 3,
+      taskId: "task_a",
+      agentId: "coder-1",
+      payload: {},
+    },
+  ]);
+
+  expect([...snapshot.activeResources]).toEqual(["lockfile.json"]);
+});

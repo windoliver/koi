@@ -21,6 +21,7 @@ export interface TaskAddedEvent extends TeamEventBase {
     readonly description: string;
     readonly dependencies: readonly string[];
     readonly targetAgentType?: string | undefined;
+    readonly sharedResources?: readonly string[] | undefined;
   };
 }
 
@@ -28,7 +29,9 @@ export interface TaskAssignedEvent extends TeamEventBase {
   readonly kind: "task.assigned";
   readonly taskId: string;
   readonly agentId: string;
-  readonly payload: Record<string, never>;
+  readonly payload: {
+    readonly sharedResources?: readonly string[] | undefined;
+  };
 }
 
 export interface TaskCompletedEvent extends TeamEventBase {

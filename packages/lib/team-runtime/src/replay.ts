@@ -15,6 +15,9 @@ export function detachTeamRuntimeSnapshot(snapshot: TeamRuntimeSnapshot): TeamRu
     board: detachTeamRuntimeBoard(snapshot.board),
     outputs: cloneReadonlyMap(snapshot.outputs),
     activeAssignments: cloneReadonlyMap(snapshot.activeAssignments),
+    activeResources: new Set(snapshot.activeResources),
+    hasUnknownActiveResources: snapshot.hasUnknownActiveResources,
+    blockedTaskIds: [...snapshot.blockedTaskIds],
     events: [...snapshot.events],
   };
 }

@@ -9,6 +9,7 @@ export interface TeamTaskSpec {
   readonly description: string;
   readonly dependencies: readonly string[];
   readonly targetAgentType?: string | undefined;
+  readonly sharedResources?: readonly string[] | undefined;
 }
 
 export interface TeamBudgetPolicy {
