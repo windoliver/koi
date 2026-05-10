@@ -46,6 +46,11 @@ export {
 export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
 export {
+  createGovernanceSignalSource,
+  type GovernanceSignalSourceConfig,
+  type GovernanceThreshold,
+} from "./governance-signal-source.js";
+export {
   type CompositionPlannerAdapter,
   type CompositionPlannerAdapterInput,
   createLlmCompositionPlanner,
