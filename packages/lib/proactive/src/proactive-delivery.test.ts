@@ -760,4 +760,40 @@ describe("createProactiveDelivery", () => {
       failures: [{ channel: "inbox", error: "queue full" }],
     });
   });
+
+  test("low with inbox + empty channels map → still ok via inbox", async () => {
+    const enqueued: InboxEnvelope[] = [];
+    const inbox: InboxSink = {
+      enqueue: (env) => {
+        enqueued.push(env);
+      },
+    };
+    const delivery = createProactiveDelivery({ channels: new Map(), inbox });
+
+    const r = await delivery.send({ priority: "low", content: [{ kind: "text", text: "x" }] });
+    expect(r).toEqual({ ok: true, delivered: ["inbox"] });
+    expect(enqueued).toHaveLength(1);
+  });
+
+  test("low inbox routing does NOT consume rate-limit slot", async () => {
+    const inbox: InboxSink = { enqueue: () => {} };
+    const t = 1_700_000_000_000;
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+      preferences: { maxNotificationsPerHour: 1 },
+      now: () => t,
+    });
+
+    // Two low-via-inbox sends do not fill the bucket.
+    const r1 = await delivery.send({ priority: "low", content: [{ kind: "text", text: "1" }] });
+    const r2 = await delivery.send({ priority: "low", content: [{ kind: "text", text: "2" }] });
+    expect(r1).toEqual({ ok: true, delivered: ["inbox"] });
+    expect(r2).toEqual({ ok: true, delivered: ["inbox"] });
+
+    // A normal send still passes — cap=1 not consumed.
+    const r3 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
+    expect(r3).toEqual({ ok: true, delivered: ["slack"] });
+  });
 });
