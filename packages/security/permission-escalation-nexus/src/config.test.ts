@@ -105,7 +105,7 @@ describe("permission-escalation-nexus config", () => {
     expect(typeof createNexusPermissionEscalationCoordinator).toBe("function");
   });
 
-  test("worker stub throws not implemented yet", async () => {
+  test("worker request fails closed on bound identity mismatch", async () => {
     const escalation = createNexusPermissionEscalation({
       transport: makeTransport(),
       agentId: "agent:worker" as never,
@@ -115,12 +115,15 @@ describe("permission-escalation-nexus config", () => {
     await expect(
       escalation.request({
         requestId: "req-1",
-        agentId: "agent:worker" as never,
+        agentId: "agent:other" as never,
         requestedGrants: ["fs:write"],
         purposeStatement: "Need to patch a file",
         expiresAt: Date.now() + 60_000,
       }),
-    ).rejects.toThrow("createNexusPermissionEscalation is not implemented yet");
+    ).resolves.toEqual({
+      decision: "rejected",
+      reason: "permission escalation agentId does not match bound client identity",
+    });
   });
 
   test("worker factory validates config eagerly", () => {
