@@ -515,4 +515,62 @@ describe("createProactiveDelivery", () => {
       ],
     });
   });
+
+  test("high: no preferred configured → walks insertion order from start", async () => {
+    const calls: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      calls.push("slack");
+      throw new Error("net");
+    });
+    const email = stubAdapter("email", async () => {
+      calls.push("email");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+    });
+
+    const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(r).toEqual({ ok: true, delivered: ["email"] });
+    expect(calls).toEqual(["slack", "email"]);
+  });
+
+  test("high: single channel that fails → all_failed with single failure", async () => {
+    const slack = stubAdapter("slack", async () => {
+      throw new Error("net");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+    });
+
+    const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(r).toEqual({
+      ok: false,
+      reason: "all_failed",
+      failures: [{ channel: "slack", error: "net" }],
+    });
+  });
+
+  test("high: preferred missing from channels map → walks insertion order", async () => {
+    const calls: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      calls.push("slack");
+    });
+    const email = stubAdapter("email", async () => {
+      calls.push("email");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { preferredChannel: "discord" }, // not in map
+    });
+
+    const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(r).toEqual({ ok: true, delivered: ["slack"] });
+    expect(calls).toEqual(["slack"]);
+  });
 });
