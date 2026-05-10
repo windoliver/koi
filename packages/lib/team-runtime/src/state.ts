@@ -182,9 +182,7 @@ export function reduceTeamEvents(events: readonly TeamEvent[]): TeamRuntimeSnaps
           throw new Error(`Cannot crash-detect completed task: ${event.taskId}`);
         }
         if (task.assignedAgentId !== event.agentId) {
-          throw new Error(
-            `Cannot crash-detect task assigned to another agent: ${event.taskId}`,
-          );
+          throw new Error(`Cannot crash-detect task assigned to another agent: ${event.taskId}`);
         }
         tasksById.set(event.taskId, {
           ...task,

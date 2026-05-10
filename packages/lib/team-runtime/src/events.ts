@@ -28,7 +28,7 @@ export interface TaskAssignedEvent extends TeamEventBase {
   readonly kind: "task.assigned";
   readonly taskId: string;
   readonly agentId: string;
-  readonly payload: {};
+  readonly payload: Record<string, never>;
 }
 
 export interface TaskCompletedEvent extends TeamEventBase {
@@ -46,7 +46,7 @@ export interface TaskCrashDetectedEvent extends TeamEventBase {
   readonly kind: "task.crash_detected";
   readonly taskId: string;
   readonly agentId: string;
-  readonly payload: {};
+  readonly payload: Record<string, never>;
 }
 
 export type TeamEvent =

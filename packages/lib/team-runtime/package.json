@@ -17,10 +17,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/cost-aggregator": "workspace:*",
-    "@koi/federation": "workspace:*",
-    "@koi/task-board": "workspace:*"
+    "@koi/core": "workspace:*"
   },
   "koi": {
     "optional": true

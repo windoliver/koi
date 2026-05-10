@@ -67,10 +67,7 @@ test("returns the current runnable wave in dependency order", () => {
     },
   ]);
 
-  expect(planRunnableTasks(snapshot).map((task) => task.taskId)).toEqual([
-    "task_b",
-    "task_merge",
-  ]);
+  expect(planRunnableTasks(snapshot).map((task) => task.taskId)).toEqual(["task_b", "task_merge"]);
 });
 
 test("unblocks the next wave only after all upstream tasks complete", () => {
@@ -207,8 +204,8 @@ test("snapshot maps stay Map-backed while blocking mutators", () => {
     },
   ]);
 
-  const outputs = snapshot.outputs as Record<string, unknown>;
-  const activeAssignments = snapshot.activeAssignments as Record<string, unknown>;
+  const outputs = snapshot.outputs as unknown as Record<string, unknown>;
+  const activeAssignments = snapshot.activeAssignments as unknown as Record<string, unknown>;
   const listed = snapshot.board.all();
   const first = listed[0];
 
@@ -220,7 +217,7 @@ test("snapshot maps stay Map-backed while blocking mutators", () => {
   expect(first?.targetAgentType).toBe("implementer");
   expect(first?.status).toBe("completed");
   if (first !== undefined) {
-    first.dependencies.push("mutated");
+    (first.dependencies as unknown as string[]).push("mutated");
   }
   expect(snapshot.board.get("task_a")?.dependencies).toEqual([]);
   expect(outputs.set).toBeUndefined();

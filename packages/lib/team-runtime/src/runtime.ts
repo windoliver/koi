@@ -1,7 +1,6 @@
 import type { TeamEvent } from "./events.js";
 import { detachTeamRuntimeSnapshot, replayTeamRun } from "./replay.js";
-import type { TeamSpec } from "./spec.js";
-import type { TeamTaskSpec } from "./spec.js";
+import type { TeamSpec, TeamTaskSpec } from "./spec.js";
 import { validateTeamSpec } from "./spec.js";
 import type { TeamRuntimeSnapshot } from "./state.js";
 

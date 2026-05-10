@@ -48,9 +48,7 @@ function topologicalTaskOrder(tasks: readonly TeamRuntimeTask[]): readonly strin
 }
 
 export function planRunnableTasks(snapshot: TeamRuntimeSnapshot): readonly TeamRuntimeTask[] {
-  const runnableById = new Map(
-    snapshot.board.ready().map((task) => [task.taskId, task] as const),
-  );
+  const runnableById = new Map(snapshot.board.ready().map((task) => [task.taskId, task] as const));
 
   return topologicalTaskOrder(snapshot.board.all())
     .map((taskId) => runnableById.get(taskId))

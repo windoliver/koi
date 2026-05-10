@@ -233,8 +233,8 @@ test("does not expose mutable map APIs on snapshot outputs or assignments", () =
     },
   ]);
 
-  const outputs = snapshot.outputs as Record<string, unknown>;
-  const activeAssignments = snapshot.activeAssignments as Record<string, unknown>;
+  const outputs = snapshot.outputs as unknown as Record<string, unknown>;
+  const activeAssignments = snapshot.activeAssignments as unknown as Record<string, unknown>;
   const seenOutputs: Array<[string, string]> = [];
   const seenAssignments: Array<[string, string]> = [];
 

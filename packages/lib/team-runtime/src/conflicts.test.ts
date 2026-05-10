@@ -46,9 +46,10 @@ test("classifies disjoint vector clocks as concurrent", () => {
 
 test("serializes shared resource keys consistently", () => {
   expect(serializeSharedResource(" package-lock.json ")).toBe("package-lock.json");
-  expect(
-    serializeSharedResources([" README.md ", "package-lock.json", "README.md", ""]),
-  ).toEqual(["README.md", "package-lock.json"]);
+  expect(serializeSharedResources([" README.md ", "package-lock.json", "README.md", ""])).toEqual([
+    "README.md",
+    "package-lock.json",
+  ]);
 });
 
 test("serializes access to shared resources with a simple lock set", () => {

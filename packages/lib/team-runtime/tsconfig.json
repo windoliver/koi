@@ -2,21 +2,12 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "."
+    "rootDir": "src"
   },
-  "include": ["src/**/*.ts", "*.ts"],
+  "include": ["src/**/*"],
   "references": [
     {
       "path": "../../kernel/core"
-    },
-    {
-      "path": "../cost-aggregator"
-    },
-    {
-      "path": "../federation"
-    },
-    {
-      "path": "../task-board"
     }
   ]
 }

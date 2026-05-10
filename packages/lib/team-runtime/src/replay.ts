@@ -1,9 +1,5 @@
 import type { TeamEvent } from "./events.js";
-import {
-  cloneReadonlyMap,
-  reduceTeamEvents,
-  type TeamRuntimeSnapshot,
-} from "./state.js";
+import { cloneReadonlyMap, reduceTeamEvents, type TeamRuntimeSnapshot } from "./state.js";
 
 function detachTeamRuntimeBoard(board: TeamRuntimeSnapshot["board"]): TeamRuntimeSnapshot["board"] {
   return {
@@ -13,9 +9,7 @@ function detachTeamRuntimeBoard(board: TeamRuntimeSnapshot["board"]): TeamRuntim
   };
 }
 
-export function detachTeamRuntimeSnapshot(
-  snapshot: TeamRuntimeSnapshot,
-): TeamRuntimeSnapshot {
+export function detachTeamRuntimeSnapshot(snapshot: TeamRuntimeSnapshot): TeamRuntimeSnapshot {
   return {
     teamRunId: snapshot.teamRunId,
     board: detachTeamRuntimeBoard(snapshot.board),

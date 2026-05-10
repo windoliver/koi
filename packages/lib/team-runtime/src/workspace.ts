@@ -9,8 +9,9 @@ export function serializeSharedResources(
     return [];
   }
 
-  return [...new Set(resources.map(serializeSharedResource).filter((resource) => resource.length > 0))]
-    .sort();
+  return [
+    ...new Set(resources.map(serializeSharedResource).filter((resource) => resource.length > 0)),
+  ].sort();
 }
 
 export interface ResourceSerializer {

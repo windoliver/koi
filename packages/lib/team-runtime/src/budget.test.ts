@@ -57,7 +57,9 @@ test("rejects an explicit invalid configured default slice", () => {
 });
 
 test("rejects non-finite total budget values", () => {
-  expect(() => createBudgetLedger({ total: Number.NaN })).toThrow("Team budget total must be finite");
+  expect(() => createBudgetLedger({ total: Number.NaN })).toThrow(
+    "Team budget total must be finite",
+  );
   expect(() => createBudgetLedger({ total: Number.POSITIVE_INFINITY })).toThrow(
     "Team budget total must be finite",
   );

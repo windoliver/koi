@@ -331,9 +331,9 @@ test("runtime returns detached snapshots so caller mutation does not leak back i
   ]);
 
   (replayed as { teamRunId: string }).teamRunId = "mutated-run";
-  (replayed.events as Array<{ eventId: string }>).push({
+  (replayed.events as unknown as Array<{ eventId: string }>).push({
     eventId: "mutated-event",
-  } as { eventId: string });
+  });
 
   const currentSnapshot = runtime.getSnapshot();
 
@@ -346,9 +346,9 @@ test("runtime returns detached snapshots so caller mutation does not leak back i
   const started = await runtime.start({ goal: "Create detached snapshot handle" });
   const handleSnapshot = started.getSnapshot();
   (handleSnapshot as { teamRunId: string }).teamRunId = "mutated-handle-run";
-  (handleSnapshot.events as Array<{ eventId: string }>).push({
+  (handleSnapshot.events as unknown as Array<{ eventId: string }>).push({
     eventId: "mutated-handle-event",
-  } as { eventId: string });
+  });
 
   const handleResult = await started.getResult();
 
