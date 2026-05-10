@@ -25,7 +25,14 @@
  * typically registered once per agent so this rarely matters in practice.
  */
 
-import type { Agent, AttachResult, ComponentProvider, SkippedComponent, Tool } from "@koi/core";
+import type {
+  Agent,
+  AttachResult,
+  ChannelAdapter,
+  ComponentProvider,
+  SkippedComponent,
+  Tool,
+} from "@koi/core";
 import { COMPONENT_PRIORITY, SCHEDULER, toolToken } from "@koi/core";
 import { assembleProactiveTools } from "./create-proactive-tools.js";
 import { createCronToolState } from "./cron-tools.js";
@@ -71,6 +78,16 @@ export function createProactiveToolsProvider(
         };
       }
 
+      // Snapshot channel:* components at attach time. Channels added or
+      // removed after attach are not reflected by `notify` until reattach —
+      // matches the provider's existing per-attach lifecycle.
+      const channelSnapshot = new Map<string, ChannelAdapter>();
+      for (const [key, value] of agent.components()) {
+        if (key.startsWith("channel:")) {
+          channelSnapshot.set(key.slice("channel:".length), value as ChannelAdapter);
+        }
+      }
+
       const toolConfig: ProactiveToolsConfig = {
         scheduler,
         agentId: agent.pid.id,
@@ -79,6 +96,12 @@ export function createProactiveToolsProvider(
           : {}),
         ...(config.maxSleepMs !== undefined ? { maxSleepMs: config.maxSleepMs } : {}),
         ...(config.now !== undefined ? { now: config.now } : {}),
+        ...(channelSnapshot.size > 0
+          ? {
+              resolveChannel: (n: string) => channelSnapshot.get(n),
+              channelNames: () => [...channelSnapshot.keys()],
+            }
+          : {}),
       };
 
       // ProcessId is an object — slot by its `.id` (branded AgentId, a

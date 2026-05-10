@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent, SchedulerComponent, SubsystemToken } from "@koi/core";
+import type { Agent, ChannelAdapter, SchedulerComponent, SubsystemToken } from "@koi/core";
 import { COMPONENT_PRIORITY, SCHEDULER, toolToken } from "@koi/core";
 import { createProactiveToolsProvider } from "./provider.js";
 import { createSchedulerStub } from "./test-helpers.js";
@@ -7,9 +7,13 @@ import { createSchedulerStub } from "./test-helpers.js";
 function makeAgent(
   scheduler: SchedulerComponent | undefined,
   agentIdValue = "agent-default",
+  channels: ReadonlyMap<string, ChannelAdapter> = new Map(),
 ): Agent {
   const map = new Map<string, unknown>();
   if (scheduler !== undefined) map.set(SCHEDULER as string, scheduler);
+  for (const [name, adapter] of channels) {
+    map.set(`channel:${name}`, adapter);
+  }
   const pid = {
     id: agentIdValue as unknown as Agent["pid"]["id"],
     name: agentIdValue,
@@ -307,5 +311,44 @@ describe("createProactiveToolsProvider", () => {
 
     const secondList = (await listSecond.execute({})) as { monitors: unknown[] };
     expect(secondList.monitors).toHaveLength(0);
+  });
+
+  test("installs notify tool when channel:* components are attached", async () => {
+    const provider = createProactiveToolsProvider();
+    const slack: ChannelAdapter = {
+      name: "slack",
+      capabilities: {
+        text: true,
+        images: false,
+        files: false,
+        buttons: false,
+        audio: false,
+        video: false,
+        threads: true,
+        supportsA2ui: false,
+      },
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async () => {},
+      onMessage: () => () => {},
+    };
+    const agent = makeAgent(
+      createSchedulerStub().component,
+      "agent-1",
+      new Map([["slack", slack]]),
+    );
+
+    const result = await provider.attach(agent);
+    const map = "components" in result ? result.components : result;
+    expect(map.has(toolToken("notify") as string)).toBe(true);
+  });
+
+  test("omits notify tool when no channel:* components are attached", async () => {
+    const provider = createProactiveToolsProvider();
+    const agent = makeAgent(createSchedulerStub().component, "agent-1");
+
+    const result = await provider.attach(agent);
+    const map = "components" in result ? result.components : result;
+    expect(map.has(toolToken("notify") as string)).toBe(false);
   });
 });
