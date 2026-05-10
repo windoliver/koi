@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type SchedulerComponent, scheduleId } from "@koi/core";
+import { type ScheduleId, type SchedulerComponent, scheduleId } from "@koi/core";
 import {
   createCancelMonitorTool,
   createCreateMonitorTool,
@@ -373,7 +373,7 @@ describe("monitor tools", () => {
     let unscheduleAttempts = 0;
     const scheduler: SchedulerComponent = {
       ...stub.component,
-      unschedule(id) {
+      unschedule(id: ScheduleId) {
         stub.component.unschedule(id);
         unscheduleAttempts += 1;
         if (unscheduleAttempts === 1) {
