@@ -56,6 +56,10 @@ interface DelegationMarker {
 function pendingDelegationMarker(task: Task): DelegationMarker | undefined {
   if (task.status !== "pending") return undefined;
   if (task.metadata === undefined) return undefined;
+  // Only treat tasks that are explicitly spawn-delegated as autonomous
+  // recovery state. Otherwise an unrelated domain-level `delegatedTo` field
+  // would be silently cleared as if it were a stale spawn marker.
+  if (task.metadata.delegation !== "spawn") return undefined;
   if (!Object.hasOwn(task.metadata, "delegatedTo")) return undefined;
   const raw = task.metadata.delegatedTo;
   if (typeof raw === "string" && raw.length > 0) {
@@ -119,6 +123,11 @@ export function reconcileTaskBoard(
     // killing them requires status/version/owner-aware mutations
     // (killOwnedTask) that this reconciler cannot safely express.
     if (task.status !== "pending") continue;
+    // A task already receiving clearDelegation in this pass cannot also carry
+    // a version-locked cancelDownstream — applying clearDelegation bumps
+    // task.version and would invalidate the OCC token. Defer cancellation to
+    // a follow-up reconciliation after the cleanup mutation lands.
+    if (recoveringIds.has(taskId)) continue;
     for (const depId of task.dependencies) {
       const dep = board.get(depId);
       if (dep === undefined) continue;
