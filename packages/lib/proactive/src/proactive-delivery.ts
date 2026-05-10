@@ -79,8 +79,27 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
       if (config.channels.size === 0) {
         return { ok: false, reason: "no_channels" };
       }
-      // Urgent fan-out comes in Task 3; for now treat all non-empty cases
-      // as single-channel preferred routing.
+      if (notification.priority === "urgent") {
+        const msg = buildOutbound(notification);
+        const entries = Array.from(config.channels.entries(), ([name, adapter]) => ({ name, adapter }));
+        const results = await Promise.all(entries.map((c) => sendOne(c, msg)));
+        const delivered: string[] = [];
+        const failures: DeliveryFailure[] = [];
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          const failure = results[i];
+          if (entry === undefined) continue;
+          if (failure === undefined) {
+            delivered.push(entry.name);
+          } else {
+            failures.push(failure);
+          }
+        }
+        if (delivered.length === 0) {
+          return { ok: false, reason: "all_failed", failures };
+        }
+        return { ok: true, delivered };
+      }
       const target = selectPreferred(config.channels, preferences?.preferredChannel);
       if (target === undefined) {
         return { ok: false, reason: "no_channels" };

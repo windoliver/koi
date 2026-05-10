@@ -101,4 +101,58 @@ describe("createProactiveDelivery", () => {
       metadata: { source: "composition" },
     });
   });
+
+  test("urgent priority fans out to all channels", async () => {
+    const sent: string[] = [];
+    const slack = stubAdapter("slack", async () => { sent.push("slack"); });
+    const email = stubAdapter("email", async () => { sent.push("email"); });
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack], ["email", email]]),
+    });
+
+    const result = await delivery.send({
+      priority: "urgent",
+      content: [{ kind: "text", text: "alert" }],
+    });
+
+    expect(result).toEqual({ ok: true, delivered: ["slack", "email"] });
+    expect(sent.sort()).toEqual(["email", "slack"]);
+  });
+
+  test("urgent partial failure — one channel succeeds, one fails", async () => {
+    const slack = stubAdapter("slack", async () => {});
+    const email = stubAdapter("email", async () => { throw new Error("smtp down"); });
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack], ["email", email]]),
+    });
+
+    const result = await delivery.send({
+      priority: "urgent",
+      content: [{ kind: "text", text: "alert" }],
+    });
+
+    expect(result).toEqual({ ok: true, delivered: ["slack"] });
+  });
+
+  test("urgent total failure — every channel fails → all_failed with all in failures", async () => {
+    const slack = stubAdapter("slack", async () => { throw new Error("boom"); });
+    const email = stubAdapter("email", async () => { throw new Error("smtp down"); });
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack], ["email", email]]),
+    });
+
+    const result = await delivery.send({
+      priority: "urgent",
+      content: [{ kind: "text", text: "alert" }],
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("all_failed");
+    const failures = [...(result.failures ?? [])].sort((a, b) => a.channel.localeCompare(b.channel));
+    expect(failures).toEqual([
+      { channel: "email", error: "smtp down" },
+      { channel: "slack", error: "boom" },
+    ]);
+  });
 });
