@@ -180,6 +180,37 @@ describe("@koi/autonomous", () => {
     );
   });
 
+  test("concurrent dispose calls share a single teardown attempt", async () => {
+    let schedulerCalls = 0;
+    let harnessCalls = 0;
+    let releaseScheduler!: () => void;
+    const schedulerGate = new Promise<void>((resolve) => {
+      releaseScheduler = resolve;
+    });
+    const harness = createHarnessStub({
+      dispose: async () => {
+        harnessCalls += 1;
+        return ok();
+      },
+    });
+    const scheduler = createSchedulerStub({
+      dispose: async () => {
+        schedulerCalls += 1;
+        await schedulerGate;
+      },
+    });
+
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    const first = agent.dispose();
+    const second = agent.dispose();
+    releaseScheduler();
+    await Promise.all([first, second]);
+
+    expect(schedulerCalls).toBe(1);
+    expect(harnessCalls).toBe(1);
+  });
+
   test("retries failed scheduler disposal on a later dispose call", async () => {
     let schedulerCalls = 0;
     let harnessCalls = 0;

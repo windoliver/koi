@@ -28,9 +28,20 @@ function delegatedAgentType(task: Task): string | undefined {
   return metadataString(task, "agentType");
 }
 
-function pendingDelegatedTo(task: Task): string | undefined {
+interface DelegationMarker {
+  readonly delegatedTo: string;
+  readonly malformed: boolean;
+}
+
+function pendingDelegationMarker(task: Task): DelegationMarker | undefined {
   if (task.status !== "pending") return undefined;
-  return metadataString(task, "delegatedTo");
+  if (task.metadata === undefined) return undefined;
+  if (!Object.hasOwn(task.metadata, "delegatedTo")) return undefined;
+  const raw = task.metadata.delegatedTo;
+  if (typeof raw === "string" && raw.length > 0) {
+    return { delegatedTo: raw, malformed: false };
+  }
+  return { delegatedTo: typeof raw === "string" ? raw : String(raw), malformed: true };
 }
 
 export function reconcileTaskBoard(
@@ -47,11 +58,16 @@ export function reconcileTaskBoard(
 
   const activeDelegations = new Set<TaskItemId>();
   for (const task of snapshot.items) {
-    const delegatedTo = pendingDelegatedTo(task);
-    if (delegatedTo === undefined) continue;
-    if (isStale?.(task, delegatedTo)) {
+    const marker = pendingDelegationMarker(task);
+    if (marker === undefined) continue;
+    const stale = marker.malformed || (isStale?.(task, marker.delegatedTo) ?? false);
+    if (stale) {
       recoveringIds.add(task.id);
-      actions.push({ kind: "clearDelegation", taskId: task.id, delegatedTo });
+      actions.push({
+        kind: "clearDelegation",
+        taskId: task.id,
+        delegatedTo: marker.delegatedTo,
+      });
     } else {
       activeDelegations.add(task.id);
     }

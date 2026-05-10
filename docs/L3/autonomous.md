@@ -8,11 +8,13 @@ It composes:
 - `@koi/harness-scheduler`
 - `@koi/task-spawn` autonomous helpers
 
-The package intentionally keeps runtime behavior out of L3.
+The package intentionally keeps runtime behavior out of L3. The facade does
+**not** invoke reconciliation or notification on its own — callers wire the
+following lower-layer helpers into their scheduler/harness lifecycle:
 
-- task-board reconciliation lives in `@koi/task-spawn`
-- spawn outcome tracking lives in `@koi/task-spawn`
-- completion notification helpers live in `@koi/long-running`
+- task-board reconciliation: `reconcileTaskBoard` in `@koi/task-spawn`
+- spawn outcome tracking: `createSpawnFitnessWrapper` in `@koi/task-spawn`
+- completion/failure notification: `createCompletionNotifier` in `@koi/long-running`
 
 ## Public Surface
 

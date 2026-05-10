@@ -103,6 +103,46 @@ describe("reconcileTaskBoard", () => {
     expect(result.actions).toEqual([]);
   });
 
+  test("clears malformed delegatedTo markers without a staleness predicate", () => {
+    const board = createTaskBoard().addAll([
+      {
+        id: taskItemId("empty"),
+        subject: "empty marker",
+        description: "delegatedTo is empty string",
+        metadata: { delegation: "spawn", agentType: "reviewer", delegatedTo: "" },
+      },
+      {
+        id: taskItemId("numeric"),
+        subject: "numeric marker",
+        description: "delegatedTo is number",
+        metadata: {
+          delegation: "spawn",
+          agentType: "reviewer",
+          delegatedTo: 42 as unknown as string,
+        },
+      },
+      {
+        id: taskItemId("nullish"),
+        subject: "null marker",
+        description: "delegatedTo is null",
+        metadata: {
+          delegation: "spawn",
+          agentType: "reviewer",
+          delegatedTo: null as unknown as string,
+        },
+      },
+    ]);
+    if (!board.ok) throw board.error;
+
+    const result = reconcileTaskBoard(serializeBoard(board.value));
+    const cleared = result.actions.filter((action) => action.kind === "clearDelegation");
+    expect(cleared.map((action) => action.taskId).sort()).toEqual([
+      taskItemId("empty"),
+      taskItemId("nullish"),
+      taskItemId("numeric"),
+    ]);
+  });
+
   test("isDelegationStale predicate decides per-task whether to recover", () => {
     const board = createTaskBoard().addAll([
       {
