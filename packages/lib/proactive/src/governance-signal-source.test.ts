@@ -288,4 +288,190 @@ describe("createGovernanceSignalSource", () => {
     expect(a).toHaveLength(1);
     expect(b).toHaveLength(1);
   });
+
+  test("first watch starts the interval; second watch does not double-start", () => {
+    const clock = makeClock();
+    const timer = makeTimer();
+    const source = createGovernanceSignalSource({
+      controller: makeController(new Map()),
+      thresholds: [],
+      now: clock.now,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
+    });
+    expect(timer.activeCount()).toBe(0);
+    const off1 = source.watch(() => {});
+    expect(timer.activeCount()).toBe(1);
+    const off2 = source.watch(() => {});
+    expect(timer.activeCount()).toBe(1);
+    off1();
+    expect(timer.activeCount()).toBe(1);
+    off2();
+    expect(timer.activeCount()).toBe(0);
+  });
+
+  test("last unsubscribe clears the interval and resets sensor state", async () => {
+    const clock = makeClock(1_700_000_000_000);
+    const timer = makeTimer();
+    const readings = new Map<string, number>([["error_rate", 0.4]]);
+    const source = createGovernanceSignalSource({
+      controller: makeController(readings),
+      thresholds: [{ sensor: "error_rate", limit: 0.3, direction: "above", cooldownMs: 60_000 }],
+      now: clock.now,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
+    });
+
+    const firstBatch: SystemSignal[] = [];
+    const off = source.watch((s) => firstBatch.push(s));
+    timer.fire();
+    await clock.tick();
+    expect(firstBatch).toHaveLength(1);
+    off();
+    expect(timer.activeCount()).toBe(0);
+
+    // Re-watch: state was reset, fresh edge detection.
+    const secondBatch: SystemSignal[] = [];
+    source.watch((s) => secondBatch.push(s));
+    timer.fire();
+    await clock.tick();
+    // State reset means the value 0.4 is treated as a fresh crossing.
+    expect(secondBatch).toHaveLength(1);
+  });
+
+  test("unknown sensor name notifies onError, no throw, no signal", async () => {
+    const clock = makeClock();
+    const timer = makeTimer();
+    const source = createGovernanceSignalSource({
+      controller: makeController(new Map()),
+      thresholds: [{ sensor: "ghost", limit: 1, direction: "above" }],
+      now: clock.now,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
+    });
+    const got: SystemSignal[] = [];
+    const errors: unknown[] = [];
+    source.watch((s) => got.push(s), { onError: (e) => errors.push(e) });
+
+    timer.fire();
+    await clock.tick();
+
+    expect(got).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toContain("ghost");
+  });
+
+  test("handler throw notifies onError, loop continues", async () => {
+    const clock = makeClock(1_700_000_000_000);
+    const timer = makeTimer();
+    const readings = new Map<string, number>([["error_rate", 0.4]]);
+    const source = createGovernanceSignalSource({
+      controller: makeController(readings),
+      thresholds: [{ sensor: "error_rate", limit: 0.3, direction: "above", cooldownMs: 0 }],
+      now: clock.now,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
+    });
+    const errors: unknown[] = [];
+    source.watch(
+      () => {
+        throw new Error("handler boom");
+      },
+      { onError: (e) => errors.push(e) },
+    );
+
+    timer.fire();
+    await clock.tick();
+    // Re-enter and re-cross to verify the loop survived
+    readings.set("error_rate", 0.1);
+    timer.fire();
+    await clock.tick();
+    readings.set("error_rate", 0.4);
+    timer.fire();
+    await clock.tick();
+
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+    expect((errors[0] as Error).message).toBe("handler boom");
+  });
+
+  test("controller.reading throw notifies onError, next poll continues", async () => {
+    const clock = makeClock(1_700_000_000_000);
+    const timer = makeTimer();
+    let throwOnce = true;
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }) as const,
+      checkAll: () => ({ ok: true }) as const,
+      record: () => undefined,
+      snapshot: () => ({ timestamp: 0, readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: (name: string): SensorReading | undefined => {
+        if (throwOnce) {
+          throwOnce = false;
+          throw new Error("reading boom");
+        }
+        return { name, current: 0.5, limit: 0, utilization: 0 };
+      },
+    };
+    const source = createGovernanceSignalSource({
+      controller,
+      thresholds: [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
+      now: clock.now,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
+    });
+    const got: SystemSignal[] = [];
+    const errors: unknown[] = [];
+    source.watch((s) => got.push(s), { onError: (e) => errors.push(e) });
+
+    timer.fire();
+    await clock.tick();
+    expect(errors).toHaveLength(1);
+    expect(got).toHaveLength(0);
+
+    timer.fire();
+    await clock.tick();
+    expect(got).toHaveLength(1);
+  });
+
+  test("per-threshold cooldownMs overrides default", async () => {
+    const clock = makeClock(1_700_000_000_000);
+    const timer = makeTimer();
+    const readings = new Map<string, number>([["error_rate", 0.4]]);
+    const source = createGovernanceSignalSource({
+      controller: makeController(readings),
+      thresholds: [{ sensor: "error_rate", limit: 0.3, direction: "above", cooldownMs: 100 }],
+      now: clock.now,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
+    });
+    const got: SystemSignal[] = [];
+    source.watch((s) => got.push(s));
+
+    timer.fire();
+    await clock.tick();
+    readings.set("error_rate", 0.1);
+    clock.advance(50);
+    timer.fire();
+    await clock.tick();
+    readings.set("error_rate", 0.5);
+    clock.advance(60);
+    timer.fire();
+    await clock.tick();
+
+    // Cooldown is 100 ms; 50+60 = 110 ms ≥ 100 → second emit allowed.
+    expect(got).toHaveLength(2);
+  });
+
+  test('source name is "governance"', () => {
+    const clock = makeClock();
+    const timer = makeTimer();
+    const source = createGovernanceSignalSource({
+      controller: makeController(new Map()),
+      thresholds: [],
+      now: clock.now,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
+    });
+    expect(source.name).toBe("governance");
+  });
 });
