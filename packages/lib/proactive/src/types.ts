@@ -46,6 +46,12 @@ export interface ProactiveToolsConfig {
    * supplies this from a snapshot of the agent's `channel:*` components.
    */
   readonly resolveChannel?: ResolveChannel;
+  /**
+   * Returns the currently-attached channel names. Used by `notify` to
+   * populate `available_channels` in error responses. The provider
+   * supplies a callback closing over its `channel:*` snapshot.
+   */
+  readonly channelNames?: () => readonly string[];
 }
 
 /**

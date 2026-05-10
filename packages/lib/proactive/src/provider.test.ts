@@ -64,7 +64,10 @@ describe("createProactiveToolsProvider", () => {
 
     const result = await provider.attach(agent);
     const components = "components" in result ? result.components : result;
-    const expectedKeys = PROACTIVE_TOOL_NAMES.map((name) => toolToken(name) as string);
+    // notify is omitted when no channel:* components are attached.
+    const expectedKeys = PROACTIVE_TOOL_NAMES.filter((n) => n !== "notify").map(
+      (name) => toolToken(name) as string,
+    );
     expect(components.size).toBe(expectedKeys.length);
     expect([...components.keys()]).toEqual(expectedKeys);
   });

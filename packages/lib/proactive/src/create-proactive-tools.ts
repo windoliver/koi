@@ -18,6 +18,7 @@ import {
   createUpdateMonitorTool,
   type MonitorToolState,
 } from "./monitor-tools.js";
+import { createNotifyTool } from "./notify-tool.js";
 import { createSleepTool, createSleepToolState, type SleepToolState } from "./sleep-tool.js";
 import type { ProactiveToolsConfig } from "./types.js";
 
@@ -30,7 +31,18 @@ export const PROACTIVE_TOOL_NAMES = [
   "list_monitors",
   "update_monitor",
   "cancel_monitor",
+  "notify",
 ] as const;
+
+/**
+ * Collect channel names for `notify`'s available_channels error response.
+ * The provider supplies a `channelNames` callback closing over its snapshot;
+ * standalone callers without it get an empty list (the resolveChannel they
+ * provided still works for the success path).
+ */
+function collectChannelNames(config: ProactiveToolsConfig): readonly string[] {
+  return config.channelNames !== undefined ? config.channelNames() : [];
+}
 
 export interface ProactiveToolStates {
   readonly sleepState: SleepToolState;
@@ -43,7 +55,7 @@ export function assembleProactiveTools(
   states: ProactiveToolStates,
 ): readonly Tool[] {
   const { sleepState, cronState, monitorState } = states;
-  return [
+  const tools: Tool[] = [
     createSleepTool(config, sleepState),
     createCancelSleepTool(config, sleepState),
     createScheduleCronTool(config, cronState),
@@ -53,6 +65,16 @@ export function assembleProactiveTools(
     createUpdateMonitorTool(config, monitorState),
     createCancelMonitorTool(config, monitorState),
   ];
+  if (config.resolveChannel !== undefined) {
+    const resolve = config.resolveChannel;
+    tools.push(
+      createNotifyTool({
+        resolveChannel: resolve,
+        names: () => collectChannelNames(config),
+      }),
+    );
+  }
+  return tools;
 }
 
 export function createProactiveTools(config: ProactiveToolsConfig): readonly Tool[] {
