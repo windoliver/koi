@@ -409,6 +409,43 @@ provided) and never break the source loop. Subscriptions are idempotent —
 honors the L0 `SystemSignalSourceOptions` contract (`sampleRateMs`,
 `replay`, `onError`, `onDisconnect`).
 
+## Composition checkpoints (#1301 Part 2 foundation)
+
+`createInMemoryCheckpointStore` is the foundation contract for durable
+composition execution. It models **per-plan progress** — distinct from
+`CompositionExecutionLog` which models per-side-effect dedupe. The two
+coexist: the execution log keeps step-level idempotency; the checkpoint
+store enables coarse-grained plan resume.
+
+```typescript
+import { createInMemoryCheckpointStore, type CheckpointSnapshot } from "@koi/proactive";
+
+const store = createInMemoryCheckpointStore();
+
+// After step k completes, before moving to k+1:
+await store.save({
+  executionId: "comp-42",
+  planHash: hashPlan(plan),
+  nextStepIndex: k + 1,
+  stepResults: [...resultsSoFar, latestResult],
+  phase: "in_progress",
+  savedAt: now(),
+});
+
+// On restart, before the step loop:
+const snap = await store.load("comp-42");
+const start = snap !== undefined && snap.planHash === hashPlan(plan) ? snap.nextStepIndex : 0;
+```
+
+`save` validates invariants synchronously and throws on caller bugs:
+empty `executionId`/`planHash`, negative or non-integer
+`nextStepIndex`, or `stepResults.length !== nextStepIndex`.
+
+The interface returns `void | Promise<void>` and `CheckpointSnapshot
+| undefined | Promise<...>` so durable backends (Temporal, SQLite,
+Redis) implement the same contract. Executor wiring and a Temporal-backed
+implementation are tracked as separate slices of #1301 Part 2.
+
 ## Future Phases (out of scope here)
 
 Phase 3a tracker (this issue): sleep / wake / cron tools.
