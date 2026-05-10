@@ -40,8 +40,18 @@ function defaultSleep(delayMs: number): Promise<void> {
   });
 }
 
+/**
+ * Send callback. The optional second argument is an AbortSignal that
+ * `sendWithRetry` aborts if a per-attempt timeout fires; cooperative
+ * transports MUST honor it to avoid duplicate deliveries when a slow
+ * (but not dead) attempt eventually completes after the retry succeeds.
+ * Implementations that ignore the signal must be idempotent OR opt out
+ * of `attemptTimeoutMs`.
+ */
+export type SendFn<T> = (message: T, signal?: AbortSignal) => Promise<void>;
+
 export async function sendWithRetry<T>(
-  send: (message: T) => Promise<void>,
+  send: SendFn<T>,
   message: T,
   options: RetrySendOptions = {},
 ): Promise<RetrySendResult> {
@@ -53,26 +63,19 @@ export async function sendWithRetry<T>(
 
   async function callOnce(): Promise<void> {
     if (attemptTimeoutMs === undefined || attemptTimeoutMs <= 0) {
-      await (send as (m: T, signal?: AbortSignal) => Promise<void>)(message);
+      await send(message);
       return;
     }
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        // Cancel the in-flight send before rejecting so the original attempt
-        // doesn't keep running and produce a duplicate delivery if it later
-        // succeeds. send implementations that ignore the signal still get
-        // retried, but at least cooperative transports stop.
         controller.abort();
         reject(new Error(`send attempt timed out after ${attemptTimeoutMs}ms`));
       }, attemptTimeoutMs);
     });
     try {
-      await Promise.race([
-        (send as (m: T, signal?: AbortSignal) => Promise<void>)(message, controller.signal),
-        timeout,
-      ]);
+      await Promise.race([send(message, controller.signal), timeout]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
