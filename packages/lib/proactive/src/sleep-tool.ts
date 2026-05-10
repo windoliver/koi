@@ -144,8 +144,7 @@ async function reconcileSleepEntries(
     live = new Set(
       tasks
         .filter(
-          (t: { readonly status: string }) =>
-            t.status === "pending" || t.status === "running",
+          (t: { readonly status: string }) => t.status === "pending" || t.status === "running",
         )
         .map((t: { readonly id: unknown }) => String(t.id)),
     );
