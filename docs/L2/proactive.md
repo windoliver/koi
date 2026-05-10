@@ -456,7 +456,7 @@ Routing rules:
 | Priority | Routes to | Rate-limited | Quiet-hours gated |
 |---|---|---|---|
 | `urgent` | every channel in parallel; success if at least one delivered | no — bypasses cap and does not consume window capacity | no |
-| `high` | `preferredChannel` if configured, else first channel by Map insertion order | yes — counted against the sliding 1-hour cap | no |
+| `high` | preferred channel first; on failure, walks remaining channels in Map insertion order; first success wins | yes — exactly 1 slot per send call regardless of attempts | no |
 | `normal` | same as `high` | yes | yes — see Quiet hours below |
 | `low` | same as `high` | yes | no (inbox routing is a separate Phase 4 follow-up) |
 
@@ -491,3 +491,19 @@ windows are supported (e.g. 22→6). Suppressed sends return
 limit window. Validation runs at factory construction — partial config
 (only one bound set), out-of-range hours, or invalid IANA timezones
 throw immediately.
+
+### High fallback (Phase 4)
+
+`high` priority survives a single-channel failure. Delivery walks
+channels sequentially — preferred first if configured, then remaining
+channels in Map insertion order. The first adapter that resolves
+without throwing wins; later channels are not attempted. If every
+channel throws, the result is `{ ok: false, reason: "all_failed",
+failures: [...] }` with failures listed in attempt order.
+
+Rate limit: exactly one slot is consumed per `send()` call regardless
+of how many adapters the fallback walks. The slot is refunded if every
+attempt fails (Phase 3 invariant).
+
+`normal` and `low` retain single-attempt routing — there is no
+fallback for those priorities.
