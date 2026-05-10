@@ -12,9 +12,10 @@ import type {
   Tool,
   TurnContext,
 } from "@koi/core";
-import { isAttachResult, toolToken } from "@koi/core";
+import { harnessId, isAttachResult, toolToken } from "@koi/core";
 import type { HarnessScheduler } from "@koi/harness-scheduler";
 import type { LongRunningHarness, SessionLease } from "@koi/long-running";
+import { EMPTY_TASK_BOARD, ZERO_METRICS } from "@koi/long-running";
 import { createAutonomousAgent } from "./autonomous.js";
 
 describe("@koi/autonomous", () => {
@@ -262,7 +263,13 @@ function createHarnessStub(overrides: Partial<LongRunningHarness> = {}): LongRun
     completeTask: notImplemented as LongRunningHarness["completeTask"],
     failTask: notImplemented as LongRunningHarness["failTask"],
     dispose: async (_lease?: SessionLease) => ok(),
-    status: notImplemented as LongRunningHarness["status"],
+    status: () => ({
+      harnessId: harnessId("harness-1"),
+      phase: "idle",
+      currentSessionSeq: 0,
+      taskBoard: EMPTY_TASK_BOARD,
+      metrics: ZERO_METRICS,
+    }),
     createMiddleware: () => middleware("harness"),
     ...overrides,
   };

@@ -1,22 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import type { HarnessStatus, KoiError } from "@koi/core";
 import { createCompletionNotifier } from "./completion-notifier.js";
+import { EMPTY_TASK_BOARD, ZERO_METRICS } from "./snapshot-builder.js";
 
 const makeStatus = (phase: HarnessStatus["phase"]): HarnessStatus =>
   ({
     harnessId: "h-123",
-    agentId: "a-123",
     phase,
-    updatedAt: 1_717_171_717,
-    metrics: {
-      turnCount: 4,
-      toolCallCount: 0,
-      modelCallCount: 0,
-      approxPromptTokens: 0,
-      approxCompletionTokens: 0,
-      lastSequenceProcessed: 0,
-    },
-    keyArtifacts: [],
+    currentSessionSeq: 4,
+    taskBoard: EMPTY_TASK_BOARD,
+    metrics: ZERO_METRICS,
   }) as HarnessStatus;
 
 describe("createCompletionNotifier", () => {
