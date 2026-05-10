@@ -226,4 +226,55 @@ describe("createProactiveDelivery", () => {
     const r = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
     expect(r.ok).toBe(true);
   });
+
+  test("adapter throw on single channel → all_failed without propagation", async () => {
+    const slack = stubAdapter("slack", async () => { throw new Error("network"); });
+    const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
+
+    const result = await delivery.send({
+      priority: "normal",
+      content: [{ kind: "text", text: "hi" }],
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "all_failed",
+      failures: [{ channel: "slack", error: "network" }],
+    });
+  });
+
+  test("two concurrent sends at cap=1 — exactly one passes", async () => {
+    const t = 1_700_000_000_000;
+    let releaseA: (() => void) | undefined;
+    const blocker = new Promise<void>((resolve) => { releaseA = resolve; });
+    let inFlight = 0;
+    const slack = stubAdapter("slack", async () => {
+      inFlight += 1;
+      try {
+        await blocker;
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { maxNotificationsPerHour: 1 },
+      now: () => t,
+    });
+
+    const p1 = delivery.send({ priority: "normal", content: [{ kind: "text", text: "1" }] });
+    const p2 = delivery.send({ priority: "normal", content: [{ kind: "text", text: "2" }] });
+
+    // Wait one microtask so both reservations are evaluated synchronously.
+    await Promise.resolve();
+    expect(inFlight).toBe(1);
+
+    releaseA?.();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    const ok = [r1, r2].filter((r) => r.ok);
+    const blocked = [r1, r2].filter((r) => !r.ok);
+    expect(ok).toHaveLength(1);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toEqual({ ok: false, reason: "rate_limited" });
+  });
 });
