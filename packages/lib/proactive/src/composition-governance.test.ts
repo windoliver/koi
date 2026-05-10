@@ -579,7 +579,7 @@ describe("createCompositionExecutor governance integration", () => {
           },
         }),
       ),
-    ).toBe("*|test|threshold_crossed|errors|above");
+    ).toBe("*|test|threshold_crossed|errors|above|0");
     // Different sensor on same moment kind → different bucket.
     expect(
       defaultPatternKey(
@@ -611,6 +611,32 @@ describe("createCompositionExecutor governance integration", () => {
         trig({ moment: { kind: "task_terminal", taskId: "tk" as never, outcome: "completed" } }),
       ),
     ).toBe("*|test|task_terminal|completed");
+  });
+
+  test("warning and critical bands on the same sensor get distinct novelty keys", () => {
+    const warning = defaultPatternKey(
+      trig({
+        moment: {
+          kind: "threshold_crossed",
+          sensor: "error_rate",
+          value: 0.4,
+          limit: 0.3,
+          direction: "above",
+        },
+      }),
+    );
+    const critical = defaultPatternKey(
+      trig({
+        moment: {
+          kind: "threshold_crossed",
+          sensor: "error_rate",
+          value: 0.4,
+          limit: 0.9,
+          direction: "above",
+        },
+      }),
+    );
+    expect(warning).not.toBe(critical);
   });
 
   test("partial commit (notify_user then unsupported step) still consumes session + novelty budget", async () => {

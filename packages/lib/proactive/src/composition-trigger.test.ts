@@ -14,7 +14,7 @@ describe("mapSystemSignalToCompositionTrigger", () => {
     } as const satisfies SystemSignal;
 
     expect(mapSystemSignalToCompositionTrigger(signal)).toEqual({
-      id: "governance:error_rate:123",
+      id: "governance:error_rate:above:0.2:123",
       source: "governance",
       confidence: 1,
       moment: {
@@ -30,6 +30,40 @@ describe("mapSystemSignalToCompositionTrigger", () => {
     });
   });
 
+  test("two thresholds on same sensor at same emittedAt produce distinct trigger IDs", () => {
+    const warning = {
+      kind: "governance",
+      sensor: "error_rate",
+      value: 0.4,
+      limit: 0.3,
+      direction: "above",
+      emittedAt: 200,
+    } as const satisfies SystemSignal;
+    const critical = {
+      kind: "governance",
+      sensor: "error_rate",
+      value: 0.4,
+      limit: 0.6,
+      direction: "above",
+      emittedAt: 200,
+    } as const satisfies SystemSignal;
+    const reverse = {
+      kind: "governance",
+      sensor: "error_rate",
+      value: 0.4,
+      limit: 0.3,
+      direction: "below",
+      emittedAt: 200,
+    } as const satisfies SystemSignal;
+
+    const idA = mapSystemSignalToCompositionTrigger(warning)?.id;
+    const idB = mapSystemSignalToCompositionTrigger(critical)?.id;
+    const idC = mapSystemSignalToCompositionTrigger(reverse)?.id;
+    expect(idA).not.toBe(idB);
+    expect(idA).not.toBe(idC);
+    expect(idB).not.toBe(idC);
+  });
+
   test("maps governance threshold crossings without special suggestions", () => {
     const signal = {
       kind: "governance",
@@ -41,7 +75,7 @@ describe("mapSystemSignalToCompositionTrigger", () => {
     } as const satisfies SystemSignal;
 
     expect(mapSystemSignalToCompositionTrigger(signal)).toMatchObject({
-      id: "governance:cpu_usage:124",
+      id: "governance:cpu_usage:above:0.8:124",
       suggestedCapabilities: [],
       context: {},
     });
