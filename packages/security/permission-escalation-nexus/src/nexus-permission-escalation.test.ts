@@ -446,4 +446,61 @@ describe("createNexusPermissionEscalation", () => {
       reason: "permission escalation timed out",
     });
   });
+
+  test("reissuing the same requestId observes an already-written decision", async () => {
+    let sent = 0;
+    const transport: NexusTransport = {
+      kind: "http",
+      call: async <T>(method: string, params: Record<string, unknown>) => {
+        if (method === "ipc.send") {
+          sent += 1;
+          return ok({ id: `msg-${sent}`, ...params } as T);
+        }
+        if (method === "ipc.list") {
+          return ok({
+            messages: [
+              {
+                id: "decision-1",
+                from: "agent:leader",
+                to: "agent:worker",
+                kind: "response",
+                type: "permission_escalation_decision",
+                payload: {
+                  requestId: "req-same",
+                  workerAgentId: "agent:worker",
+                  coordinatorAgentId: "agent:leader",
+                  decision: { decision: "approved", grantedGrants: ["fs:write"] },
+                  resolvedAt: 1_000,
+                },
+                createdAt: "2026-05-09T00:00:00.000Z",
+              },
+            ],
+          } as T);
+        }
+        throw new Error(`unexpected method ${method}`);
+      },
+      close: () => {},
+    };
+
+    const escalation = createNexusPermissionEscalation({
+      transport,
+      agentId: "agent:worker" as never,
+      coordinatorAgentId: "agent:leader" as never,
+      pollIntervalMs: 0,
+      clock: () => 0,
+    });
+
+    const req = {
+      requestId: "req-same",
+      agentId: "agent:worker" as never,
+      requestedGrants: ["fs:write"],
+      purposeStatement: "resume test",
+      expiresAt: 60_000,
+    };
+
+    await expect(escalation.request(req)).resolves.toEqual({
+      decision: "approved",
+      grantedGrants: ["fs:write"],
+    });
+  });
 });

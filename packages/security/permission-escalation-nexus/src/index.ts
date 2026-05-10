@@ -2,7 +2,10 @@ export type {
   NexusPermissionEscalationConfig,
   NexusPermissionEscalationCoordinatorConfig,
 } from "./config.js";
-export { validateNexusPermissionEscalationConfig } from "./config.js";
+export {
+  validateNexusPermissionEscalationConfig,
+  validateNexusPermissionEscalationCoordinatorConfig,
+} from "./config.js";
 export type {
   PermissionEscalationRecord,
   PermissionEscalationDecisionRecord,
