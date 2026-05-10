@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 220 workspace packages
+- 221 workspace packages
 - 11 package families
-- 220 packages with local test files
-- 196 packages with dedicated package docs
+- 221 packages with local test files
+- 197 packages with dedicated package docs
 
 ## Family Summary
 
@@ -22,7 +22,7 @@ Current snapshot:
 | net | 10 | 91 | 10 |
 | sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
-| security | 20 | 109 | 20 |
+| security | 21 | 114 | 21 |
 | ui | 2 | 57 | 2 |
 
 ## Package Inventory
@@ -254,7 +254,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/scheduler-provider` (packages/sched/scheduler-provider) - Agent-facing tools for scheduler interaction (9 tools via SchedulerComponent). Tests: 1. Docs: docs/L2/scheduler-provider.md.
 - `@koi/verified-loop` (packages/sched/verified-loop) - External verification loop — iterate agent against objective gates instead of LLM self-assessment. Tests: 5. Docs: docs/L2/verified-loop.md.
 
-## security (20)
+## security (21)
 
 - `@koi/audit-sink-ndjson` (packages/security/audit-sink-ndjson) - Buffered NDJSON file sink for @koi/middleware-audit. Tests: 1. Docs: docs/L2/audit-sink-ndjson.md.
 - `@koi/audit-sink-nexus` (packages/security/audit-sink-nexus) - Nexus-backed AuditSink — batched writes with interval and size triggers. Tests: 2. Docs: docs/L2/audit-sink-nexus.md.
@@ -270,6 +270,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/middleware-intent-capsule` (packages/security/middleware-intent-capsule) - Cryptographic mandate binding middleware — Ed25519 session signing for OWASP ASI01 goal-hijack defense. Tests: 2. Docs: docs/L2/middleware-intent-capsule.md.
 - `@koi/middleware-permissions` (packages/security/middleware-permissions) - Tool-level access control middleware with pattern-based classifier, denial tracking, and human-in-the-loop approval. Tests: 13. Docs: docs/L2/middleware-permissions.md.
 - `@koi/nexus-delegation` (packages/security/nexus-delegation) - Nexus-backed DelegationComponent: per-child API key grant/revoke over Nexus REST. L2.. Tests: 6. Docs: docs/L2/nexus-delegation.md.
+- `@koi/permission-escalation-nexus` (packages/security/permission-escalation-nexus) - Nexus-backed coordinator-to-worker permission escalation transport. Tests: 5. Docs: docs/L2/permission-escalation-nexus.md.
 - `@koi/permissions` (packages/security/permissions) - Rule-based tool access control implementing PermissionBackend. Tests: 7. Docs: docs/L2/permissions.md.
 - `@koi/permissions-nexus` (packages/security/permissions-nexus) - Nexus-backed permission persistence, cross-node sync, and delegation hooks. Tests: 4. Docs: docs/L2/permissions-nexus.md.
 - `@koi/redaction` (packages/security/redaction) - Mask secrets (API keys, credentials, tokens) in logs with 13 built-in pattern detectors. Tests: 13. Docs: docs/L2/redaction.md.
