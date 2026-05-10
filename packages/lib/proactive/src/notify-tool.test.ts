@@ -87,7 +87,10 @@ describe("notify tool", () => {
     await tool.execute({ channel: "slack", text: "hi" });
 
     expect(sent).toHaveLength(1);
-    expect(Object.keys(sent[0]!).sort()).toEqual(["content"]);
+    const first = sent[0];
+    expect(first).toBeDefined();
+    if (first === undefined) return;
+    expect(Object.keys(first).sort()).toEqual(["content"]);
   });
 
   test("returns ok:false when adapter.send rejects, never throws", async () => {

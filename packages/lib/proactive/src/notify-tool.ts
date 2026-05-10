@@ -43,7 +43,10 @@ export function createNotifyTool(config: NotifyToolConfig): Tool {
     execute: async (args: JsonObject): Promise<unknown> => {
       const parsed = schema.safeParse(args);
       if (!parsed.success) {
-        return { ok: false, error: parsed.error.message };
+        return {
+          ok: false,
+          error: parsed.error.issues.map((i) => i.message).join("; "),
+        };
       }
       const { channel, text, thread_id, metadata } = parsed.data;
       const adapter = resolveChannel(channel);
@@ -51,13 +54,13 @@ export function createNotifyTool(config: NotifyToolConfig): Tool {
         return {
           ok: false,
           error: `unknown channel: ${channel}`,
-          available_channels: [...names()].sort(),
+          available_channels: names().toSorted(),
         };
       }
       const message: OutboundMessage = {
         content: [{ kind: "text", text }],
         ...(thread_id !== undefined ? { threadId: thread_id } : {}),
-        ...(metadata !== undefined ? { metadata: metadata as JsonObject } : {}),
+        ...(metadata !== undefined ? { metadata } : {}),
       };
       try {
         await adapter.send(message);
