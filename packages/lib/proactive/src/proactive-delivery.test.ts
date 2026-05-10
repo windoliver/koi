@@ -287,6 +287,16 @@ describe("createProactiveDelivery", () => {
     });
   });
 
+  test("throws when only quietHoursStart is set", () => {
+    const slack = stubAdapter("slack", async () => {});
+    expect(() =>
+      createProactiveDelivery({
+        channels: new Map([["slack", slack]]),
+        preferences: { quietHoursStart: 22 },
+      }),
+    ).toThrow(/quietHoursStart and quietHoursEnd must both be set/);
+  });
+
   test("two concurrent sends at cap=1 — exactly one passes", async () => {
     const t = 1_700_000_000_000;
     let releaseA: (() => void) | undefined;
