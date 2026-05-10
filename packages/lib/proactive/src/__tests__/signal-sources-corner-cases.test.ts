@@ -38,7 +38,8 @@ function controllerFromReadings(readings: GovernanceSnapshot["readings"]): Gover
       violations: [],
     }),
     variables: () => new Map(),
-    reading: (name) => readings.find((r) => r.name === name),
+    reading: (name: string) =>
+      readings.find((r: GovernanceSnapshot["readings"][number]) => r.name === name),
   };
 }
 
@@ -157,7 +158,8 @@ describe("governance source — corner cases", () => {
       record: async () => {},
       snapshot: async () => ({ timestamp: 0, readings, healthy: true, violations: [] }),
       variables: () => new Map(),
-      reading: (name) => readings.find((r) => r.name === name),
+      reading: (name: string) =>
+        readings.find((r: GovernanceSnapshot["readings"][number]) => r.name === name),
     };
 
     const seen: SystemSignal[] = [];

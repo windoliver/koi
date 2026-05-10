@@ -48,7 +48,9 @@ function findMatchingReadings(
   readings: GovernanceSnapshot["readings"],
   threshold: GovernanceThreshold,
 ): SensorReading[] {
-  return readings.filter((reading) => matchesAnyPathFilter(reading.name, [threshold.sensor]));
+  return readings.filter((reading: SensorReading) =>
+    matchesAnyPathFilter(reading.name, [threshold.sensor]),
+  );
 }
 
 function isAlerting(reading: SensorReading | undefined, threshold: GovernanceThreshold): boolean {

@@ -1,5 +1,5 @@
 import type { ProcessState, SystemSignal, SystemSignalSource, TransitionReason } from "@koi/core";
-import { agentId, zoneId } from "@koi/core";
+import { agentId, VALID_TRANSITIONS, zoneId } from "@koi/core";
 import {
   createAsyncEmitter,
   createSubscriptionController,
@@ -27,15 +27,6 @@ const VALID_PROCESS_STATES: ReadonlySet<ProcessState> = new Set([
   "idle",
   "terminated",
 ]);
-
-const VALID_TRANSITIONS: Readonly<Record<ProcessState, readonly ProcessState[]>> = Object.freeze({
-  created: ["running", "terminated"] as const,
-  running: ["waiting", "suspended", "idle", "terminated"] as const,
-  waiting: ["running", "suspended", "terminated"] as const,
-  suspended: ["running", "terminated"] as const,
-  idle: ["running", "terminated"] as const,
-  terminated: [] as const,
-});
 
 function isProcessState(value: string): value is ProcessState {
   return VALID_PROCESS_STATES.has(value as ProcessState);

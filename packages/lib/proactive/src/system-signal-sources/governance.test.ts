@@ -18,7 +18,8 @@ function createController(readings: GovernanceSnapshot["readings"]): GovernanceC
       violations: [],
     }),
     variables: () => new Map(),
-    reading: (name) => readings.find((reading) => reading.name === name),
+    reading: (name: string) =>
+      readings.find((reading: GovernanceSnapshot["readings"][number]) => reading.name === name),
   };
 }
 
