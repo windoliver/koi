@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   type AgentDefinition,
-  DEFAULT_DELIVERY_POLICY,
   type KoiError,
   RETRYABLE_DEFAULTS,
   type SystemSignal,
