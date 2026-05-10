@@ -164,6 +164,42 @@ describe("sendWithRetry", () => {
     }
   });
 
+  it("aborts an in-flight attempt via the signal when the per-attempt timeout fires", async () => {
+    const sawAbort: boolean[] = [];
+    let attempts = 0;
+    const result = await sendWithRetry(
+      async (_msg, signal) => {
+        attempts += 1;
+        // Abort-aware transport: resolve early when the signal aborts so the
+        // retry loop can proceed without leaking the in-flight promise.
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            sawAbort.push(true);
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            sawAbort.push(true);
+            resolve();
+          });
+        });
+        // After abort, throw so the loop treats this as a transient failure.
+        throw new Error("aborted");
+      },
+      "msg",
+      {
+        maxRetries: 1,
+        attemptTimeoutMs: 3,
+        delayMs: 0,
+        isTransientError: () => true,
+      },
+    );
+
+    expect(attempts).toBe(2);
+    expect(sawAbort.length).toBe(2);
+    expect(result.ok).toBe(false);
+  });
+
   it("does not retry by default — caller must opt in via isTransientError", async () => {
     let attempts = 0;
 

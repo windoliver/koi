@@ -453,6 +453,125 @@ describe("reconcileTaskBoard", () => {
     expect(result.actions).toMatchObject([{ kind: "clearDelegation" }]);
   });
 
+  test("a fresh reconcile after applying clearDelegation emits the redispatch", () => {
+    // Pass 1: stale delegation present -> clearDelegation only.
+    const board = createTaskBoard().add({
+      id: taskItemId("recover"),
+      subject: "needs redispatch",
+      description: "previously delegated to dead worker",
+      metadata: { delegation: "spawn", agentType: "coder", delegatedTo: "worker-dead" },
+    });
+    if (!board.ok) throw board.error;
+
+    const first = reconcileTaskBoard(serializeBoard(board.value), {
+      isDelegationStale: () => true,
+    });
+    expect(first.actions).toMatchObject([{ kind: "clearDelegation" }]);
+
+    // Pass 2: caller applied the clearDelegation by removing the marker and
+    // bumping the version. Now the same task is a fresh dispatch candidate.
+    const snap = serializeBoard(board.value);
+    const cleared = {
+      ...snap,
+      items: snap.items.map((t) =>
+        t.id === taskItemId("recover")
+          ? {
+              ...t,
+              version: t.version + 1,
+              metadata: { delegation: "spawn", agentType: "coder" },
+            }
+          : t,
+      ),
+    };
+    const second = reconcileTaskBoard(cleared as never);
+    expect(second.actions).toMatchObject([
+      { kind: "dispatch", taskId: taskItemId("recover"), agentType: "coder" },
+    ]);
+  });
+
+  test("killed ancestor with mixed pending and in_progress descendants", () => {
+    const board = createTaskBoard().addAll([
+      { id: taskItemId("root"), subject: "root", description: "root" },
+      { id: taskItemId("pend"), subject: "pending child", description: "pending" },
+      { id: taskItemId("live"), subject: "live child", description: "live" },
+      { id: taskItemId("orphan-live"), subject: "ownerless live", description: "orphan" },
+    ]);
+    if (!board.ok) throw board.error;
+
+    const assignedLive = board.value.assign(taskItemId("live"), agentId("worker-live"));
+    if (!assignedLive.ok) throw assignedLive.error;
+    const killed = assignedLive.value.kill(taskItemId("root"));
+    if (!killed.ok) throw killed.error;
+
+    const snap = serializeBoard(killed.value);
+    const patched = {
+      ...snap,
+      items: snap.items.map((t) => {
+        if (t.id === taskItemId("pend")) return { ...t, dependencies: [taskItemId("root")] };
+        if (t.id === taskItemId("live")) return { ...t, dependencies: [taskItemId("root")] };
+        if (t.id === taskItemId("orphan-live")) {
+          return {
+            ...t,
+            dependencies: [taskItemId("root")],
+            status: "in_progress" as const,
+            assignedTo: undefined,
+            lastAssignedTo: undefined,
+          };
+        }
+        return t;
+      }),
+    };
+
+    const result = reconcileTaskBoard(patched as never);
+    const byKind = (k: string) => result.actions.filter((a) => a.kind === k).map((a) => a.taskId);
+    expect(byKind("cancelDownstream").sort()).toEqual([taskItemId("pend")]);
+    expect(byKind("revokeOwnedDownstream")).toEqual([taskItemId("live")]);
+    expect(byKind("escalateOrphanedDownstream")).toEqual([taskItemId("orphan-live")]);
+    for (const a of result.actions) {
+      if (a.kind === "revokeOwnedDownstream" || a.kind === "cancelDownstream") {
+        expect(a.reason).toBe("upstream-killed");
+      }
+    }
+  });
+
+  test("a 3-node cycle is fully flagged in unorderedTaskIds with no actions emitted", () => {
+    const malformed = {
+      items: [
+        {
+          id: taskItemId("a"),
+          subject: "a",
+          description: "a",
+          dependencies: [taskItemId("c")],
+          status: "pending" as const,
+          version: 1,
+        },
+        {
+          id: taskItemId("b"),
+          subject: "b",
+          description: "b",
+          dependencies: [taskItemId("a")],
+          status: "pending" as const,
+          version: 1,
+        },
+        {
+          id: taskItemId("c"),
+          subject: "c",
+          description: "c",
+          dependencies: [taskItemId("b")],
+          status: "pending" as const,
+          version: 1,
+        },
+      ],
+      results: [],
+    };
+    const result = reconcileTaskBoard(malformed as never);
+    expect(result.unorderedTaskIds.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(result.unorderedTaskIds)).toEqual(
+      new Set([taskItemId("a"), taskItemId("b"), taskItemId("c")]),
+    );
+    expect(result.actions).toEqual([]);
+  });
+
   test("dispatch actions include the task version as an OCC token", () => {
     const board = createTaskBoard().add({
       id: taskItemId("ready"),

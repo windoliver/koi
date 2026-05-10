@@ -473,6 +473,68 @@ describe("@koi/autonomous", () => {
     expect(harnessCalls).toBe(2);
   });
 
+  test("falls through epoch-ordered candidates on STALE_REF until one succeeds", async () => {
+    const calls: Array<SessionLease | undefined> = [];
+    const e1 = { sessionId: "s", epoch: 1 } as unknown as SessionLease;
+    const e3 = { sessionId: "s", epoch: 3 } as unknown as SessionLease;
+    const e5 = { sessionId: "s", epoch: 5 } as unknown as SessionLease;
+    const stale: KoiError = { code: "STALE_REF", message: "stale", retryable: true };
+
+    const harness = createHarnessStub({
+      dispose: async (lease) => {
+        calls.push(lease);
+        if (lease === e5) return { ok: false, error: stale };
+        return ok();
+      },
+    });
+    const scheduler = createSchedulerStub();
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    // Concurrent dispose calls supplying epochs in arbitrary order: [1, 5, 3].
+    // recordLease sorts by epoch desc -> [5, 3, 1]. epoch-5 is poisoned and
+    // returns STALE_REF; the loop falls through to epoch-3, which succeeds.
+    const a = agent.dispose(e1);
+    const b = agent.dispose(e5);
+    const c = agent.dispose(e3);
+    await Promise.all([a, b, c]);
+
+    expect(calls).toEqual([e5, e3]);
+  });
+
+  test("a non-STALE_REF harness error is not retried with the next candidate", async () => {
+    const calls: Array<SessionLease | undefined> = [];
+    const e1 = { sessionId: "s", epoch: 1 } as unknown as SessionLease;
+    const e2 = { sessionId: "s", epoch: 2 } as unknown as SessionLease;
+    const fatal: KoiError = { code: "INTERNAL", message: "boom", retryable: false };
+
+    let releaseScheduler!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseScheduler = resolve;
+    });
+
+    const harness = createHarnessStub({
+      dispose: async (lease) => {
+        calls.push(lease);
+        return { ok: false, error: fatal };
+      },
+    });
+    const scheduler = createSchedulerStub({
+      dispose: async () => {
+        await gate;
+      },
+    });
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    const first = agent.dispose(e1);
+    const second = agent.dispose(e2);
+    releaseScheduler();
+    await expect(first).rejects.toBe(fatal);
+    await expect(second).rejects.toBe(fatal);
+
+    // Only the highest-epoch lease was attempted; non-STALE_REF stops fall-through.
+    expect(calls).toEqual([e2]);
+  });
+
   test("dispose is idempotent", async () => {
     let schedulerDisposals = 0;
     let harnessDisposals = 0;

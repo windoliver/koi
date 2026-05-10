@@ -130,6 +130,39 @@ describe("createCompletionNotifier", () => {
     expect(seen[0]).toBeInstanceOf(AbortSignal);
   });
 
+  it("treats a synchronous throw from send the same as an async rejection", async () => {
+    let calls = 0;
+    const notifier = createCompletionNotifier({
+      send: ((_message: string) => {
+        calls += 1;
+        throw new Error("sync failure");
+      }) as never,
+      retry: {
+        maxRetries: 1,
+        delayMs: 0,
+        isTransientError: () => true,
+      },
+    });
+
+    await expect(notifier.notifyCompleted(makeStatus("completed"))).rejects.toThrow("sync failure");
+    expect(calls).toBe(2);
+  });
+
+  it("awaits a rejecting onSendFailure so the rejection surfaces to the caller", async () => {
+    const notifier = createCompletionNotifier({
+      send: async () => {
+        throw new Error("transport down");
+      },
+      onSendFailure: async () => {
+        throw new Error("sink failed too");
+      },
+    });
+
+    await expect(notifier.notifyCompleted(makeStatus("completed"))).rejects.toThrow(
+      "sink failed too",
+    );
+  });
+
   it("allows custom message formatters", async () => {
     const sent: string[] = [];
     const notifier = createCompletionNotifier({
