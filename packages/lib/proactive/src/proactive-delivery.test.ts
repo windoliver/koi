@@ -716,4 +716,48 @@ describe("createProactiveDelivery", () => {
     await delivery.send({ priority: "low", content: [{ kind: "text", text: "x" }] });
     expect(enqueued[0]?.enqueuedAt).toBe(42);
   });
+
+  test("low inbox sync throw → all_failed with inbox in failures, channel NOT called", async () => {
+    const channelCalls: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      channelCalls.push("slack");
+    });
+    const inbox: InboxSink = {
+      enqueue: () => {
+        throw new Error("disk full");
+      },
+    };
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+    });
+
+    const r = await delivery.send({ priority: "low", content: [{ kind: "text", text: "x" }] });
+    expect(r).toEqual({
+      ok: false,
+      reason: "all_failed",
+      failures: [{ channel: "inbox", error: "disk full" }],
+    });
+    expect(channelCalls).toEqual([]);
+  });
+
+  test("low inbox async reject → all_failed with inbox in failures", async () => {
+    const inbox: InboxSink = {
+      enqueue: async () => {
+        throw new Error("queue full");
+      },
+    };
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+    });
+
+    const r = await delivery.send({ priority: "low", content: [{ kind: "text", text: "x" }] });
+    expect(r).toEqual({
+      ok: false,
+      reason: "all_failed",
+      failures: [{ channel: "inbox", error: "queue full" }],
+    });
+  });
 });
