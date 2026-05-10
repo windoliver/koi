@@ -278,7 +278,7 @@ only behavior — there are no new L0 types here.
 
 | Signal kind | Resulting `CompositionMoment` | Notes |
 |---|---|---|
-| `governance` | `threshold_crossed` | `error_rate` adds `spawn_agent` + `notify_user` capability hints |
+| `governance` | `threshold_crossed` | `error_rate` adds `spawn_agent` + `notify_user` capability hints. Trigger ID format: `governance:<sensor>:<direction>:<limit>:<emittedAt>` — includes `direction` and `limit` so distinct thresholds on the same sensor (e.g. warning `> 0.3` and critical `> 0.9`) produce distinct trigger IDs and do not deduplicate against each other. |
 | `forge_demand` | `capability_gap` | `missing` derived from inner `ForgeTrigger`; signal preserved in `context.forgeDemand` |
 | `schedule` | `task_terminal` | outcome ∈ `completed`/`failed`/`dead_letter`/`cancelled`; only `failed`/`dead_letter` carry follow-up capability hints |
 | `anomaly` (metric-shift kinds) | `frontier_changed` | `error_spike`, `model_latency_anomaly`, `token_spike`, positive `goal_drift`, `tool_rate_exceeded` |
@@ -332,6 +332,14 @@ of these hold:
 - `estimatedCost > policy.maxEstimatedCost` — strict greater-than:
   equal-to-budget does **not** require approval.
 - `policy.requireApprovalOnNovelty && context.isNovel`.
+
+Novelty buckets are computed by `defaultPatternKey`. For
+`threshold_crossed` triggers the key is
+`<agentId>|<source>|threshold_crossed|<sensor>|<direction>|<limit>` —
+**including `limit`** so that warning and critical bands on the same
+sensor (e.g. `error_rate > 0.3` vs `error_rate > 0.9`) do not share
+novelty credit; repeated success on a low-severity warning cannot
+auto-approve a materially different critical-threshold plan.
 
 Default policy: `{ confidenceThreshold: 0.5, maxEstimatedCost: 10,
 requireApprovalOnNovelty: true }`. The rule planner additionally
