@@ -103,6 +103,56 @@ describe("reconcileTaskBoard", () => {
     expect(result.actions).toEqual([]);
   });
 
+  test("emits cancelDownstream for descendants of failed and killed tasks", () => {
+    const board = createTaskBoard().addAll([
+      {
+        id: taskItemId("root"),
+        subject: "broken root",
+        description: "fails",
+      },
+      {
+        id: taskItemId("child"),
+        subject: "blocked child",
+        description: "depends on root",
+        dependencies: [taskItemId("root")],
+        metadata: { delegation: "spawn", agentType: "coder" },
+      },
+      {
+        id: taskItemId("grandchild"),
+        subject: "blocked grandchild",
+        description: "depends on child",
+        dependencies: [taskItemId("child")],
+        metadata: { delegation: "spawn", agentType: "coder" },
+      },
+    ]);
+    if (!board.ok) throw board.error;
+
+    const assigned = board.value.assign(taskItemId("root"), agentId("worker-1"));
+    if (!assigned.ok) throw assigned.error;
+    const failed = assigned.value.fail(taskItemId("root"), {
+      code: "EXTERNAL",
+      message: "boom",
+      retryable: false,
+    });
+    if (!failed.ok) throw failed.error;
+
+    const result = reconcileTaskBoard(serializeBoard(failed.value));
+    expect(result.actions).toEqual([
+      {
+        kind: "cancelDownstream",
+        taskId: taskItemId("child"),
+        blockedBy: taskItemId("root"),
+        reason: "upstream-failed",
+      },
+      {
+        kind: "cancelDownstream",
+        taskId: taskItemId("grandchild"),
+        blockedBy: taskItemId("child"),
+        reason: "upstream-failed",
+      },
+    ]);
+  });
+
   test("clears malformed delegatedTo markers without a staleness predicate", () => {
     const board = createTaskBoard().addAll([
       {

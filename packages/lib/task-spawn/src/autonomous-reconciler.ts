@@ -7,6 +7,12 @@ export type AutonomousReconcileAction =
       readonly kind: "clearDelegation";
       readonly taskId: TaskItemId;
       readonly delegatedTo: string;
+    }
+  | {
+      readonly kind: "cancelDownstream";
+      readonly taskId: TaskItemId;
+      readonly blockedBy: TaskItemId;
+      readonly reason: "upstream-failed" | "upstream-killed";
     };
 
 export interface AutonomousReconcileResult {
@@ -81,6 +87,28 @@ export function reconcileTaskBoard(
     const agentType = delegatedAgentType(task);
     if (agentType === undefined) continue;
     actions.push({ kind: "dispatch", taskId, agentType });
+  }
+
+  const cancelled = new Set<TaskItemId>();
+  for (const taskId of orderedIds) {
+    const task = itemsById.get(taskId);
+    if (task === undefined) continue;
+    if (task.status !== "pending" && task.status !== "in_progress") continue;
+    for (const depId of task.dependencies) {
+      const dep = itemsById.get(depId);
+      if (dep === undefined) continue;
+      const blocked = dep.status === "failed" || dep.status === "killed";
+      const blockedTransitively = cancelled.has(depId);
+      if (!blocked && !blockedTransitively) continue;
+      cancelled.add(taskId);
+      actions.push({
+        kind: "cancelDownstream",
+        taskId,
+        blockedBy: depId,
+        reason: dep.status === "killed" ? "upstream-killed" : "upstream-failed",
+      });
+      break;
+    }
   }
 
   return { actions };
