@@ -68,6 +68,36 @@ describe("createNexusPermissionEscalationCoordinator", () => {
     expect(sent[0]?.type).toBe("permission_escalation_decision");
   });
 
+  test("uses a non-default mailbox prefix when configured", async () => {
+    const methods: string[] = [];
+    const transport: NexusTransport = {
+      kind: "http",
+      call: async <T>(method: string) => {
+        methods.push(method);
+        if (method === "perm.list") {
+          return ok({ messages: [] } as T);
+        }
+        throw new Error(`unexpected method ${method}`);
+      },
+      close: () => {},
+    };
+
+    const coordinator = createNexusPermissionEscalationCoordinator({
+      transport,
+      coordinatorAgentId: "agent:leader" as never,
+      requestMethodPrefix: "perm",
+      clock: () => 0,
+    });
+
+    const count = await coordinator.pollOnce(async () => ({
+      decision: "approved",
+      grantedGrants: ["fs:write"],
+    }));
+
+    expect(count).toBe(0);
+    expect(methods).toEqual(["perm.list"]);
+  });
+
   test("expired requests emit an expired decision without calling resolve", async () => {
     let called = false;
     const sent: Record<string, unknown>[] = [];
@@ -125,6 +155,69 @@ describe("createNexusPermissionEscalationCoordinator", () => {
     expect(count).toBe(1);
     expect(called).toBe(false);
     expect(sent).toHaveLength(1);
+    expect(
+      (sent[0]?.payload as { decision?: PermissionDecision } | undefined)?.decision,
+    ).toEqual({
+      decision: "expired",
+      reason: "permission escalation timed out",
+    });
+  });
+
+  test("slow approvals that expire mid-resolution downgrade to expired", async () => {
+    const sent: Record<string, unknown>[] = [];
+    let now = 0;
+    const transport: NexusTransport = {
+      kind: "http",
+      call: async <T>(method: string, params: Record<string, unknown>) => {
+        if (method === "ipc.list") {
+          return ok({
+            messages: [
+              {
+                id: "msg-slow",
+                from: "agent:worker",
+                to: "agent:leader",
+                kind: "request",
+                type: "permission_escalation_request",
+                payload: {
+                  kind: "permission_escalation_request",
+                  request: {
+                    requestId: "req-slow",
+                    agentId: "agent:worker",
+                    requestedGrants: ["fs:write"],
+                    purposeStatement: "Need to patch a file",
+                    expiresAt: 5,
+                  },
+                  workerAgentId: "agent:worker",
+                  coordinatorAgentId: "agent:leader",
+                  createdAt: 0,
+                  expiresAt: 5,
+                },
+                createdAt: "2026-05-09T00:00:00.000Z",
+              },
+            ],
+          } as T);
+        }
+        if (method === "ipc.send") {
+          sent.push(params);
+          return ok({ id: "decision-slow", ...params } as T);
+        }
+        throw new Error(`unexpected method ${method}`);
+      },
+      close: () => {},
+    };
+
+    const coordinator = createNexusPermissionEscalationCoordinator({
+      transport,
+      coordinatorAgentId: "agent:leader" as never,
+      clock: () => now,
+    });
+
+    const count = await coordinator.pollOnce(async () => {
+      now = 10;
+      return { decision: "approved", grantedGrants: ["fs:write"] };
+    });
+
+    expect(count).toBe(1);
     expect(
       (sent[0]?.payload as { decision?: PermissionDecision } | undefined)?.decision,
     ).toEqual({

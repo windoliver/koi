@@ -145,7 +145,7 @@ export function createNexusPermissionEscalationCoordinator(
     throw new Error(validated.error.message);
   }
 
-  const mailbox = createNexusMailboxClient(config.transport, "ipc");
+  const mailbox = createNexusMailboxClient(config.transport, config.requestMethodPrefix ?? "ipc");
   const clock = config.clock ?? Date.now;
   const seenRequestIds = new Set<string>();
 
@@ -171,11 +171,13 @@ export function createNexusPermissionEscalationCoordinator(
         const decision =
           record.expiresAt <= clock()
             ? timeoutDecision()
-            : await resolve(record.request).catch((error: unknown) =>
-                rejectDecision(
-                  error instanceof Error ? error.message : "permission escalation approval failed",
-                ),
-              );
+            : await resolve(record.request)
+                .then((resolved) => (record.expiresAt <= clock() ? timeoutDecision() : resolved))
+                .catch((error: unknown) =>
+                  rejectDecision(
+                    error instanceof Error ? error.message : "permission escalation approval failed",
+                  ),
+                );
 
         const sendResult = await mailbox.send({
           from: config.coordinatorAgentId,

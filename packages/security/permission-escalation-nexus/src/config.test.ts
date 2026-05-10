@@ -100,6 +100,21 @@ describe("permission-escalation-nexus config", () => {
     }
   });
 
+  test("rejects invalid coordinator option types", () => {
+    const result = validateNexusPermissionEscalationCoordinatorConfig({
+      transport: makeTransport(),
+      coordinatorAgentId: "agent:leader",
+      requestMethodPrefix: "",
+      pollIntervalMs: -1,
+      clock: "now",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBe("config.requestMethodPrefix must be a non-empty string");
+    }
+  });
+
   test("index exports runtime entrypoints", () => {
     expect(typeof createNexusPermissionEscalation).toBe("function");
     expect(typeof createNexusPermissionEscalationCoordinator).toBe("function");
@@ -136,9 +151,12 @@ describe("permission-escalation-nexus config", () => {
     ).toThrow("config.agentId must be provided");
   });
 
-  test("coordinator stub throws not implemented yet and dispose is a no-op", async () => {
+  test("coordinator pollOnce returns 0 on empty inbox and dispose is a no-op", async () => {
     const coordinator = createNexusPermissionEscalationCoordinator({
-      transport: makeTransport(),
+      transport: {
+        call: async () => ({ ok: true, value: { messages: [] } }),
+        close: () => {},
+      } as NexusTransport,
       coordinatorAgentId: "agent:leader" as never,
     });
 
@@ -147,7 +165,7 @@ describe("permission-escalation-nexus config", () => {
         decision: "approved",
         grantedGrants: ["fs:write"],
       })),
-    ).rejects.toThrow("createNexusPermissionEscalationCoordinator is not implemented yet");
+    ).resolves.toBe(0);
 
     expect(() => coordinator.dispose()).not.toThrow();
   });

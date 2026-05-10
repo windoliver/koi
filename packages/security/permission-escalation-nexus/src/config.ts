@@ -13,6 +13,7 @@ export interface NexusPermissionEscalationConfig {
 export interface NexusPermissionEscalationCoordinatorConfig {
   readonly transport: NexusTransport;
   readonly coordinatorAgentId: AgentId;
+  readonly requestMethodPrefix?: string | undefined;
   readonly pollIntervalMs?: number | undefined;
   readonly clock?: (() => number) | undefined;
 }
@@ -29,6 +30,7 @@ interface RawWorkerConfig {
 interface RawCoordinatorConfig {
   readonly transport?: unknown;
   readonly coordinatorAgentId?: unknown;
+  readonly requestMethodPrefix?: unknown;
   readonly pollIntervalMs?: unknown;
   readonly clock?: unknown;
 }
@@ -114,6 +116,12 @@ export function validateNexusPermissionEscalationCoordinatorConfig(
   }
   if (!isNonEmptyString(obj.coordinatorAgentId)) {
     return validationError("config.coordinatorAgentId must be provided");
+  }
+  if (
+    obj.requestMethodPrefix !== undefined &&
+    !isNonEmptyString(obj.requestMethodPrefix)
+  ) {
+    return validationError("config.requestMethodPrefix must be a non-empty string");
   }
   if (!validateOptionalPollIntervalMs(obj.pollIntervalMs)) {
     return validationError("config.pollIntervalMs must be a non-negative number");
