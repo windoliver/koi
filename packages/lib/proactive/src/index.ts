@@ -76,6 +76,7 @@ export {
   type MonitorRecord,
   type MonitorToolState,
 } from "./monitor-tools.js";
+export { createNotifyTool, type NotifyToolConfig } from "./notify-tool.js";
 export {
   createProactiveDelivery,
   type DeliveryFailure,
@@ -106,5 +107,9 @@ export {
   type NexusSignalSourceConfig,
   type NexusSubscribeFn,
 } from "./system-signal-sources/nexus.js";
-export type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types.js";
+export type {
+  ProactiveToolsConfig,
+  ProactiveToolsProviderConfig,
+  ResolveChannel,
+} from "./types.js";
 export { DEFAULT_MAX_SLEEP_MS, DEFAULT_WAKE_MESSAGE } from "./types.js";
