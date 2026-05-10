@@ -17,12 +17,16 @@ export type AutonomousReconcileAction =
       readonly kind: "clearDelegation";
       readonly taskId: TaskItemId;
       readonly delegatedTo: string;
+      /** OCC token — the task.version observed when the action was emitted. */
+      readonly version: number;
     }
   | {
       readonly kind: "cancelDownstream";
       readonly taskId: TaskItemId;
       readonly blockedBy: TaskItemId;
       readonly reason: "upstream-failed" | "upstream-killed";
+      /** OCC token — the task.version observed when the action was emitted. */
+      readonly version: number;
     };
 
 export interface AutonomousReconcileResult {
@@ -86,6 +90,7 @@ export function reconcileTaskBoard(
         kind: "clearDelegation",
         taskId: task.id,
         delegatedTo: marker.delegatedTo,
+        version: task.version,
       });
     } else {
       activeDelegations.add(task.id);
@@ -133,6 +138,7 @@ export function reconcileTaskBoard(
         taskId,
         blockedBy: origin.blockedBy,
         reason: origin.reason,
+        version: task.version,
       });
       break;
     }

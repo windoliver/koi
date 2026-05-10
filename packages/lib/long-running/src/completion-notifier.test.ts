@@ -74,6 +74,34 @@ describe("createCompletionNotifier", () => {
     });
   });
 
+  it("throws when delivery exhausts and no onSendFailure is configured", async () => {
+    const notifier = createCompletionNotifier({
+      send: async () => {
+        throw new Error("permanent webhook offline");
+      },
+    });
+
+    await expect(notifier.notifyCompleted(makeStatus("completed"))).rejects.toThrow(
+      "permanent webhook offline",
+    );
+  });
+
+  it("invokes onSendFailure instead of throwing when configured", async () => {
+    let captured: { ok: false } | undefined;
+    const notifier = createCompletionNotifier({
+      send: async () => {
+        throw new Error("permanent webhook offline");
+      },
+      onSendFailure: (failure) => {
+        captured = failure;
+      },
+    });
+
+    const result = await notifier.notifyCompleted(makeStatus("completed"));
+    expect(result.ok).toBe(false);
+    expect(captured?.ok).toBe(false);
+  });
+
   it("allows custom message formatters", async () => {
     const sent: string[] = [];
     const notifier = createCompletionNotifier({

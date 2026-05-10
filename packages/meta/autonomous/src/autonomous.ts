@@ -66,14 +66,10 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     dispose: (lease?: SessionLease) => {
       if (lease !== undefined) {
         // Only accept a strictly newer lease. SessionLease.epoch is monotonic
-        // per harness, so a stale caller cannot clobber the active session
-        // handle with an older one. A different sessionId means the harness
-        // restarted, so always take the newer one.
-        if (
-          pendingLease === undefined ||
-          pendingLease.sessionId !== lease.sessionId ||
-          lease.epoch > pendingLease.epoch
-        ) {
+        // per harness instance across sessions, so the higher epoch always
+        // wins regardless of sessionId. Equal-epoch leases keep the existing
+        // pending value so a stale caller cannot clobber the active one.
+        if (pendingLease === undefined || lease.epoch > pendingLease.epoch) {
           pendingLease = lease;
         }
       }

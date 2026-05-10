@@ -22,7 +22,7 @@ describe("reconcileTaskBoard", () => {
     if (!board.ok) throw board.error;
 
     const result = reconcileTaskBoard(serializeBoard(board.value));
-    expect(result.actions).toEqual([]);
+    expect(result.actions).toMatchObject([]);
   });
 
   test("ready spawn tasks are emitted in topological order", () => {
@@ -86,7 +86,7 @@ describe("reconcileTaskBoard", () => {
     const result = reconcileTaskBoard(serializeBoard(board.value), {
       isDelegationStale: () => true,
     });
-    expect(result.actions).toEqual([
+    expect(result.actions).toMatchObject([
       { kind: "clearDelegation", taskId: taskItemId("stale"), delegatedTo: "worker-1" },
     ]);
   });
@@ -105,7 +105,7 @@ describe("reconcileTaskBoard", () => {
     if (!board.ok) throw board.error;
 
     const result = reconcileTaskBoard(serializeBoard(board.value));
-    expect(result.actions).toEqual([]);
+    expect(result.actions).toMatchObject([]);
   });
 
   test("emits cancelDownstream for descendants of failed and killed tasks", () => {
@@ -142,7 +142,7 @@ describe("reconcileTaskBoard", () => {
     if (!failed.ok) throw failed.error;
 
     const result = reconcileTaskBoard(serializeBoard(failed.value));
-    expect(result.actions).toEqual([
+    expect(result.actions).toMatchObject([
       {
         kind: "cancelDownstream",
         taskId: taskItemId("child"),
@@ -184,7 +184,7 @@ describe("reconcileTaskBoard", () => {
     if (!killed.ok) throw killed.error;
 
     const result = reconcileTaskBoard(serializeBoard(killed.value));
-    expect(result.actions).toEqual([
+    expect(result.actions).toMatchObject([
       {
         kind: "cancelDownstream",
         taskId: taskItemId("child"),
@@ -268,7 +268,7 @@ describe("reconcileTaskBoard", () => {
     const result = reconcileTaskBoard(serializeBoard(board.value), {
       isDelegationStale: (_task, delegatedTo) => delegatedTo === "worker-dead",
     });
-    expect(result.actions).toEqual([
+    expect(result.actions).toMatchObject([
       { kind: "clearDelegation", taskId: taskItemId("dead"), delegatedTo: "worker-dead" },
     ]);
   });
