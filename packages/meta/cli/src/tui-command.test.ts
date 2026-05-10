@@ -14,13 +14,16 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { EngineEvent } from "@koi/core";
+import type { ApprovalHandler, EngineEvent, PermissionRequest } from "@koi/core";
 import { COMMAND_DEFINITIONS, createEventBatcher, createInitialState, createStore } from "@koi/tui";
 import {
   computeLiveMcpStatus,
   drainEngineStream,
   isSpawnStackActive,
+  mapApprovalDecisionToPermissionDecision,
+  pollPermissionEscalationCoordinatorOnce,
   renderTranscriptMarkdown,
+  resolvePermissionEscalationRequest,
   summarizeRunReport,
 } from "./tui-command.js";
 
@@ -38,6 +41,81 @@ async function* makeErrorStream(): AsyncGenerator<EngineEvent> {
   yield* []; // satisfies generator shape
   throw new Error("engine crash");
 }
+
+const samplePermissionRequest: PermissionRequest = {
+  requestId: "req-1",
+  agentId: "agent:worker" as never,
+  requestedGrants: ["fs:write"],
+  purposeStatement: "Need to patch a file",
+  expiresAt: 60_000,
+};
+
+describe("permission escalation coordinator helpers", () => {
+  test("resolvePermissionEscalationRequest routes through the shared approval handler", async () => {
+    const seen: Array<{ toolId: string; reason: string }> = [];
+    const approvalHandler: ApprovalHandler = async (request) => {
+      seen.push({ toolId: request.toolId, reason: request.reason });
+      return { kind: "allow" };
+    };
+
+    const decision = await resolvePermissionEscalationRequest(
+      approvalHandler,
+      samplePermissionRequest,
+    );
+
+    expect(decision).toEqual({
+      decision: "approved",
+      grantedGrants: ["fs:write"],
+    });
+    expect(seen).toEqual([
+      {
+        toolId: "permission_escalation",
+        reason: "Need to patch a file",
+      },
+    ]);
+  });
+
+  test("mapApprovalDecisionToPermissionDecision narrows grants from modify decisions", () => {
+    expect(
+      mapApprovalDecisionToPermissionDecision(samplePermissionRequest, {
+        kind: "modify",
+        updatedInput: {
+          requestedGrants: [],
+          grantedGrants: [],
+        },
+      }),
+    ).toEqual({
+      decision: "approved",
+      grantedGrants: [],
+    });
+  });
+
+  test("pollPermissionEscalationCoordinatorOnce resolves remote requests through the same handler", async () => {
+    const seen: string[] = [];
+    const approvalHandler: ApprovalHandler = async (request) => {
+      seen.push(request.reason);
+      return { kind: "allow" };
+    };
+    const runtimeHandle = {
+      permissionEscalationMode: "nexus" as const,
+      pollPermissionEscalationCoordinator: async (
+        resolve: (request: PermissionRequest) => Promise<unknown>,
+      ) => {
+        const decision = await resolve(samplePermissionRequest);
+        expect(decision).toEqual({
+          decision: "approved",
+          grantedGrants: ["fs:write"],
+        });
+        return 1;
+      },
+    };
+
+    const count = await pollPermissionEscalationCoordinatorOnce(runtimeHandle, approvalHandler);
+
+    expect(count).toBe(1);
+    expect(seen).toEqual(["Need to patch a file"]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // drainEngineStream — connection status

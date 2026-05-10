@@ -115,6 +115,10 @@ import {
   assertHealthCapable as nexusAssertHealthCapable,
   assertProductionTransport as nexusAssertProductionTransport,
 } from "@koi/nexus-client";
+import {
+  createNexusPermissionEscalation,
+  createNexusPermissionEscalationCoordinator,
+} from "@koi/permission-escalation-nexus";
 import type { CompiledRule, SourcedRule } from "@koi/permissions";
 import {
   compileGlob,
@@ -936,6 +940,24 @@ export interface KoiRuntimeConfig {
    */
   readonly nexusTransport?: import("@koi/nexus-client").NexusTransport | undefined;
   /**
+   * Optional coordinator→worker permission escalation transport selection.
+   * Omitted or `mode: "local"` keeps the existing in-process posture.
+   * `mode: "nexus"` binds the worker and coordinator identities to the
+   * supplied Nexus transport so remote workers can request approvals.
+   */
+  readonly permissionEscalation?:
+    | {
+        readonly mode: "local";
+      }
+    | {
+        readonly mode: "nexus";
+        readonly agentId: AgentId;
+        readonly coordinatorAgentId: AgentId;
+        readonly pollIntervalMs?: number | undefined;
+        readonly requestMethodPrefix?: string | undefined;
+      }
+    | undefined;
+  /**
    * Explicit consumer flags. When BOTH are `false`, runtime skips all Nexus
    * wiring — the fs-only escape hatch that bypasses `assertProductionTransport`.
    * Default: enabled when nexusTransport is set (HTTP-implicit Phase 1 behavior).
@@ -1088,6 +1110,21 @@ export interface KoiRuntimeConfig {
 export interface KoiRuntimeHandle {
   /** The assembled KoiRuntime — call runtime.run(input) to stream a turn. */
   readonly runtime: KoiRuntime;
+  /** Resolved permission escalation transport mode for this runtime. */
+  readonly permissionEscalationMode: "local" | "nexus";
+  /**
+   * Optional coordinator polling hook for Nexus-backed permission escalation.
+   * Present only when `permissionEscalation.mode === "nexus"`; the TUI/host
+   * drives the polling lifecycle in a later assembly layer.
+   */
+  readonly pollPermissionEscalationCoordinator?:
+    | ((resolve: (request: PermissionRequest) => Promise<PermissionDecision>) => Promise<number>)
+    | undefined;
+  /**
+   * Optional cleanup hook for the Nexus permission escalation coordinator.
+   * Present only when `permissionEscalation.mode === "nexus"`.
+   */
+  readonly disposePermissionEscalationCoordinator?: (() => void) | undefined;
   /** Auto-harness handle. Only populated when `config.autoHarness` is provided. */
   readonly autoHarness?: RuntimeAutoHarnessHandle | undefined;
   /**
@@ -1516,6 +1553,56 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // stacks can contribute hookExtras before the hook middleware is built)
   // can thread it into the StackActivationContext.
   const hostId = config.hostId ?? "koi-tui";
+  const permissionEscalationMode = config.permissionEscalation?.mode ?? "local";
+  let pollPermissionEscalationCoordinator:
+    | ((resolve: (request: PermissionRequest) => Promise<PermissionDecision>) => Promise<number>)
+    | undefined;
+  let disposePermissionEscalationCoordinator: (() => void) | undefined;
+  let workerPermissionEscalation: import("@koi/core").PermissionEscalation | undefined;
+
+  if (permissionEscalationMode === "nexus") {
+    if (config.nexusTransport === undefined) {
+      throw new Error("permissionEscalation.mode=nexus requires nexusTransport");
+    }
+    if (config.permissionEscalation === undefined || config.permissionEscalation.mode !== "nexus") {
+      throw new Error("permissionEscalation.mode=nexus requires nexus permissionEscalation config");
+    }
+
+    nexusAssertProductionTransport(config.nexusTransport);
+    const workerConfig = config.permissionEscalation;
+    workerPermissionEscalation = createNexusPermissionEscalation({
+      transport: config.nexusTransport,
+      agentId: workerConfig.agentId,
+      coordinatorAgentId: workerConfig.coordinatorAgentId,
+      ...(workerConfig.pollIntervalMs !== undefined
+        ? { pollIntervalMs: workerConfig.pollIntervalMs }
+        : {}),
+      ...(workerConfig.requestMethodPrefix !== undefined
+        ? { requestMethodPrefix: workerConfig.requestMethodPrefix }
+        : {}),
+    });
+
+    const coordinator = createNexusPermissionEscalationCoordinator({
+      transport: config.nexusTransport,
+      coordinatorAgentId: workerConfig.coordinatorAgentId,
+      ...(workerConfig.pollIntervalMs !== undefined
+        ? { pollIntervalMs: workerConfig.pollIntervalMs }
+        : {}),
+      ...(workerConfig.requestMethodPrefix !== undefined
+        ? { requestMethodPrefix: workerConfig.requestMethodPrefix }
+        : {}),
+    });
+    pollPermissionEscalationCoordinator = (resolve) => coordinator.pollOnce(resolve);
+
+    let coordinatorDisposed = false;
+    disposePermissionEscalationCoordinator = () => {
+      if (coordinatorDisposed) {
+        return;
+      }
+      coordinatorDisposed = true;
+      coordinator.dispose();
+    };
+  }
 
   // --- Optional config hot-reload (log-only; guarded by KOI_CONFIG_PATH) ---
   const configHotReload = await setupConfigHotReload();
@@ -1690,6 +1777,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     ...(config.skillsProgressive === true ? { skillsProgressive: true } : {}),
     ...(config.mcpOAuthChannel !== undefined ? { mcpOAuthChannel: config.mcpOAuthChannel } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
+    ...(workerPermissionEscalation !== undefined
+      ? { permissionEscalation: workerPermissionEscalation }
+      : {}),
     approvalHandler,
     agentId: precomputedAgentId,
     modelName,
@@ -4443,6 +4533,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     let sharedRuntimeDisposed = false;
     const wrappedDispose = async (): Promise<void> => {
       await engineDispose();
+      disposePermissionEscalationCoordinator?.();
       // Fire manifest-middleware cleanup in reverse registration
       // order, skipping hooks that already ran successfully. Each
       // surviving hook is awaited so audit sinks' final flush +
@@ -4518,6 +4609,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     handleOwnershipTransferred = true;
     return {
       runtime: wrappedRuntime,
+      permissionEscalationMode,
+      pollPermissionEscalationCoordinator,
+      disposePermissionEscalationCoordinator,
       autoHarness:
         sharedRuntimeHandle?.autoHarness !== undefined &&
         installedAutoHarnessMiddleware !== undefined
@@ -4951,6 +5045,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }`,
         );
       }
+    }
+    try {
+      disposePermissionEscalationCoordinator?.();
+    } catch (disposeErr) {
+      console.warn(
+        `[koi/${hostId}] permission escalation coordinator cleanup failed during assembly unwind: ${
+          disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+        }`,
+      );
     }
     throw assemblyErr;
   }

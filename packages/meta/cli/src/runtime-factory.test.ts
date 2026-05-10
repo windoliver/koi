@@ -189,6 +189,37 @@ describe("createKoiRuntime — assembly", () => {
     expect(runtimeHandle.runtime).toBeDefined();
   });
 
+  test("defaults to local escalation when no nexus escalation config is provided", async () => {
+    runtimeHandle = await createKoiRuntime(makeConfig());
+    expect(runtimeHandle.permissionEscalationMode).toBe("local");
+    expect(runtimeHandle.pollPermissionEscalationCoordinator).toBeUndefined();
+  });
+
+  test("uses nexus escalation when nexus escalation config is provided", async () => {
+    runtimeHandle = await createKoiRuntime(
+      makeConfig({
+        nexusTransport: {
+          kind: "http",
+          call: async () => ({ ok: true, value: { messages: [] } }),
+          health: async () => ({
+            ok: true,
+            value: { status: "ok", version: "v1", latencyMs: 1, probed: [] },
+          }),
+          close: () => {},
+        } as never,
+        permissionEscalation: {
+          mode: "nexus",
+          agentId: "agent:worker" as never,
+          coordinatorAgentId: "agent:leader" as never,
+        },
+      }),
+    );
+
+    expect(runtimeHandle.permissionEscalationMode).toBe("nexus");
+    expect(typeof runtimeHandle.pollPermissionEscalationCoordinator).toBe("function");
+    expect(typeof runtimeHandle.disposePermissionEscalationCoordinator).toBe("function");
+  });
+
   test("passes autoHarness config through to createRuntime and preserves approval gating", async () => {
     let deployed = false;
     runtimeHandle = await createKoiRuntime({
