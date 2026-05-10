@@ -181,7 +181,11 @@ export function defaultPatternKey(
       triggerKey = `${agentKey}|${trigger.source}|capability_gap|${m.missing}`;
       break;
     case "threshold_crossed":
-      triggerKey = `${agentKey}|${trigger.source}|threshold_crossed|${m.sensor}|${m.direction}`;
+      // Include `limit` so warning and critical bands on the same sensor
+      // (e.g. `error_rate > 0.3` vs `error_rate > 0.9`) do NOT share novelty
+      // credit. Without it, repeated success on a low-severity warning can
+      // auto-approve a materially different critical-threshold plan later.
+      triggerKey = `${agentKey}|${trigger.source}|threshold_crossed|${m.sensor}|${m.direction}|${String(m.limit)}`;
       break;
     case "pattern_matched":
       triggerKey = `${agentKey}|${trigger.source}|pattern_matched|${m.patternId}`;

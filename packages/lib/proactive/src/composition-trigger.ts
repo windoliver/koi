@@ -110,8 +110,14 @@ function metricShiftFromAnomaly(
 function mapGovernanceSignal(
   signal: Extract<SystemSignal, { kind: "governance" }>,
 ): CompositionTrigger {
+  // Identity must include `direction` and `limit`. A single sensor can have
+  // multiple thresholds (warning + critical bands, paired above/below
+  // windows). Two distinct thresholds firing in the same poll share the
+  // same `emittedAt`, so without these fields they collapse to one trigger
+  // ID and the executor's idempotency layer treats the critical alert as a
+  // replay of the warning.
   return {
-    id: `governance:${signal.sensor}:${String(signal.emittedAt)}`,
+    id: `governance:${signal.sensor}:${signal.direction}:${String(signal.limit)}:${String(signal.emittedAt)}`,
     source: "governance",
     confidence: 1,
     moment: {
