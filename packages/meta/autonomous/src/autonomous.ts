@@ -65,7 +65,17 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     providers: () => providers,
     dispose: (lease?: SessionLease) => {
       if (lease !== undefined) {
-        pendingLease = lease;
+        // Only accept a strictly newer lease. SessionLease.epoch is monotonic
+        // per harness, so a stale caller cannot clobber the active session
+        // handle with an older one. A different sessionId means the harness
+        // restarted, so always take the newer one.
+        if (
+          pendingLease === undefined ||
+          pendingLease.sessionId !== lease.sessionId ||
+          lease.epoch > pendingLease.epoch
+        ) {
+          pendingLease = lease;
+        }
       }
       if (inFlight !== undefined) return inFlight;
       const attempt = runDispose().finally(() => {

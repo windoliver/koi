@@ -151,6 +151,36 @@ describe("@koi/autonomous", () => {
     expect(received).toEqual([lease]);
   });
 
+  test("a later stale-epoch lease cannot overwrite an active newer lease", async () => {
+    const received: Array<SessionLease | undefined> = [];
+    let releaseScheduler!: () => void;
+    const schedulerGate = new Promise<void>((resolve) => {
+      releaseScheduler = resolve;
+    });
+    const harness = createHarnessStub({
+      dispose: async (lease) => {
+        received.push(lease);
+        return ok();
+      },
+    });
+    const scheduler = createSchedulerStub({
+      dispose: async () => {
+        await schedulerGate;
+      },
+    });
+    const newLease = { sessionId: "session-x", epoch: 5 } as unknown as SessionLease;
+    const staleLease = { sessionId: "session-x", epoch: 2 } as unknown as SessionLease;
+
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    const first = agent.dispose(newLease);
+    const second = agent.dispose(staleLease);
+    releaseScheduler();
+    await Promise.all([first, second]);
+
+    expect(received).toEqual([newLease]);
+  });
+
   test("the most recent concurrent dispose lease wins so a fresh handle revokes the live session", async () => {
     const received: Array<SessionLease | undefined> = [];
     let releaseScheduler!: () => void;
@@ -168,8 +198,8 @@ describe("@koi/autonomous", () => {
         await schedulerGate;
       },
     });
-    const oldLease = { sessionId: "session-old" } as unknown as SessionLease;
-    const freshLease = { sessionId: "session-fresh" } as unknown as SessionLease;
+    const oldLease = { sessionId: "session-x", epoch: 1 } as unknown as SessionLease;
+    const freshLease = { sessionId: "session-x", epoch: 2 } as unknown as SessionLease;
 
     const agent = createAutonomousAgent({ harness, scheduler });
 

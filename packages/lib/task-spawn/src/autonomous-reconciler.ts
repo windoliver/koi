@@ -110,7 +110,10 @@ export function reconcileTaskBoard(
   for (const taskId of orderedIds) {
     const task = board.get(taskId);
     if (task === undefined) continue;
-    if (task.status !== "pending" && task.status !== "in_progress") continue;
+    // Only cancel pending descendants. in_progress tasks have a live owner;
+    // killing them requires status/version/owner-aware mutations
+    // (killOwnedTask) that this reconciler cannot safely express.
+    if (task.status !== "pending") continue;
     for (const depId of task.dependencies) {
       const dep = board.get(depId);
       if (dep === undefined) continue;
