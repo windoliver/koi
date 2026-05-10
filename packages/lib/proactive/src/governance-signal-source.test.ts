@@ -1,16 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import type { GovernanceController, SensorReading, SystemSignal } from "@koi/core";
-import { createGovernanceSignalSource } from "./governance-signal-source.js";
+import { createGovernanceSignalSource, type IntervalHandle } from "./governance-signal-source.js";
 
 interface FakeClock {
   readonly now: () => number;
   readonly advance: (ms: number) => void;
+  // tick() flushes 2 microtask drains. Adequate because emit() schedules
+  // exactly one microtask per subscriber per signal, and handlers under test
+  // do not schedule further microtasks. If you add a test where the handler
+  // itself schedules microtasks, increase the drain count.
   readonly tick: () => Promise<void>;
 }
 
 interface FakeTimer {
   readonly setInterval: (fn: () => void, ms: number) => number;
-  readonly clearInterval: (id: number) => void;
+  readonly clearInterval: (id: IntervalHandle) => void;
   /** Fire all pending intervals once. */
   readonly fire: () => void;
   /** Number of currently-active intervals. */
@@ -41,8 +45,8 @@ function makeTimer(): FakeTimer {
       intervals.set(id, fn);
       return id;
     },
-    clearInterval: (id) => {
-      intervals.delete(id);
+    clearInterval: (id: IntervalHandle) => {
+      intervals.delete(id as number);
     },
     fire: () => {
       for (const fn of intervals.values()) fn();
@@ -75,8 +79,8 @@ describe("createGovernanceSignalSource", () => {
       controller: makeController(readings),
       thresholds: [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
       now: clock.now,
-      setInterval: timer.setInterval as unknown as typeof globalThis.setInterval,
-      clearInterval: timer.clearInterval as unknown as typeof globalThis.clearInterval,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
     });
     const got: SystemSignal[] = [];
     source.watch((s) => got.push(s));
@@ -111,8 +115,8 @@ describe("createGovernanceSignalSource", () => {
       controller: makeController(readings),
       thresholds: [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
       now: clock.now,
-      setInterval: timer.setInterval as unknown as typeof globalThis.setInterval,
-      clearInterval: timer.clearInterval as unknown as typeof globalThis.clearInterval,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
     });
     const got: SystemSignal[] = [];
     source.watch((s) => got.push(s));
@@ -140,8 +144,8 @@ describe("createGovernanceSignalSource", () => {
       controller: makeController(readings),
       thresholds: [{ sensor: "error_rate", limit: 0.3, direction: "above", cooldownMs: 1000 }],
       now: clock.now,
-      setInterval: timer.setInterval as unknown as typeof globalThis.setInterval,
-      clearInterval: timer.clearInterval as unknown as typeof globalThis.clearInterval,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
     });
     const got: SystemSignal[] = [];
     source.watch((s) => got.push(s));
@@ -175,8 +179,8 @@ describe("createGovernanceSignalSource", () => {
       controller: makeController(readings),
       thresholds: [{ sensor: "error_rate", limit: 0.3, direction: "above", cooldownMs: 60_000 }],
       now: clock.now,
-      setInterval: timer.setInterval as unknown as typeof globalThis.setInterval,
-      clearInterval: timer.clearInterval as unknown as typeof globalThis.clearInterval,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
     });
     const got: SystemSignal[] = [];
     source.watch((s) => got.push(s));
@@ -206,8 +210,8 @@ describe("createGovernanceSignalSource", () => {
       controller: makeController(readings),
       thresholds: [{ sensor: "spawn_count", limit: 1, direction: "below" }],
       now: clock.now,
-      setInterval: timer.setInterval as unknown as typeof globalThis.setInterval,
-      clearInterval: timer.clearInterval as unknown as typeof globalThis.clearInterval,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
     });
     const got: SystemSignal[] = [];
     source.watch((s) => got.push(s));
@@ -248,8 +252,8 @@ describe("createGovernanceSignalSource", () => {
         { sensor: "spawn_count", limit: 1, direction: "below" },
       ],
       now: clock.now,
-      setInterval: timer.setInterval as unknown as typeof globalThis.setInterval,
-      clearInterval: timer.clearInterval as unknown as typeof globalThis.clearInterval,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
     });
     const got: SystemSignal[] = [];
     source.watch((s) => got.push(s));
@@ -270,8 +274,8 @@ describe("createGovernanceSignalSource", () => {
       controller: makeController(readings),
       thresholds: [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
       now: clock.now,
-      setInterval: timer.setInterval as unknown as typeof globalThis.setInterval,
-      clearInterval: timer.clearInterval as unknown as typeof globalThis.clearInterval,
+      setInterval: timer.setInterval,
+      clearInterval: timer.clearInterval,
     });
     const a: SystemSignal[] = [];
     const b: SystemSignal[] = [];

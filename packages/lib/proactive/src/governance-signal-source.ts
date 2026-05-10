@@ -9,10 +9,24 @@
  * first watch() and is cleared on last unsubscribe.
  */
 
-import type { GovernanceController, SystemSignal, SystemSignalSource } from "@koi/core";
+import type {
+  GovernanceController,
+  SensorReading,
+  SystemSignal,
+  SystemSignalSource,
+} from "@koi/core";
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 const DEFAULT_COOLDOWN_MS = 60_000;
+
+/** Opaque interval handle returned by `setIntervalFn`. */
+export type IntervalHandle = unknown;
+
+/** Test-friendly setInterval signature — narrower than the host overload set. */
+export type IntervalScheduler = (fn: () => void, ms: number) => IntervalHandle;
+
+/** Test-friendly clearInterval signature. */
+export type IntervalCanceller = (handle: IntervalHandle) => void;
 
 export interface GovernanceThreshold {
   readonly sensor: string;
@@ -26,8 +40,8 @@ export interface GovernanceSignalSourceConfig {
   readonly thresholds: readonly GovernanceThreshold[];
   readonly pollIntervalMs?: number;
   readonly now?: () => number;
-  readonly setInterval?: typeof globalThis.setInterval;
-  readonly clearInterval?: typeof globalThis.clearInterval;
+  readonly setInterval?: IntervalScheduler;
+  readonly clearInterval?: IntervalCanceller;
 }
 
 interface Subscriber {
@@ -37,13 +51,24 @@ interface Subscriber {
 
 interface SensorState {
   /** True when the most recent reading was past the threshold (outside-bound). */
-  outside: boolean;
+  readonly outside: boolean;
   /** Wall-clock ms of the last emission for this sensor; -Infinity = never. */
-  lastEmittedAt: number;
+  readonly lastEmittedAt: number;
 }
 
 function isCrossed(value: number, threshold: GovernanceThreshold): boolean {
   return threshold.direction === "above" ? value > threshold.limit : value < threshold.limit;
+}
+
+function readSafely(
+  controller: GovernanceController,
+  sensor: string,
+): { ok: true; value: SensorReading | undefined } | { ok: false; err: unknown } {
+  try {
+    return { ok: true, value: controller.reading(sensor) };
+  } catch (e: unknown) {
+    return { ok: false, err: e };
+  }
 }
 
 export function createGovernanceSignalSource(
@@ -54,26 +79,36 @@ export function createGovernanceSignalSource(
     thresholds,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     now = Date.now,
-    setInterval: setIntervalFn = globalThis.setInterval,
-    clearInterval: clearIntervalFn = globalThis.clearInterval,
   } = config;
+
+  const setIntervalFn: IntervalScheduler =
+    config.setInterval ?? ((fn, ms) => globalThis.setInterval(fn, ms));
+  const clearIntervalFn: IntervalCanceller =
+    config.clearInterval ??
+    ((handle) =>
+      globalThis.clearInterval(handle as Parameters<typeof globalThis.clearInterval>[0]));
 
   const subscribers = new Set<Subscriber>();
   const sensorState = new Map<string, SensorState>();
-  let intervalHandle: ReturnType<typeof globalThis.setInterval> | undefined;
+  // let: holds the active interval handle (or undefined when no subscribers).
+  // Reassigned by start/stop on subscription churn.
+  let intervalHandle: IntervalHandle | undefined;
 
   function getOrInitState(sensor: string): SensorState {
-    let s = sensorState.get(sensor);
-    if (s === undefined) {
-      s = { outside: false, lastEmittedAt: Number.NEGATIVE_INFINITY };
-      sensorState.set(sensor, s);
-    }
-    return s;
+    const existing = sensorState.get(sensor);
+    if (existing !== undefined) return existing;
+    const fresh: SensorState = { outside: false, lastEmittedAt: Number.NEGATIVE_INFINITY };
+    sensorState.set(sensor, fresh);
+    return fresh;
   }
 
   function emit(signal: SystemSignal): void {
-    for (const sub of subscribers) {
+    // Snapshot to avoid mutation during iteration; recheck membership in the
+    // microtask so handlers unsubscribed between schedule and fire do not run.
+    const snapshot = Array.from(subscribers);
+    for (const sub of snapshot) {
       queueMicrotask(() => {
+        if (!subscribers.has(sub)) return;
         try {
           sub.handler(signal);
         } catch (e: unknown) {
@@ -92,13 +127,12 @@ export function createGovernanceSignalSource(
   function poll(): void {
     const t = now();
     for (const threshold of thresholds) {
-      let reading: ReturnType<GovernanceController["reading"]>;
-      try {
-        reading = controller.reading(threshold.sensor);
-      } catch (e: unknown) {
-        notifyError(e);
+      const result = readSafely(controller, threshold.sensor);
+      if (!result.ok) {
+        notifyError(result.err);
         continue;
       }
+      const reading = result.value;
       if (reading === undefined) {
         notifyError(new Error(`governance signal source: unknown sensor '${threshold.sensor}'`));
         continue;
@@ -107,15 +141,16 @@ export function createGovernanceSignalSource(
       const crossed = isCrossed(reading.current, threshold);
       if (!crossed) {
         // Re-entry to inside-bound arms the sensor for the next emission.
-        state.outside = false;
+        sensorState.set(threshold.sensor, { ...state, outside: false });
         continue;
       }
       // Currently outside-bound. Only emit on the *transition* (rising edge).
       if (state.outside) continue;
-      state.outside = true;
+      const armed: SensorState = { ...state, outside: true };
+      sensorState.set(threshold.sensor, armed);
       const cooldown = threshold.cooldownMs ?? DEFAULT_COOLDOWN_MS;
-      if (t - state.lastEmittedAt < cooldown) continue;
-      state.lastEmittedAt = t;
+      if (t - armed.lastEmittedAt < cooldown) continue;
+      sensorState.set(threshold.sensor, { ...armed, lastEmittedAt: t });
       emit({
         kind: "governance",
         sensor: threshold.sensor,
@@ -136,6 +171,10 @@ export function createGovernanceSignalSource(
     if (subscribers.size > 0 || intervalHandle === undefined) return;
     clearIntervalFn(intervalHandle);
     intervalHandle = undefined;
+    // Reset edge state when the loop stops. A future watcher treats the next
+    // reading as the start of a fresh crossing series — intentional, since the
+    // new subscriber should see the current condition, not history from before
+    // it was watching.
     sensorState.clear();
   }
 
