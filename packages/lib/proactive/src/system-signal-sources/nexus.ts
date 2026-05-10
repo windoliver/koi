@@ -1,0 +1,210 @@
+import type { ProcessState, SystemSignal, SystemSignalSource, TransitionReason } from "@koi/core";
+import { agentId, VALID_TRANSITIONS, zoneId } from "@koi/core";
+import {
+  createAsyncEmitter,
+  createSubscriptionController,
+  matchesAnyPathFilter,
+  safeCall,
+} from "./shared.js";
+
+export type NexusSubscribeFn = (
+  channels: readonly string[] | undefined,
+  listener: (event: unknown) => void,
+) => () => void;
+
+export interface NexusSignalSourceConfig {
+  readonly nexusUrl?: string | undefined;
+  readonly channels?: readonly string[] | undefined;
+  readonly pathFilters?: readonly string[] | undefined;
+  readonly subscribe?: NexusSubscribeFn | undefined;
+}
+
+const VALID_PROCESS_STATES: ReadonlySet<ProcessState> = new Set([
+  "created",
+  "running",
+  "waiting",
+  "suspended",
+  "idle",
+  "terminated",
+]);
+
+function isProcessState(value: string): value is ProcessState {
+  return VALID_PROCESS_STATES.has(value as ProcessState);
+}
+
+function isValidTransitionPair(from: ProcessState, to: ProcessState): boolean {
+  return VALID_TRANSITIONS[from].includes(to);
+}
+
+function isTransitionReason(value: unknown): value is TransitionReason {
+  if (typeof value !== "object" || value === null) return false;
+
+  const reason = value as Record<string, unknown>;
+  if (typeof reason.kind !== "string") return false;
+
+  switch (reason.kind) {
+    case "assembly_complete":
+    case "awaiting_response":
+    case "response_received":
+    case "hitl_pause":
+    case "budget_exceeded":
+    case "governance_block":
+    case "human_approval":
+    case "budget_replenished":
+    case "completed":
+    case "iteration_limit":
+    case "timeout":
+    case "evicted":
+    case "stale":
+    case "signal_stop":
+    case "signal_cont":
+    case "task_completed_idle":
+    case "inbox_wake":
+      return true;
+    case "error":
+      return true;
+    case "restarted":
+      return (
+        typeof reason.attempt === "number" &&
+        Number.isFinite(reason.attempt) &&
+        Number.isInteger(reason.attempt) &&
+        typeof reason.strategy === "string"
+      );
+    case "escalated":
+      return typeof reason.cause === "string";
+    default:
+      return false;
+  }
+}
+
+function matchesRenamePathFilter(
+  from: string,
+  to: string,
+  filters: readonly string[] | undefined,
+): boolean {
+  return matchesAnyPathFilter(from, filters) || matchesAnyPathFilter(to, filters);
+}
+
+function parseVfsSignal(
+  record: Record<string, unknown>,
+  pathFilters: readonly string[] | undefined,
+): SystemSignal | undefined {
+  if (
+    record.channel !== "vfs" ||
+    typeof record.event !== "string" ||
+    typeof record.emittedAt !== "number" ||
+    !Number.isFinite(record.emittedAt)
+  ) {
+    return undefined;
+  }
+
+  const zone = typeof record.zoneId === "string" ? zoneId(record.zoneId) : undefined;
+
+  if (record.event === "write" || record.event === "delete") {
+    const path = typeof record.path === "string" ? record.path : undefined;
+    if (path === undefined || !matchesAnyPathFilter(path, pathFilters)) return undefined;
+    return {
+      kind: "vfs",
+      event: record.event,
+      path,
+      zoneId: zone,
+      emittedAt: record.emittedAt,
+    } satisfies SystemSignal;
+  }
+
+  if (
+    record.event === "rename" &&
+    typeof record.from === "string" &&
+    typeof record.to === "string" &&
+    matchesRenamePathFilter(record.from, record.to, pathFilters)
+  ) {
+    return {
+      kind: "vfs",
+      event: "rename",
+      path: record.from,
+      from: record.from,
+      to: record.to,
+      zoneId: zone,
+      emittedAt: record.emittedAt,
+    } satisfies SystemSignal;
+  }
+
+  return undefined;
+}
+
+function parseAgentLifecycleSignal(record: Record<string, unknown>): SystemSignal | undefined {
+  if (
+    record.channel !== "agent" ||
+    record.event !== "transition" ||
+    typeof record.agentId !== "string" ||
+    typeof record.from !== "string" ||
+    typeof record.to !== "string" ||
+    !isProcessState(record.from) ||
+    !isProcessState(record.to) ||
+    !isValidTransitionPair(record.from, record.to) ||
+    !isTransitionReason(record.reason) ||
+    typeof record.generation !== "number" ||
+    !Number.isFinite(record.generation) ||
+    !Number.isInteger(record.generation) ||
+    record.generation < 0 ||
+    typeof record.emittedAt !== "number" ||
+    !Number.isFinite(record.emittedAt)
+  ) {
+    return undefined;
+  }
+
+  return {
+    kind: "agent_lifecycle",
+    agentId: agentId(record.agentId),
+    from: record.from,
+    to: record.to,
+    reason: record.reason,
+    generation: record.generation,
+    emittedAt: record.emittedAt,
+  } satisfies SystemSignal;
+}
+
+function parseNexusEvent(
+  event: unknown,
+  pathFilters: readonly string[] | undefined,
+): SystemSignal | undefined {
+  if (typeof event !== "object" || event === null) return undefined;
+  const record = event as Record<string, unknown>;
+  return parseVfsSignal(record, pathFilters) ?? parseAgentLifecycleSignal(record);
+}
+
+export function createNexusSignalSource(config: NexusSignalSourceConfig): SystemSignalSource {
+  return {
+    name: "nexus",
+    watch(handler, options) {
+      let closed = false;
+      const emitter = createAsyncEmitter(
+        (signal) => {
+          if (closed) return;
+          handler(signal);
+        },
+        options,
+        Date.now,
+        () => closed,
+      );
+      const unsubscribeUpstream =
+        config.subscribe?.(config.channels, (event) => {
+          if (closed) return;
+          try {
+            const signal = parseNexusEvent(event, config.pathFilters);
+            if (signal !== undefined) emitter.emit(signal);
+          } catch (error) {
+            safeCall(options?.onError, error);
+          }
+        }) ?? (() => {});
+
+      const subscription = createSubscriptionController(() => {
+        closed = true;
+        unsubscribeUpstream();
+        safeCall(options?.onDisconnect);
+      });
+
+      return subscription.unsubscribe;
+    },
+  };
+}

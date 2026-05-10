@@ -133,6 +133,7 @@ import {
   removePlugin,
   validatePluginManifest,
 } from "@koi/plugins";
+import { createProactiveTools } from "@koi/proactive";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import type { Cassette } from "@koi/replay";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
@@ -617,6 +618,23 @@ const [stSubmit, , , , , , stQuery, stStats] = schedulerTools as [
   import("@koi/core").Tool,
   import("@koi/core").Tool,
 ];
+
+// ---------------------------------------------------------------------------
+// @koi/proactive — sleep + cron tools layered over the same SchedulerComponent.
+// Reuses schedulerComponent so submitted sleeps/cron entries land in the same
+// in-memory store and stay pending during recording.
+// ---------------------------------------------------------------------------
+
+const proactiveTools = createProactiveTools({
+  scheduler: schedulerComponent,
+  agentId: "golden-recorder" as import("@koi/core").AgentId,
+}) as readonly [
+  import("@koi/core").Tool, // sleep
+  import("@koi/core").Tool, // cancel_sleep
+  import("@koi/core").Tool, // schedule_cron
+  import("@koi/core").Tool, // cancel_schedule
+];
+const [pSleep, pCancelSleep, pScheduleCron, pCancelSchedule] = proactiveTools;
 
 // ---------------------------------------------------------------------------
 // @koi/spawn-tools — agent_spawn tool with stub SpawnFn
@@ -4807,6 +4825,45 @@ const queries: readonly QueryConfig[] = [
         name: "scheduler-stats",
         toolName: "scheduler_stats",
         createTool: () => stStats,
+      }),
+    ],
+    maxTurns: 4,
+  },
+
+  // @koi/proactive — sleep + schedule_cron flow over the same SchedulerComponent.
+  // Uses a long sleep duration (1h) so the submitted task stays pending and
+  // a daily cron expression so the registered schedule remains live.
+  {
+    name: "proactive-tools",
+    prompt:
+      "Use the sleep tool with duration_ms 3600000 to schedule a wake-up in one hour. " +
+      "Then use the schedule_cron tool with expression '0 9 * * 1-5' and idempotency_key " +
+      "'daily-standup' to register a recurring weekday morning trigger. " +
+      "Briefly confirm both succeeded.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "proactive-sleep",
+        toolName: "sleep",
+        createTool: () => pSleep,
+      }),
+      createSingleToolProvider({
+        name: "proactive-cancel-sleep",
+        toolName: "cancel_sleep",
+        createTool: () => pCancelSleep,
+      }),
+      createSingleToolProvider({
+        name: "proactive-schedule-cron",
+        toolName: "schedule_cron",
+        createTool: () => pScheduleCron,
+      }),
+      createSingleToolProvider({
+        name: "proactive-cancel-schedule",
+        toolName: "cancel_schedule",
+        createTool: () => pCancelSchedule,
       }),
     ],
     maxTurns: 4,

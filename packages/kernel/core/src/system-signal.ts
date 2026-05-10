@@ -62,6 +62,7 @@ export type CompositionSchedulerEvent =
  * Each variant maps to a distinct signal source:
  * - "governance"      → GovernanceController (sensor threshold crossed)
  * - "vfs"             → Nexus VFS (file mutation)
+ * - "frontier"        → Grove (contribution improving a frontier metric)
  * - "forge_demand"    → ForgeDemand middleware (capability gap detected)
  * - "schedule"        → TaskScheduler (terminal task outcome)
  * - "agent_lifecycle" → AgentRegistry (agent state transition)
@@ -120,6 +121,19 @@ export type SystemSignal =
       readonly to: string;
       readonly zoneId?: ZoneId | undefined;
       /** Unix timestamp (ms) of the filesystem event. */
+      readonly emittedAt: number;
+    }
+  | {
+      readonly kind: "frontier";
+      /** Name of the frontier metric that improved (e.g., "retrieval_quality"). */
+      readonly metric: string;
+      /**
+       * Reported improvement delta over the previous frontier value, when
+       * supplied by the upstream Grove event. May be undefined for events
+       * that signal a frontier change without a numeric delta.
+       */
+      readonly improvement?: number | undefined;
+      /** Unix timestamp (ms) when the frontier change was observed. */
       readonly emittedAt: number;
     }
   /** Inlined ForgeDemandSignal — use signal.trigger for the specific ForgeTrigger variant. */

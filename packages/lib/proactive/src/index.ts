@@ -56,5 +56,20 @@ export {
   createRuleBasedCompositionPlanner,
   type RuleBasedCompositionPlannerConfig,
 } from "./rule-based-composition-planner.js";
+export {
+  createGovernanceSignalSource,
+  type GovernanceSignalSourceConfig,
+  type GovernanceThreshold,
+} from "./system-signal-sources/governance.js";
+export {
+  createGroveSignalSource,
+  type GroveEventSourceLike,
+  type GroveSignalSourceConfig,
+} from "./system-signal-sources/grove.js";
+export {
+  createNexusSignalSource,
+  type NexusSignalSourceConfig,
+  type NexusSubscribeFn,
+} from "./system-signal-sources/nexus.js";
 export type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types.js";
 export { DEFAULT_MAX_SLEEP_MS, DEFAULT_WAKE_MESSAGE } from "./types.js";
