@@ -424,3 +424,42 @@ Phase 3a tracker (this issue): sleep / wake / cron tools.
 
 `brief` / `notify` / `monitor` tools are blocked on channel + webhook restoration and
 are deliberately not included here.
+
+## Proactive delivery — `createProactiveDelivery`
+
+Routes a `ProactiveNotification` to one or more attached `ChannelAdapter`s
+based on priority. Phase 3 surface; quiet hours, multi-channel fallback,
+and inbox routing for `low` priority are deferred to Phase 4.
+
+```typescript
+import { createProactiveDelivery } from "@koi/proactive";
+
+const delivery = createProactiveDelivery({
+  channels: new Map([
+    ["slack", slackAdapter],
+    ["email", emailAdapter],
+  ]),
+  preferences: {
+    preferredChannel: "slack",
+    maxNotificationsPerHour: 30,
+  },
+});
+
+const result = await delivery.send({
+  priority: "high",
+  content: [{ kind: "text", text: "Composition completed: dispatched diagnostic agent." }],
+});
+```
+
+Routing rules:
+
+| Priority | Routes to | Rate-limited |
+|---|---|---|
+| `urgent` | every channel in parallel; success if at least one delivered | no — bypasses cap and does not consume window capacity |
+| `high` / `normal` / `low` | `preferredChannel` if configured, else first channel by Map insertion order | yes — counted against the sliding 1-hour cap |
+
+Failures are wrapped: an adapter `send` rejection becomes `{ ok: false,
+reason: "all_failed", failures: [{ channel, error }] }`. Adapter
+exceptions never propagate. Failed deliveries refund their rate-limit
+slot. Concurrent sends at cap-1 cannot both pass — the gate reserves
+its slot synchronously before any `await`.
