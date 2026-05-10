@@ -457,8 +457,8 @@ Routing rules:
 |---|---|---|---|
 | `urgent` | every channel in parallel; success if at least one delivered | no — bypasses cap and does not consume window capacity | no |
 | `high` | preferred channel first; on failure, walks remaining channels in Map insertion order; first success wins | yes — exactly 1 slot per send call regardless of attempts | no |
-| `normal` | same as `high` | yes | yes — see Quiet hours below |
-| `low` | same as `high` | yes | no (inbox routing is a separate Phase 4 follow-up) |
+| `normal` | `preferredChannel` if configured, else first channel by Map insertion order; single attempt (no fallback) | yes | yes — see Quiet hours below |
+| `low` | `preferredChannel` if configured, else first channel by Map insertion order; single attempt (no fallback) | yes | no (inbox routing is a separate Phase 4 follow-up) |
 
 Failures are wrapped: an adapter `send` rejection becomes `{ ok: false,
 reason: "all_failed", failures: [{ channel, error }] }`. Adapter
