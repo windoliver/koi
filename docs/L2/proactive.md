@@ -80,6 +80,7 @@ interface ProactiveToolsProviderConfig {
 | `list_monitors` | none | `{ ok: true, monitors: MonitorSummary[] }` |
 | `update_monitor` | `monitor_id`, patch fields from `create_monitor` except `idempotency_key` | `{ ok: true, monitor_id, schedule_id }` |
 | `cancel_monitor` | `monitor_id` | `{ ok: true, removed }` |
+| `notify` | `channel`, `text`, `thread_id?`, `metadata?` | `{ ok: true }` or `{ ok: false, error, available_channels? }` |
 
 Listing existing schedules is intentionally **not** exposed: the L0
 `SchedulerComponent` does not currently surface a per-agent
@@ -150,6 +151,27 @@ same process state. Replaying the same key with identical monitor fields returns
 original `monitor_id` and `schedule_id` with `deduped: true`; reusing the key with
 different fields fails closed. Failed creations clear the reservation so a retry can
 start fresh. This guarantee does not survive restart or reattach.
+
+### `notify`
+
+Sends a one-shot text message via a `ChannelAdapter` attached to the agent.
+Fire-and-forget: no retries, no delivery confirmation beyond `ok: true`.
+
+The provider snapshots `channel:*` components at attach time. Channels added
+or removed after attach are not visible to `notify` until the agent is
+reassembled — matches the per-attach lifecycle of the cron and monitor
+state. The tool is **only installed** when at least one `channel:*` component
+is attached; agents with no channels do not see it in their tool list.
+
+`thread_id` and `metadata` are forwarded verbatim to `OutboundMessage`.
+Adapter `send` rejections become `{ ok: false, error }` — the tool never
+throws to the caller.
+
+Out of scope (not implemented):
+- multi-channel broadcast (`channel: string[]`)
+- rich content blocks (file, image, button, custom) — text-only for v1
+- scheduled `notify_at` — would belong as a separate proactive tool
+- cross-restart dedup — channel adapters own that via their own idempotency stores
 
 ### Idempotency (`idempotency_key`)
 
