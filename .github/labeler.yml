@@ -70,6 +70,7 @@
     - any-glob-to-any-file:
       - "packages/**/agent/cli/**"
       - "packages/**/auto-harness/**"
+      - "packages/**/autonomous/**"
       - "packages/**/cli/**"
       - "packages/**/gateway-stack/**"
       - "packages/**/nexus/**"
@@ -85,6 +86,7 @@
       - "!packages/**/ace-types/**"
       - "!packages/**/agent/cli/**"
       - "!packages/**/auto-harness/**"
+      - "!packages/**/autonomous/**"
       - "!packages/**/bash-ast/**"
       - "!packages/**/bash-classifier/**"
       - "!packages/**/bash-security/**"
