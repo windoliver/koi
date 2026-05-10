@@ -19,7 +19,16 @@ export function createAsyncEmitter(
         if (isClosed()) return;
         const minGap = options?.sampleRateMs;
         if (minGap !== undefined && now() - lastDeliveredAt < minGap) return;
-        handler(signal);
+        try {
+          handler(signal);
+        } catch (error) {
+          // The L0 contract states handlers must not throw, but a defective
+          // consumer should not corrupt the source loop or surface as an
+          // unhandled microtask rejection. Route the error to onError when
+          // configured; otherwise swallow it so subsequent emissions still
+          // run.
+          safeCall(options?.onError, error);
+        }
         lastDeliveredAt = now();
       });
     },

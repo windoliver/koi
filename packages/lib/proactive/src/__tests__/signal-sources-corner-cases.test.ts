@@ -64,6 +64,41 @@ describe("shared emitter — corner cases", () => {
     expect(seen).toEqual([100, 101]);
   });
 
+  test("throwing handler is caught and subsequent deliveries continue", async () => {
+    const seen: number[] = [];
+    const onError = mock(() => {});
+    const emitter = createAsyncEmitter(
+      (s) => {
+        if (!("emittedAt" in s)) return;
+        if (s.emittedAt === 1) throw new Error("boom");
+        seen.push(s.emittedAt);
+      },
+      { onError },
+    );
+
+    emitter.emit({ kind: "vfs", event: "write", path: "/a", emittedAt: 1 });
+    emitter.emit({ kind: "vfs", event: "write", path: "/b", emittedAt: 2 });
+
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toEqual([2]);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  test("throwing handler without onError swallows the error silently", async () => {
+    const seen: number[] = [];
+    const emitter = createAsyncEmitter((s) => {
+      if (!("emittedAt" in s)) return;
+      if (s.emittedAt === 1) throw new Error("boom");
+      seen.push(s.emittedAt);
+    }, undefined);
+
+    emitter.emit({ kind: "vfs", event: "write", path: "/a", emittedAt: 1 });
+    emitter.emit({ kind: "vfs", event: "write", path: "/b", emittedAt: 2 });
+
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toEqual([2]);
+  });
+
   test("emit inside handler does not recurse infinitely", async () => {
     let count = 0;
     let emitter: ReturnType<typeof createAsyncEmitter>;
