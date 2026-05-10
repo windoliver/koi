@@ -68,4 +68,37 @@ describe("createProactiveDelivery", () => {
     expect(result).toEqual({ ok: true, delivered: ["slack"] });
     expect(sent).toEqual(["slack"]);
   });
+
+  test("normal and low priority behave identically to high in Phase 3", async () => {
+    const sent: string[] = [];
+    const slack = stubAdapter("slack", async () => { sent.push("slack"); });
+    const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
+
+    const r1 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
+    const r2 = await delivery.send({ priority: "low", content: [{ kind: "text", text: "l" }] });
+
+    expect(r1).toEqual({ ok: true, delivered: ["slack"] });
+    expect(r2).toEqual({ ok: true, delivered: ["slack"] });
+    expect(sent).toEqual(["slack", "slack"]);
+  });
+
+  test("threadId and metadata forwarded verbatim to OutboundMessage", async () => {
+    const captured: OutboundMessage[] = [];
+    const slack = stubAdapter("slack", async (m) => { captured.push(m); });
+    const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
+
+    await delivery.send({
+      priority: "normal",
+      content: [{ kind: "text", text: "hi" }],
+      threadId: "T1",
+      metadata: { source: "composition" },
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toEqual({
+      content: [{ kind: "text", text: "hi" }],
+      threadId: "T1",
+      metadata: { source: "composition" },
+    });
+  });
 });
