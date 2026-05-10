@@ -1,5 +1,3 @@
-import type { JsonValue } from "@koi/core";
-
 export type CheckpointPhase = "in_progress" | "completed" | "failed";
 
 export interface CheckpointSnapshot {
@@ -19,7 +17,7 @@ export interface CheckpointSnapshot {
    * Results of steps already executed, in order. `stepResults.length`
    * MUST equal `nextStepIndex`.
    */
-  readonly stepResults: readonly JsonValue[];
+  readonly stepResults: readonly unknown[];
   readonly phase: CheckpointPhase;
   /**
    * Wall-clock from injected `now()` at the time of save. Useful for
