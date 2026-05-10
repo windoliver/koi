@@ -287,6 +287,74 @@ describe("createProactiveDelivery", () => {
     });
   });
 
+  test("normal during quiet window → quiet_hours, adapter NOT called", async () => {
+    let sendCount = 0;
+    const slack = stubAdapter("slack", async () => {
+      sendCount += 1;
+    });
+    // 2026-05-10 03:00:00 UTC — within 22-6 quiet window
+    const t = Date.UTC(2026, 4, 10, 3, 0, 0);
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { quietHoursStart: 22, quietHoursEnd: 6, timezone: "UTC" },
+      now: () => t,
+    });
+
+    const r = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
+    expect(r).toEqual({ ok: false, reason: "quiet_hours" });
+    expect(sendCount).toBe(0);
+  });
+
+  test("normal outside quiet window → delivered", async () => {
+    const slack = stubAdapter("slack", async () => {});
+    // 14:00 UTC, outside 22-6
+    const t = Date.UTC(2026, 4, 10, 14, 0, 0);
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { quietHoursStart: 22, quietHoursEnd: 6, timezone: "UTC" },
+      now: () => t,
+    });
+
+    const r = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
+    expect(r).toEqual({ ok: true, delivered: ["slack"] });
+  });
+
+  test("high during quiet window → delivered (bypasses quiet)", async () => {
+    const slack = stubAdapter("slack", async () => {});
+    const t = Date.UTC(2026, 4, 10, 3, 0, 0);
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { quietHoursStart: 22, quietHoursEnd: 6, timezone: "UTC" },
+      now: () => t,
+    });
+
+    const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(r).toEqual({ ok: true, delivered: ["slack"] });
+  });
+
+  test("urgent during quiet window → fan-out as Phase 3", async () => {
+    const sent: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      sent.push("slack");
+    });
+    const email = stubAdapter("email", async () => {
+      sent.push("email");
+    });
+    const t = Date.UTC(2026, 4, 10, 3, 0, 0);
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { quietHoursStart: 22, quietHoursEnd: 6, timezone: "UTC" },
+      now: () => t,
+    });
+
+    const r = await delivery.send({ priority: "urgent", content: [{ kind: "text", text: "u" }] });
+    expect(r).toEqual({ ok: true, delivered: ["slack", "email"] });
+    expect(sent.sort()).toEqual(["email", "slack"]);
+  });
+
   test("throws when only quietHoursStart is set", () => {
     const slack = stubAdapter("slack", async () => {});
     expect(() =>
