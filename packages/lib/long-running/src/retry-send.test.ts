@@ -139,6 +139,31 @@ describe("sendWithRetry", () => {
     });
   });
 
+  it("times out a hung send attempt instead of blocking forever", async () => {
+    let attempts = 0;
+    const result = await sendWithRetry(
+      async () => {
+        attempts += 1;
+        // Simulate a stuck transport — never settles.
+        await new Promise(() => undefined);
+      },
+      "job completed",
+      {
+        maxRetries: 1,
+        attemptTimeoutMs: 5,
+        delayMs: 0,
+        isTransientError: () => true,
+      },
+    );
+
+    expect(attempts).toBe(2);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.exhausted).toBe(true);
+      expect(result.error.message).toContain("timed out");
+    }
+  });
+
   it("does not retry by default — caller must opt in via isTransientError", async () => {
     let attempts = 0;
 

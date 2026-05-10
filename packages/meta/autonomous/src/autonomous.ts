@@ -55,10 +55,23 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
         harnessDisposed = true;
         pendingLease = undefined;
       } catch (error) {
+        // STALE_REF means the harness rejected the lease (poisoned
+        // high-epoch / fabricated / from a previous session). Drop it so a
+        // later caller's real lease isn't blocked by epoch comparison from
+        // ever replacing the bad one.
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          (error as { code: unknown }).code === "STALE_REF"
+        ) {
+          if (pendingLease === leaseAtCall) pendingLease = undefined;
+        }
         if (pendingLease !== leaseAtCall) {
           // A concurrent caller supplied a newer lease while the in-flight
-          // harness.dispose was running with a stale/undefined one. Retry once
-          // with the updated lease so the live session is actually revoked.
+          // harness.dispose was running with a stale/undefined one, or we
+          // just cleared a poisoned lease above. Retry with the updated
+          // value so the live session is actually revoked.
           continue;
         }
         throw error;

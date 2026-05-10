@@ -3,6 +3,13 @@ export interface RetrySendOptions {
   readonly delayMs?: number | undefined;
   readonly isTransientError?: ((error: Error) => boolean) | undefined;
   readonly sleep?: ((delayMs: number) => Promise<void> | void) | undefined;
+  /**
+   * Per-attempt deadline. If `send` does not settle within this many
+   * milliseconds the attempt rejects with a timeout error and the retry
+   * loop continues, preventing a hung transport from blocking the caller
+   * forever. Default: no per-attempt timeout (matches prior behavior).
+   */
+  readonly attemptTimeoutMs?: number | undefined;
 }
 
 export interface RetrySendSuccessResult {
@@ -42,12 +49,33 @@ export async function sendWithRetry<T>(
   const delayMs = options.delayMs ?? 50;
   const sleep = options.sleep ?? defaultSleep;
 
+  const attemptTimeoutMs = options.attemptTimeoutMs;
+
+  async function callOnce(): Promise<void> {
+    if (attemptTimeoutMs === undefined || attemptTimeoutMs <= 0) {
+      await send(message);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`send attempt timed out after ${attemptTimeoutMs}ms`)),
+        attemptTimeoutMs,
+      );
+    });
+    try {
+      await Promise.race([send(message), timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   let attempts = 0;
   while (attempts <= maxRetries) {
     attempts += 1;
 
     try {
-      await send(message);
+      await callOnce();
       return { ok: true, attempts };
     } catch (error: unknown) {
       const normalizedError = toError(error);
