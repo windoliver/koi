@@ -5,9 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [
-    { "path": "../../kernel/core" },
-    { "path": "../../lib/ipc-nexus" },
-    { "path": "../../lib/nexus-client" }
-  ]
+  "references": [{ "path": "../../kernel/core" }, { "path": "../../lib/nexus-client" }]
 }

@@ -2200,7 +2200,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/ipc-nexus": "workspace:*",
         "@koi/nexus-client": "workspace:*",
       },
     },
