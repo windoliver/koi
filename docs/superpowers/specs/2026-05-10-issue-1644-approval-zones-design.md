@@ -22,6 +22,7 @@ After 10–40 approvals per session, users approve without reading. The safety m
 
 ## Non-goals (v1)
 
+- **Non-bash tools in sandbox-then-auto.** The `SandboxInstance` L0 contract is `exec(command, args)` — process-level. Wrapping arbitrary Koi tools (read/write/edit/MCP-bridged) in a sandbox would require a tool-host runtime inside the sandbox. v1 restricts `sandbox-then-auto` to `toolId === "bash"`; zone validation rejects the action for other tools. Other tools matched by a sandbox-then-auto zone fall through to ask with audit reason `non-bash-tool`.
 - Diff-and-replay or overlayfs commit semantics. Sandbox is a **read-only preview** model — side effects are discarded; tool re-runs on host.
 - Wiring a specific sandbox backend (docker/e2b/daytona). Zones reference a `sandboxBackendId`; `@koi/sandbox/sandbox-router` resolves it from existing user config.
 - ML-based risk classification. Default scorer is rule-driven; pluggable for future ML scorers.
@@ -202,6 +203,7 @@ Every zone audit entry carries:
 | Risk scorer throws | Assume `critical` → ask | Conservative |
 | Sandbox router throws / non-zero exit | Audit `zone-sandbox-failed` → ask | Never auto-approve on infra error |
 | `sandbox-then-auto` zone missing `sandboxBackendId` | Audit `zone-ask-passthrough` (reason: `missing-backend`) → ask | Config error fails open to existing prompt, never auto-approve |
+| `sandbox-then-auto` matched on non-bash tool | Audit `zone-ask-passthrough` (reason: `non-bash-tool`) → ask | v1 restriction (see Non-goals) |
 
 ## Testing
 
