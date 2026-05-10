@@ -44,16 +44,43 @@ export function createClosedAwareGroveHandler<T>(
   };
 }
 
+function parseGroveFrontierSignal(
+  rawData: string,
+  config: GroveSignalSourceConfig,
+  now: () => number,
+): SystemSignal | undefined {
+  const payload = JSON.parse(rawData) as Record<string, unknown>;
+  if (payload.type !== "frontier_changed") return undefined;
+
+  const metric = typeof payload.metric === "string" ? payload.metric : undefined;
+  const improvement = typeof payload.improvement === "number" ? payload.improvement : undefined;
+
+  if (!shouldAcceptGroveFrontierEvent(metric, improvement, config)) return undefined;
+
+  const upstreamEmittedAt =
+    typeof payload.emittedAt === "number" && Number.isFinite(payload.emittedAt)
+      ? payload.emittedAt
+      : undefined;
+
+  return {
+    kind: "frontier",
+    metric: metric as string,
+    improvement,
+    emittedAt: upstreamEmittedAt ?? now(),
+  } satisfies SystemSignal;
+}
+
 export function createGroveSignalSource(config: GroveSignalSourceConfig): SystemSignalSource {
   return {
     name: "grove",
     watch(handler, options) {
       let closed = false;
+      const isClosed = (): boolean => closed;
       const emitter = createAsyncEmitter(
-        createClosedAwareGroveHandler(handler, () => closed),
+        createClosedAwareGroveHandler(handler, isClosed),
         options,
         Date.now,
-        () => closed,
+        isClosed,
       );
       const eventSource = config.eventSourceFactory?.(config.groveUrl);
       if (eventSource === undefined) return () => {};
@@ -62,30 +89,9 @@ export function createGroveSignalSource(config: GroveSignalSourceConfig): System
 
       eventSource.onmessage = (event) => {
         if (closed) return;
-
         try {
-          const payload = JSON.parse(event.data) as Record<string, unknown>;
-          if (payload.type !== "frontier_changed") return;
-
-          const metric = typeof payload.metric === "string" ? payload.metric : undefined;
-          const improvement =
-            typeof payload.improvement === "number" ? payload.improvement : undefined;
-
-          if (!shouldAcceptGroveFrontierEvent(metric, improvement, config)) {
-            return;
-          }
-
-          const upstreamEmittedAt =
-            typeof payload.emittedAt === "number" && Number.isFinite(payload.emittedAt)
-              ? payload.emittedAt
-              : undefined;
-
-          emitter.emit({
-            kind: "frontier",
-            metric: metric as string,
-            improvement,
-            emittedAt: upstreamEmittedAt ?? now(),
-          } satisfies SystemSignal);
+          const signal = parseGroveFrontierSignal(event.data, config, now);
+          if (signal !== undefined) emitter.emit(signal);
         } catch (error) {
           safeCall(options?.onError, error);
         }

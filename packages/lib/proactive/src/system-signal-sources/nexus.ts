@@ -85,6 +85,94 @@ function matchesRenamePathFilter(
   return matchesAnyPathFilter(from, filters) || matchesAnyPathFilter(to, filters);
 }
 
+function parseVfsSignal(
+  record: Record<string, unknown>,
+  pathFilters: readonly string[] | undefined,
+): SystemSignal | undefined {
+  if (
+    record.channel !== "vfs" ||
+    typeof record.event !== "string" ||
+    typeof record.emittedAt !== "number" ||
+    !Number.isFinite(record.emittedAt)
+  ) {
+    return undefined;
+  }
+
+  const zone = typeof record.zoneId === "string" ? zoneId(record.zoneId) : undefined;
+
+  if (record.event === "write" || record.event === "delete") {
+    const path = typeof record.path === "string" ? record.path : undefined;
+    if (path === undefined || !matchesAnyPathFilter(path, pathFilters)) return undefined;
+    return {
+      kind: "vfs",
+      event: record.event,
+      path,
+      zoneId: zone,
+      emittedAt: record.emittedAt,
+    } satisfies SystemSignal;
+  }
+
+  if (
+    record.event === "rename" &&
+    typeof record.from === "string" &&
+    typeof record.to === "string" &&
+    matchesRenamePathFilter(record.from, record.to, pathFilters)
+  ) {
+    return {
+      kind: "vfs",
+      event: "rename",
+      path: record.from,
+      from: record.from,
+      to: record.to,
+      zoneId: zone,
+      emittedAt: record.emittedAt,
+    } satisfies SystemSignal;
+  }
+
+  return undefined;
+}
+
+function parseAgentLifecycleSignal(record: Record<string, unknown>): SystemSignal | undefined {
+  if (
+    record.channel !== "agent" ||
+    record.event !== "transition" ||
+    typeof record.agentId !== "string" ||
+    typeof record.from !== "string" ||
+    typeof record.to !== "string" ||
+    !isProcessState(record.from) ||
+    !isProcessState(record.to) ||
+    !isValidTransitionPair(record.from, record.to) ||
+    !isTransitionReason(record.reason) ||
+    typeof record.generation !== "number" ||
+    !Number.isFinite(record.generation) ||
+    !Number.isInteger(record.generation) ||
+    record.generation < 0 ||
+    typeof record.emittedAt !== "number" ||
+    !Number.isFinite(record.emittedAt)
+  ) {
+    return undefined;
+  }
+
+  return {
+    kind: "agent_lifecycle",
+    agentId: agentId(record.agentId),
+    from: record.from,
+    to: record.to,
+    reason: record.reason,
+    generation: record.generation,
+    emittedAt: record.emittedAt,
+  } satisfies SystemSignal;
+}
+
+function parseNexusEvent(
+  event: unknown,
+  pathFilters: readonly string[] | undefined,
+): SystemSignal | undefined {
+  if (typeof event !== "object" || event === null) return undefined;
+  const record = event as Record<string, unknown>;
+  return parseVfsSignal(record, pathFilters) ?? parseAgentLifecycleSignal(record);
+}
+
 export function createNexusSignalSource(config: NexusSignalSourceConfig): SystemSignalSource {
   return {
     name: "nexus",
@@ -102,80 +190,9 @@ export function createNexusSignalSource(config: NexusSignalSourceConfig): System
       const unsubscribeUpstream =
         config.subscribe?.(config.channels, (event) => {
           if (closed) return;
-
           try {
-            const record = event as Record<string, unknown>;
-            if (
-              record.channel === "vfs" &&
-              typeof record.event === "string" &&
-              typeof record.emittedAt === "number" &&
-              Number.isFinite(record.emittedAt)
-            ) {
-              if (record.event === "write" || record.event === "delete") {
-                const path = typeof record.path === "string" ? record.path : undefined;
-                if (path === undefined || !matchesAnyPathFilter(path, config.pathFilters)) {
-                  return;
-                }
-
-                emitter.emit({
-                  kind: "vfs",
-                  event: record.event,
-                  path,
-                  zoneId: typeof record.zoneId === "string" ? zoneId(record.zoneId) : undefined,
-                  emittedAt: record.emittedAt,
-                } satisfies SystemSignal);
-              }
-
-              if (
-                record.event === "rename" &&
-                typeof record.from === "string" &&
-                typeof record.to === "string"
-              ) {
-                if (!matchesRenamePathFilter(record.from, record.to, config.pathFilters)) {
-                  return;
-                }
-
-                emitter.emit({
-                  kind: "vfs",
-                  event: "rename",
-                  path: record.from,
-                  from: record.from,
-                  to: record.to,
-                  zoneId: typeof record.zoneId === "string" ? zoneId(record.zoneId) : undefined,
-                  emittedAt: record.emittedAt,
-                } satisfies SystemSignal);
-              }
-
-              return;
-            }
-
-            if (
-              record.channel === "agent" &&
-              record.event === "transition" &&
-              typeof record.agentId === "string" &&
-              typeof record.from === "string" &&
-              typeof record.to === "string" &&
-              isProcessState(record.from) &&
-              isProcessState(record.to) &&
-              isValidTransitionPair(record.from, record.to) &&
-              isTransitionReason(record.reason) &&
-              typeof record.generation === "number" &&
-              Number.isFinite(record.generation) &&
-              Number.isInteger(record.generation) &&
-              record.generation >= 0 &&
-              typeof record.emittedAt === "number" &&
-              Number.isFinite(record.emittedAt)
-            ) {
-              emitter.emit({
-                kind: "agent_lifecycle",
-                agentId: agentId(record.agentId),
-                from: record.from,
-                to: record.to,
-                reason: record.reason,
-                generation: record.generation,
-                emittedAt: record.emittedAt,
-              } satisfies SystemSignal);
-            }
+            const signal = parseNexusEvent(event, config.pathFilters);
+            if (signal !== undefined) emitter.emit(signal);
           } catch (error) {
             safeCall(options?.onError, error);
           }
