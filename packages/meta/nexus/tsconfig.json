@@ -6,6 +6,7 @@
   },
   "include": ["src/**/*"],
   "references": [
+    { "path": "../../kernel/core" },
     { "path": "../../security/audit-sink-nexus" },
     { "path": "../../security/permissions-nexus" },
     { "path": "../../security/registry-nexus" },
@@ -14,6 +15,7 @@
     { "path": "../../lib/fs-nexus" },
     { "path": "../../lib/handoff" },
     { "path": "../../lib/ipc-nexus" },
+    { "path": "../../lib/nexus-client" },
     { "path": "../../lib/playbook-store-nexus" },
     { "path": "../../lib/scratchpad-nexus" },
     { "path": "../../lib/snapshot-store-nexus" },

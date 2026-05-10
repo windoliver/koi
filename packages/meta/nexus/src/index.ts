@@ -10,6 +10,11 @@ export type {
   NexusAgentProviderConfig,
   NexusAttachedProvider,
   NexusBundle,
+  NexusDashboardRow,
+  NexusFallbackConfig,
+  NexusFeatureSnapshot,
   NexusGlobalBackends,
+  NexusHealthDashboard,
+  NexusHealthSnapshot,
   NexusStackConfig,
 } from "./types.js";

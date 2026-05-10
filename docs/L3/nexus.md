@@ -17,7 +17,10 @@ The package returns a `NexusBundle`:
 - `backends` — the enabled global Nexus backends
 - `providers` — the per-agent provider array to pass into runtime assembly
 - `middlewares` — any middleware the caller chooses to attach alongside the bundle
-- `config` — resolved feature flags
+- `features` — per-surface detection metadata showing whether each Nexus surface is active, disabled, unavailable, or running on fallback wiring
+- `config` — resolved feature flags plus whether startup fallback activated
+- `health()` — bundle-level health snapshot with transport probe result, feature detection, and dashboard summary
+- `dashboard()` — dashboard-friendly health projection derived from `health()`
 - `dispose()` — best-effort cleanup for the provider and any caller-supplied disposers
 
 ---
@@ -79,6 +82,58 @@ const nexus = await createNexusStack({
 ```
 
 The stack factory is deliberately composition-focused: callers provide the concrete backend factories they want to use, while `@koi/nexus` handles flag gating, provider assembly, and the final bundle shape.
+
+---
+
+## Feature Detection
+
+The bundle exposes static surface detection through `bundle.features`.
+
+Each feature reports:
+
+- `enabled` — whether the caller requested the surface
+- `available` — whether `@koi/nexus` has usable wiring for that surface in this bundle instance
+- `mode`
+  - `nexus` — live Nexus wiring is active
+  - `fallback` — startup degraded to caller-supplied local wiring
+  - `disabled` — intentionally turned off by config
+  - `unavailable` — requested, but no safe wiring was available for this instance
+
+This satisfies the issue’s “which backends available” requirement without inventing a separate registry subsystem.
+
+---
+
+## Graceful Degradation
+
+`@koi/nexus` now supports startup-only graceful degradation via optional `fallback` config.
+
+Behavior:
+
+- if `healthCheck()` is provided, `@koi/nexus` uses it
+- otherwise, if `transport.health()` exists, `@koi/nexus` probes Nexus directly
+- if the startup probe fails and caller-supplied fallback factories exist, the bundle activates those fallback factories for the lifetime of the instance
+- requested surfaces that do not have fallback wiring are marked `unavailable` instead of silently continuing on unhealthy Nexus wiring
+
+This mirrors the existing v2 L2 pattern used by packages like `@koi/scratchpad-nexus` and `@koi/workspace-nexus`: fallback is explicit, decided at startup, and does not swap authorities mid-run.
+
+---
+
+## Health And Dashboard
+
+`health()` returns a typed snapshot that combines:
+
+- latest Nexus transport probe result
+- whether startup fallback is active
+- current feature detection metadata
+- a `dashboard` projection with an overall status, summary, and per-surface rows
+
+Dashboard status rules:
+
+- `ok` — probe healthy and no degraded/unavailable surfaces are active
+- `degraded` — fallback active, probe returns `missing-paths`, or requested surfaces are unavailable
+- `unhealthy` — probe failed and no local fallback was activated
+
+This gives dashboard or host callers a single read surface for Nexus health without making `@koi/nexus` responsible for long-running supervision.
 
 ---
 
