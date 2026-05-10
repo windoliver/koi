@@ -114,6 +114,26 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
   // check (slides out entries older than now() - WINDOW_MS).
   const window: number[] = [];
 
+  const quietStart = preferences?.quietHoursStart;
+  const quietEnd = preferences?.quietHoursEnd;
+  const tz = preferences?.timezone ?? "UTC";
+  const hourFormatter =
+    quietStart !== undefined && quietEnd !== undefined
+      ? new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", hourCycle: "h23" })
+      : undefined;
+
+  function isQuietNow(t: number): boolean {
+    if (hourFormatter === undefined || quietStart === undefined || quietEnd === undefined) {
+      return false;
+    }
+    const hourStr = hourFormatter.format(new Date(t));
+    const h = Number.parseInt(hourStr, 10);
+    if (Number.isNaN(h)) return false;
+    return quietStart < quietEnd
+      ? h >= quietStart && h < quietEnd
+      : h >= quietStart || h < quietEnd;
+  }
+
   function pruneWindow(t: number): void {
     while (window.length > 0) {
       const head = window[0];
@@ -175,6 +195,9 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           return { ok: false, reason: "all_failed", failures };
         }
         return { ok: true, delivered };
+      }
+      if (notification.priority === "normal" && isQuietNow(t)) {
+        return { ok: false, reason: "quiet_hours" };
       }
       if (!reserveSlot(t, notification.priority)) {
         return { ok: false, reason: "rate_limited" };
