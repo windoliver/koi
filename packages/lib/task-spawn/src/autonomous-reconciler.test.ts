@@ -396,6 +396,27 @@ describe("reconcileTaskBoard", () => {
     expect(result.actions).toEqual([]);
   });
 
+  test("flags tasks with missing dependency rows in unorderedTaskIds", () => {
+    const malformed = {
+      items: [
+        {
+          id: taskItemId("orphan"),
+          subject: "orphan",
+          description: "depends on missing parent",
+          dependencies: [taskItemId("missing-parent")],
+          status: "pending" as const,
+          version: 1,
+          metadata: { delegation: "spawn", agentType: "researcher" },
+        },
+      ],
+      results: [],
+    };
+
+    const result = reconcileTaskBoard(malformed as never);
+    expect(result.unorderedTaskIds).toContain(taskItemId("orphan"));
+    expect(result.actions).toEqual([]);
+  });
+
   test("dispatch actions include the task version as an OCC token", () => {
     const board = createTaskBoard().add({
       id: taskItemId("ready"),

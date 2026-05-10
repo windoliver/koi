@@ -112,10 +112,23 @@ export function reconcileTaskBoard(
   const itemsMap = snapshotToItemsMap(board);
   const orderedIds = topologicalSort(itemsMap);
   const orderedSet = new Set<TaskItemId>(orderedIds);
-  const unorderedTaskIds: TaskItemId[] = [];
+  const unorderedSet = new Set<TaskItemId>();
   for (const id of itemsMap.keys()) {
-    if (!orderedSet.has(id)) unorderedTaskIds.push(id);
+    if (!orderedSet.has(id)) unorderedSet.add(id);
   }
+  // Tasks with dependencies that no longer exist on the board: topological
+  // sort silently treats them as having indegree 0, so the reconciler would
+  // otherwise try to dispatch/cancel them as if the dep were satisfied.
+  // Surface them as malformed so the caller fails closed.
+  for (const [id, task] of itemsMap) {
+    for (const depId of task.dependencies) {
+      if (!itemsMap.has(depId)) {
+        unorderedSet.add(id);
+        break;
+      }
+    }
+  }
+  const unorderedTaskIds: TaskItemId[] = [...unorderedSet];
   const readyIds = new Set(board.ready().map((task) => task.id));
   const actions: AutonomousReconcileAction[] = [];
   const isStale = options.isDelegationStale;
@@ -123,6 +136,7 @@ export function reconcileTaskBoard(
   const activeDelegations = new Set<TaskItemId>();
   const recoveringIds = new Set<TaskItemId>();
   for (const task of board.all()) {
+    if (unorderedSet.has(task.id)) continue;
     const marker = pendingDelegationMarker(task);
     if (marker === undefined) continue;
     const stale = marker.malformed || (isStale?.(task, marker.delegatedTo) ?? false);
@@ -145,6 +159,7 @@ export function reconcileTaskBoard(
 
   for (const taskId of orderedIds) {
     if (!readyIds.has(taskId)) continue;
+    if (unorderedSet.has(taskId)) continue;
     if (activeDelegations.has(taskId) || recoveringIds.has(taskId)) continue;
     const task = board.get(taskId);
     if (task === undefined) continue;
@@ -159,6 +174,7 @@ export function reconcileTaskBoard(
   }
   const cancelled = new Map<TaskItemId, CancellationOrigin>();
   for (const taskId of orderedIds) {
+    if (unorderedSet.has(taskId)) continue;
     const task = board.get(taskId);
     if (task === undefined) continue;
     if (task.status !== "pending" && task.status !== "in_progress") continue;

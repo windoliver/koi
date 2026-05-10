@@ -29,8 +29,15 @@ export type {
 /** Options passed to the spawn callback by the task tool. */
 export type TaskSpawnRequest = CoreSpawnRequest;
 
-/** Result returned by the spawn (or message) callback. */
-export type TaskSpawnResult = CoreSpawnResult;
+/**
+ * Result returned by the spawn (or message) callback.
+ *
+ * Accepts both the unified core shape (`error: KoiError`) and the legacy
+ * `error: string` shape during the v2 unification migration. The runtime
+ * `extractOutput` helper normalizes both. New code should produce the core
+ * shape; this widening is a temporary compatibility surface.
+ */
+export type TaskSpawnResult = CoreSpawnResult | { readonly ok: false; readonly error: string };
 
 /** Spawn callback — wires task-spawn to the L1 lifecycle without an L1 import. */
 export type SpawnFn = CoreSpawnFn;
