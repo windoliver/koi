@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 144 | 736 | 125 |
+| lib | 144 | 741 | 125 |
 | meta | 5 | 118 | 4 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
@@ -119,7 +119,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/long-running` (packages/lib/long-running) - Long-running harness — multi-turn agent lifecycle with soft checkpointing, pause/resume, and crash recovery. Tests: 1. Docs: docs/L2/long-running.md.
 - `@koi/loop` (packages/lib/loop) - Convergence loop primitive — re-runs an agent until a deterministic verifier passes or a budget is exhausted. Tests: 8. Docs: docs/L2/loop.md.
 - `@koi/lsp` (packages/lib/lsp) - LSP client tools: hover, definition, references, diagnostics, symbols. Tests: 9. Docs: docs/L2/lsp.md.
-- `@koi/middleware-ace` (packages/lib/middleware-ace) - Adaptive Continuous Enhancement — trajectory-to-playbook self-improvement loop (stat pipeline + injection). Tests: 6. Docs: docs/L2/middleware-ace.md.
+- `@koi/middleware-ace` (packages/lib/middleware-ace) - Adaptive Continuous Enhancement — trajectory-to-playbook self-improvement loop (stat pipeline + injection). Tests: 11. Docs: docs/L2/middleware-ace.md.
 - `@koi/middleware-call-dedup` (packages/lib/middleware-call-dedup) - Cache deterministic tool call results within a session by content-hashed key. Tests: 3. Docs: docs/L2/middleware-call-dedup.md.
 - `@koi/middleware-call-limits` (packages/lib/middleware-call-limits) - Per-session tool and model call caps with atomic increment-if-below counters. Tests: 4. Docs: docs/L2/middleware-call-limits.md.
 - `@koi/middleware-circuit-breaker` (packages/lib/middleware-circuit-breaker) - Per-provider circuit breaker for model calls — fail fast on unhealthy providers. Tests: 1. Docs: docs/L2/middleware-circuit-breaker.md.
