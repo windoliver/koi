@@ -83,6 +83,21 @@ describe("createSpawnFitnessWrapper", () => {
     await expect(wrapped(createRequest())).resolves.toBe(result);
   });
 
+  test("does not block spawn return on a hung recorder", async () => {
+    const result: SpawnResult = { ok: true, output: "done" };
+    const spawn = mock(async (_request: SpawnRequest): Promise<SpawnResult> => result);
+    const recordOutcome = mock(
+      (_outcome: SpawnFitnessOutcome) => new Promise<void>(() => undefined),
+    );
+
+    const wrapped = createSpawnFitnessWrapper(spawn, { recordOutcome });
+
+    const observed = await wrapped(createRequest());
+
+    expect(observed).toBe(result);
+    expect(recordOutcome).toHaveBeenCalledTimes(1);
+  });
+
   test("records failed outcomes when spawn throws and rethrows the original error", async () => {
     const recordOutcome = mock(async (_outcome: SpawnFitnessOutcome) => undefined);
     let now = 30;

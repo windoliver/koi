@@ -90,6 +90,23 @@ describe("@koi/autonomous", () => {
     ]);
   });
 
+  test("forwards an active SessionLease to harness.dispose", async () => {
+    const received: Array<SessionLease | undefined> = [];
+    const harness = createHarnessStub({
+      dispose: async (lease) => {
+        received.push(lease);
+        return ok();
+      },
+    });
+    const scheduler = createSchedulerStub();
+    const lease = { sessionId: "session-7" } as unknown as SessionLease;
+
+    const agent = createAutonomousAgent({ harness, scheduler });
+    await agent.dispose(lease);
+
+    expect(received).toEqual([lease]);
+  });
+
   test("disposes scheduler before harness", async () => {
     const calls: string[] = [];
     const harness = createHarnessStub({

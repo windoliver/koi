@@ -1,4 +1,5 @@
 import type { ComponentProvider, KoiError, KoiMiddleware, Result } from "@koi/core";
+import type { SessionLease } from "@koi/long-running";
 import { createSpawnFitnessWrapper, createTaskSpawnProvider, type SpawnFn } from "@koi/task-spawn";
 import type { AutonomousAgent, AutonomousAgentParts } from "./types.js";
 
@@ -29,7 +30,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   let harnessDisposed = false;
   let inFlight: Promise<void> | undefined;
 
-  async function runDispose(): Promise<void> {
+  async function runDispose(lease: SessionLease | undefined): Promise<void> {
     let schedulerError: unknown;
 
     if (!schedulerDisposed) {
@@ -43,7 +44,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
 
     if (!harnessDisposed) {
       try {
-        assertOk(await parts.harness.dispose());
+        assertOk(await parts.harness.dispose(lease));
         harnessDisposed = true;
       } catch (error) {
         if (schedulerError !== undefined) {
@@ -66,9 +67,9 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     scheduler: parts.scheduler,
     middleware: () => middleware,
     providers: () => providers,
-    dispose: () => {
+    dispose: (lease?: SessionLease) => {
       if (inFlight !== undefined) return inFlight;
-      const attempt = runDispose().finally(() => {
+      const attempt = runDispose(lease).finally(() => {
         if (inFlight === attempt) inFlight = undefined;
       });
       inFlight = attempt;

@@ -50,7 +50,7 @@ export function createSpawnFitnessWrapper(
     try {
       const result = await spawn(request);
       const durationMs = now() - startedAt;
-      await recordOutcomeBestEffort(config, {
+      void recordOutcomeBestEffort(config, {
         agentName: request.agentName,
         description: request.description,
         durationMs,
@@ -60,7 +60,7 @@ export function createSpawnFitnessWrapper(
       return result;
     } catch (error: unknown) {
       const durationMs = now() - startedAt;
-      await recordOutcomeBestEffort(config, {
+      void recordOutcomeBestEffort(config, {
         agentName: request.agentName,
         description: request.description,
         durationMs,
