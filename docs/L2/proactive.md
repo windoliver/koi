@@ -463,3 +463,29 @@ reason: "all_failed", failures: [{ channel, error }] }`. Adapter
 exceptions never propagate. Failed deliveries refund their rate-limit
 slot. Concurrent sends at cap-1 cannot both pass — the gate reserves
 its slot synchronously before any `await`.
+
+### Quiet hours (Phase 4)
+
+Set `quietHoursStart`, `quietHoursEnd`, and optional `timezone` (IANA,
+default `"UTC"`) on `DeliveryPreferences` to suppress `normal`-priority
+sends within the window. `high` and `urgent` always pass; `low` is
+unaffected (inbox routing is a separate Phase 4 follow-up).
+
+```typescript
+const delivery = createProactiveDelivery({
+  channels,
+  preferences: {
+    quietHoursStart: 22,        // suppress from 22:00
+    quietHoursEnd: 6,           // through 05:59
+    timezone: "America/New_York",
+    preferredChannel: "slack",
+  },
+});
+```
+
+Window is `[start, end)` in the configured timezone; cross-midnight
+windows are supported (e.g. 22→6). Suppressed sends return
+`{ ok: false, reason: "quiet_hours" }` and **do not** consume the rate
+limit window. Validation runs at factory construction — partial config
+(only one bound set), out-of-range hours, or invalid IANA timezones
+throw immediately.

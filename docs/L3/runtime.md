@@ -511,6 +511,7 @@ The runtime now exposes `createDecisionLedger()` on `TuiRuntimeHandle`, wrapping
 
 ## Changelog
 
+- 2026-05-10: `@koi/proactive` adds quiet-hours gating to `createProactiveDelivery` (issue #1301 Phase 4 sub-1). `DeliveryPreferences` accepts `quietHoursStart`, `quietHoursEnd`, `timezone` (IANA, default `"UTC"`); `normal`-priority sends inside the window return `{ ok: false, reason: "quiet_hours" }` without consuming rate-limit capacity. `high` and `urgent` always pass. Cross-midnight windows supported. Validation throws at construction for partial config, out-of-range hours, or invalid timezones. Multi-channel fallback for `high` and inbox routing for `low` remain in follow-up PRs.
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
 
 ## #1650 — Soft permission deny (opt-in)
