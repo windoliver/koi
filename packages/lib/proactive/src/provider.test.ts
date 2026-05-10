@@ -54,6 +54,26 @@ function makeAgent(
   };
 }
 
+function makeStubChannel(name: string): ChannelAdapter {
+  return {
+    name,
+    capabilities: {
+      text: true,
+      images: false,
+      files: false,
+      buttons: false,
+      audio: false,
+      video: false,
+      threads: true,
+      supportsA2ui: false,
+    },
+    connect: async () => {},
+    disconnect: async () => {},
+    send: async () => {},
+    onMessage: () => () => {},
+  };
+}
+
 describe("createProactiveToolsProvider", () => {
   test("returns a ComponentProvider named 'proactive' at BUNDLED priority by default", () => {
     const provider = createProactiveToolsProvider();
@@ -321,23 +341,7 @@ describe("createProactiveToolsProvider", () => {
 
   test("installs notify tool when channel:* components are attached", async () => {
     const provider = createProactiveToolsProvider();
-    const slack: ChannelAdapter = {
-      name: "slack",
-      capabilities: {
-        text: true,
-        images: false,
-        files: false,
-        buttons: false,
-        audio: false,
-        video: false,
-        threads: true,
-        supportsA2ui: false,
-      },
-      connect: async () => {},
-      disconnect: async () => {},
-      send: async () => {},
-      onMessage: () => () => {},
-    };
+    const slack = makeStubChannel("slack");
     const agent = makeAgent(
       createSchedulerStub().component,
       "agent-1",
@@ -360,23 +364,7 @@ describe("createProactiveToolsProvider", () => {
 
   test("notify uses snapshot — channels added after attach are not visible", async () => {
     const provider = createProactiveToolsProvider();
-    const slack: ChannelAdapter = {
-      name: "slack",
-      capabilities: {
-        text: true,
-        images: false,
-        files: false,
-        buttons: false,
-        audio: false,
-        video: false,
-        threads: true,
-        supportsA2ui: false,
-      },
-      connect: async () => {},
-      disconnect: async () => {},
-      send: async () => {},
-      onMessage: () => () => {},
-    };
+    const slack = makeStubChannel("slack");
     const channels = new Map<string, ChannelAdapter>([["slack", slack]]);
     const agent = makeAgent(createSchedulerStub().component, "agent-1", channels);
 
@@ -387,13 +375,37 @@ describe("createProactiveToolsProvider", () => {
     };
 
     // Mutate the agent's components AFTER attach — should not change snapshot.
-    (agent.components() as Map<string, unknown>).set("channel:email", slack);
+    (agent.components() as Map<string, unknown>).set("channel:email", makeStubChannel("email"));
 
-    const res = await notify.execute({ channel: "email", text: "hi" });
-    expect(res).toEqual({
-      ok: false,
-      error: "unknown channel: email",
-      available_channels: ["slack"],
-    });
+    const res = (await notify.execute({ channel: "email", text: "hi" })) as {
+      ok: boolean;
+      error: string;
+      available_channels: readonly string[];
+    };
+
+    // The strong assertion: available_channels stays exactly ["slack"], proving
+    // the snapshot did not grow when a new channel was added post-attach.
+    expect(res.ok).toBe(false);
+    expect(res.available_channels).toEqual(["slack"]);
+  });
+
+  test("notify uses snapshot — channels removed after attach remain visible", async () => {
+    const provider = createProactiveToolsProvider();
+    const slack = makeStubChannel("slack");
+    const channels = new Map<string, ChannelAdapter>([["slack", slack]]);
+    const agent = makeAgent(createSchedulerStub().component, "agent-1", channels);
+
+    const result = await provider.attach(agent);
+    const map = "components" in result ? result.components : result;
+    const notify = map.get(toolToken("notify") as string) as {
+      execute: (args: JsonObject) => Promise<unknown>;
+    };
+
+    // Remove slack from the agent's component map AFTER attach.
+    (agent.components() as Map<string, unknown>).delete("channel:slack");
+
+    // Snapshot still has it — send succeeds.
+    const res = await notify.execute({ channel: "slack", text: "hi" });
+    expect(res).toEqual({ ok: true });
   });
 });

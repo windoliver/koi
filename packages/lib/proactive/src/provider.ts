@@ -33,7 +33,7 @@ import type {
   SkippedComponent,
   Tool,
 } from "@koi/core";
-import { COMPONENT_PRIORITY, SCHEDULER, toolToken } from "@koi/core";
+import { COMPONENT_PRIORITY, channelToken, SCHEDULER, toolToken } from "@koi/core";
 import { assembleProactiveTools } from "./create-proactive-tools.js";
 import { createCronToolState } from "./cron-tools.js";
 import { createMonitorToolState } from "./monitor-tools.js";
@@ -82,10 +82,11 @@ export function createProactiveToolsProvider(
       // removed after attach are not reflected by `notify` until reattach —
       // matches the provider's existing per-attach lifecycle.
       const channelSnapshot = new Map<string, ChannelAdapter>();
-      for (const [key, value] of agent.components()) {
-        if (key.startsWith("channel:")) {
-          channelSnapshot.set(key.slice("channel:".length), value as ChannelAdapter);
-        }
+      for (const key of agent.components().keys()) {
+        if (!key.startsWith("channel:")) continue;
+        const name = key.slice("channel:".length);
+        const adapter = agent.component(channelToken(name));
+        if (adapter !== undefined) channelSnapshot.set(name, adapter);
       }
 
       const toolConfig: ProactiveToolsConfig = {
