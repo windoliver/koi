@@ -1,0 +1,1061 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "proactive-tools",
+  "agent": {
+    "name": "golden-proactive-tools",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "sleep",
+        "description": "Pause the agent and schedule a wake-up after `duration_ms` milliseconds. Use when the right next step is to wait — e.g. polling for an external result, honoring a rate limit, or deferring follow-up work. The agent resumes with a fresh turn carrying `wake_message` (or a default)."
+      },
+      {
+        "name": "cancel_sleep",
+        "description": "Cancel a pending wake-up scheduled by `sleep` before it fires. Use when the work the agent was waiting on completed early or has been superseded. Returns `{ removed: false }` if the task has already fired or never existed (idempotent)."
+      },
+      {
+        "name": "schedule_cron",
+        "description": "Register a recurring cron schedule that re-dispatches this agent each fire. Use for repeating maintenance, periodic checks, or daily summaries. The schedule persists across runtime restarts when the host scheduler is durable."
+      },
+      {
+        "name": "cancel_schedule",
+        "description": "Remove a previously registered cron schedule by ID. Returns `{ removed: false }` if the ID does not match an active schedule (idempotent — safe to retry)."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:06.290Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:06.291Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-05-10T08:35:06.444Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the sleep tool with duration_ms 3600000 to schedule a wake-up in one hour. Then use the schedule_cron tool with cron_expression '0 9 * * 1-5' and idempotency_key 'daily-standup' to register a recurring weekday morning trigger. Briefly confirm both succeeded.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 855,
+        "completion_tokens": 29
+      },
+      "duration_ms": 932,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "sleep",
+            "description": "Pause the agent and schedule a wake-up after `duration_ms` milliseconds. Use when the right next step is to wait — e.g. polling for an external result, honoring a rate limit, or deferring follow-up work. The agent resumes with a fresh turn carrying `wake_message` (or a default)."
+          },
+          {
+            "name": "cancel_sleep",
+            "description": "Cancel a pending wake-up scheduled by `sleep` before it fires. Use when the work the agent was waiting on completed early or has been superseded. Returns `{ removed: false }` if the task has already fired or never existed (idempotent)."
+          },
+          {
+            "name": "schedule_cron",
+            "description": "Register a recurring cron schedule that re-dispatches this agent each fire. Use for repeating maintenance, periodic checks, or daily summaries. The schedule persists across runtime restarts when the host scheduler is durable."
+          },
+          {
+            "name": "cancel_schedule",
+            "description": "Remove a previously registered cron schedule by ID. Returns `{ removed: false }` if the ID does not match an active schedule (idempotent — safe to retry)."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "68fd180ce632a5d7706a298e130287dc98a2dab24209be0276cf366ee79d5b66",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-05-10T08:35:07.389Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_sleep_3",
+          "function_name": "sleep",
+          "arguments": {
+            "duration_ms": 3600000
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_sleep_3",
+            "content": "{\"ok\":true,\"task_id\":\"task_1778402107392_syyvp9o8\",\"wake_at_ms\":1778405707391}"
+          }
+        ]
+      },
+      "duration_ms": 3,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "tool",
+      "timestamp": "2026-05-10T08:35:07.397Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_schedule_cron_4",
+          "function_name": "schedule_cron",
+          "arguments": {
+            "cron_expression": "0 9 * * 1-5",
+            "idempotency_key": "daily-standup"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_schedule_cron_4",
+            "content": "{\"ok\":false,\"error\":\"[\\n  {\\n    \\\"expected\\\": \\\"string\\\",\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"path\\\": [\\n      \\\"expression\\\"\\n    ],\\n    \\\"message\\\": \\\"Invalid input: expected string, received undefined\\\"\\n  }\\n]\"}"
+          }
+        ]
+      },
+      "duration_ms": 8,
+      "outcome": "success"
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.398Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 948.4043329999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1778402107388,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.399Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "sleep({\"duration_ms\":3600000})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 9.29804200000035,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "sleep",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "_original_timestamp": 1778402107396,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.409Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "schedule_cron({\"cron_expression\":\"0 9 * * 1-5\",\"idempotency_key\":\"daily-standup\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 10.902791000000434,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "schedule_cron",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.410Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 943.4084170000006,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1778402107387,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.411Z",
+      "model_name": "middleware:permissions",
+      "message": "sleep({\"duration_ms\":3600000})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 8.297166999998808,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "sleep",
+            "resource": "sleep",
+            "toolInput": "{\"duration_ms\":3600000}",
+            "action": "allow",
+            "durationMs": 1,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1778402107395,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.412Z",
+      "model_name": "middleware:permissions",
+      "message": "schedule_cron({\"cron_expression\":\"0 9 * * 1-5\",\"idempotency_key\":\"daily-standup\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 10.602666999999201,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "schedule_cron",
+            "resource": "schedule_cron",
+            "toolInput": "{\"cron_expression\":\"0 9 * * 1-5\",\"idempotency_key\":\"daily-standup\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1778402107408,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.413Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 941.1264590000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1778402107386,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.414Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 940.7418749999988,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1778402107385,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.415Z",
+      "model_name": "middleware:hooks",
+      "message": "sleep({\"duration_ms\":3600000})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 5.27770799999962,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "sleep",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1778402107394,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.416Z",
+      "model_name": "middleware:hooks",
+      "message": "schedule_cron({\"cron_expression\":\"0 9 * * 1-5\",\"idempotency_key\":\"daily-standup\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 10.46008299999994,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "schedule_cron",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1778402107407,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.417Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 939.9433330000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1778402107384,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.418Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "sleep({\"duration_ms\":3600000})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 4.116541999999754,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1778402107393,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:07.419Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "schedule_cron({\"cron_expression\":\"0 9 * * 1-5\",\"idempotency_key\":\"daily-standup\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 10.364874999999302,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1778402107406,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "agent",
+      "timestamp": "2026-05-10T08:35:07.455Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":false,\"error\":\"[\\n  {\\n    \\\"expected\\\": \\\"string\\\",\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"path\\\": [\\n      \\\"expression\\\"\\n    ],\\n    \\\"message\\\": \\\"Invalid input: expected string, received undefined\\\"\\n  }\\n]\"}",
+      "observation": {
+        "results": [
+          {
+            "content": "The sleep task succeeded and I received a task_id. However, the schedule_cron call failed because the cron_expression was not properly passed. I will retry the schedule_cron call.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1013,
+        "completion_tokens": 62
+      },
+      "duration_ms": 866,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 5,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "sleep",
+            "description": "Pause the agent and schedule a wake-up after `duration_ms` milliseconds. Use when the right next step is to wait — e.g. polling for an external result, honoring a rate limit, or deferring follow-up work. The agent resumes with a fresh turn carrying `wake_message` (or a default)."
+          },
+          {
+            "name": "cancel_sleep",
+            "description": "Cancel a pending wake-up scheduled by `sleep` before it fires. Use when the work the agent was waiting on completed early or has been superseded. Returns `{ removed: false }` if the task has already fired or never existed (idempotent)."
+          },
+          {
+            "name": "schedule_cron",
+            "description": "Register a recurring cron schedule that re-dispatches this agent each fire. Use for repeating maintenance, periodic checks, or daily summaries. The schedule persists across runtime restarts when the host scheduler is durable."
+          },
+          {
+            "name": "cancel_schedule",
+            "description": "Remove a previously registered cron schedule by ID. Returns `{ removed: false }` if the ID does not match an active schedule (idempotent — safe to retry)."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "68fd180ce632a5d7706a298e130287dc98a2dab24209be0276cf366ee79d5b66",
+        "turnIndex": 1
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "tool",
+      "timestamp": "2026-05-10T08:35:08.327Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_schedule_cron_19",
+          "function_name": "schedule_cron",
+          "arguments": {
+            "idempotency_key": "daily-standup",
+            "expression": "0 9 * * 1-5"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_schedule_cron_19",
+            "content": "{\"ok\":true,\"schedule_id\":\"sched_1778402108324_xwqj3ohx\"}"
+          }
+        ]
+      },
+      "duration_ms": 2,
+      "outcome": "success"
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.328Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 868.0118330000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1778402108326,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.333Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "schedule_cron({\"idempotency_key\":\"daily-standup\",\"expression\":\"0 9 * * 1-5\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 7.231708999999682,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "schedule_cron",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.334Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 867.9747090000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1778402108325,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.335Z",
+      "model_name": "middleware:permissions",
+      "message": "schedule_cron({\"idempotency_key\":\"daily-standup\",\"expression\":\"0 9 * * 1-5\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 7.136666000000332,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "schedule_cron",
+            "resource": "schedule_cron",
+            "toolInput": "{\"idempotency_key\":\"daily-standup\",\"expression\":\"0 9 * * 1-5\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1778402108332,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.336Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 867.6404590000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1778402108324,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.337Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 867.576583,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1778402108323,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.338Z",
+      "model_name": "middleware:hooks",
+      "message": "schedule_cron({\"idempotency_key\":\"daily-standup\",\"expression\":\"0 9 * * 1-5\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 7.01587500000096,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "schedule_cron",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1778402108331,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 27,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.339Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 867.4861670000009,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1778402108322,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 28,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.340Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "schedule_cron({\"idempotency_key\":\"daily-standup\",\"expression\":\"0 9 * * 1-5\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 6.798000000000684,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1778402108330,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 29,
+      "source": "agent",
+      "timestamp": "2026-05-10T08:35:08.341Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":true,\"schedule_id\":\"sched_1778402108324_xwqj3ohx\"}",
+      "observation": {
+        "results": [
+          {
+            "content": "OK. The sleep tool successfully scheduled a wake-up in one hour. The schedule_cron tool also successfully registered a recurring weekday morning trigger."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1082,
+        "completion_tokens": 29
+      },
+      "duration_ms": 520,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 7,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "sleep",
+            "description": "Pause the agent and schedule a wake-up after `duration_ms` milliseconds. Use when the right next step is to wait — e.g. polling for an external result, honoring a rate limit, or deferring follow-up work. The agent resumes with a fresh turn carrying `wake_message` (or a default)."
+          },
+          {
+            "name": "cancel_sleep",
+            "description": "Cancel a pending wake-up scheduled by `sleep` before it fires. Use when the work the agent was waiting on completed early or has been superseded. Returns `{ removed: false }` if the task has already fired or never existed (idempotent)."
+          },
+          {
+            "name": "schedule_cron",
+            "description": "Register a recurring cron schedule that re-dispatches this agent each fire. Use for repeating maintenance, periodic checks, or daily summaries. The schedule persists across runtime restarts when the host scheduler is durable."
+          },
+          {
+            "name": "cancel_schedule",
+            "description": "Remove a previously registered cron schedule by ID. Returns `{ removed: false }` if the ID does not match an active schedule (idempotent — safe to retry)."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "68fd180ce632a5d7706a298e130287dc98a2dab24209be0276cf366ee79d5b66",
+        "turnIndex": 2,
+        "_original_timestamp": 1778402108336
+      }
+    },
+    {
+      "step_id": 30,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.862Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 523.862459,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 31,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.863Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 523.8065000000006,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1778402108861,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 32,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.864Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 522.9860410000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1778402108860,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 33,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.865Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 522.7642919999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1778402108859,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 34,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:08.866Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 521.9838330000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1778402108858,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 35,
+      "source": "system",
+      "timestamp": "2026-05-10T08:35:09.017Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.22108400000070105,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

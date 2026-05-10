@@ -14570,7 +14570,7 @@ describe("Golden: @koi/scheduler-nexus", () => {
   test("creates Nexus scheduler backends with distributed queue methods", async () => {
     const { createNexusSchedulerBackends } = await import("@koi/scheduler-nexus");
 
-    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const fetch = (async (input: string | URL | Request, _init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/api/nfs/")) {
         const method = decodeURIComponent(url.split("/api/nfs/")[1] ?? "");
@@ -18753,8 +18753,9 @@ describe("Golden: @koi/workspace-nexus", () => {
 
 // ---------------------------------------------------------------------------
 // Golden: @koi/proactive
-// L2 — composition executor + planners + durable execution log. No LLM
-// required: tests exercise the executor/log/planner contracts directly.
+// L2 — composition executor + planners + durable execution log + sleep/cron
+// tools. No LLM required: tests exercise the executor/log/planner contracts
+// directly and the sleep/cron tools against an in-memory SchedulerComponent.
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/proactive", () => {
@@ -19110,5 +19111,157 @@ describe("Golden: @koi/proactive", () => {
     if (blocked.status === "requires_approval") {
       expect(blocked.error.message).toMatch(/maxCompositionsPerSession/);
     }
+  });
+
+  test("createProactiveTools returns the 4 expected agent-callable tools", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createProactiveTools } = await import("@koi/proactive");
+    const { DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      "golden-proactive" as import("@koi/core").AgentId,
+    );
+
+    const tools = createProactiveTools({
+      scheduler: component,
+      agentId: "golden-proactive" as import("@koi/core").AgentId,
+    });
+
+    expect(tools.length).toBe(4);
+    const names = tools.map((t) => t.descriptor.name);
+    expect(names).toEqual(["sleep", "cancel_sleep", "schedule_cron", "cancel_schedule"]);
+    for (const tool of tools) expect(tool.origin).toBe("primordial");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("sleep tool submits a delayed task that scheduler.query returns as pending", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createProactiveTools } = await import("@koi/proactive");
+    const { DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const agentId = "golden-proactive" as import("@koi/core").AgentId;
+    const component = createSchedulerComponent(scheduler, agentId);
+    const [sleepTool] = createProactiveTools({ scheduler: component, agentId }) as readonly [
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+    ];
+
+    const sleepResult = (await sleepTool.execute({
+      duration_ms: 3_600_000,
+      wake_message: "wake from golden test",
+    } as JsonObject)) as { ok: boolean; task_id?: string; wake_at_ms?: number };
+
+    expect(sleepResult.ok).toBe(true);
+    expect(typeof sleepResult.task_id).toBe("string");
+    expect(typeof sleepResult.wake_at_ms).toBe("number");
+
+    const queryRecord = await scheduler.query({ agentId });
+    expect(queryRecord.length).toBe(1);
+    expect(queryRecord[0]?.status).toBe("pending");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("schedule_cron + cancel_schedule round-trip through SchedulerComponent", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createProactiveTools } = await import("@koi/proactive");
+    const { DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const agentId = "golden-proactive" as import("@koi/core").AgentId;
+    const component = createSchedulerComponent(scheduler, agentId);
+    const [, , scheduleCronTool, cancelScheduleTool] = createProactiveTools({
+      scheduler: component,
+      agentId,
+    }) as readonly [
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+    ];
+
+    const scheduleResult = (await scheduleCronTool.execute({
+      expression: "0 9 * * 1-5",
+      idempotency_key: "weekday-standup",
+    } as JsonObject)) as { ok: boolean; schedule_id?: string };
+    expect(scheduleResult.ok).toBe(true);
+    expect(typeof scheduleResult.schedule_id).toBe("string");
+
+    const cancelResult = (await cancelScheduleTool.execute({
+      schedule_id: scheduleResult.schedule_id ?? "",
+    } as JsonObject)) as { ok: boolean };
+    expect(cancelResult.ok).toBe(true);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("trajectory fixture records expected proactive tool calls", async () => {
+    const trajectoryPath = `${FIXTURES}/proactive-tools.trajectory.json`;
+    const file = Bun.file(trajectoryPath);
+    if (!(await file.exists())) {
+      console.warn("proactive-tools.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const trajectory = (await file.json()) as {
+      schema_version: string;
+      steps: readonly {
+        readonly source?: string;
+        readonly outcome?: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    const toolSteps = trajectory.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThan(0);
+
+    const invokedToolNames = new Set(
+      toolSteps.flatMap((s) => (s.tool_calls ?? []).map((c) => c.function_name)),
+    );
+    expect(invokedToolNames.has("sleep")).toBe(true);
+    expect(invokedToolNames.has("schedule_cron")).toBe(true);
+
+    const successfulProactiveCalls = toolSteps.filter(
+      (s) =>
+        (s.tool_calls ?? []).some(
+          (c) => c.function_name === "sleep" || c.function_name === "schedule_cron",
+        ) && s.outcome === "success",
+    );
+    expect(successfulProactiveCalls.length).toBeGreaterThan(0);
   });
 });
