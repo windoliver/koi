@@ -247,7 +247,7 @@ describe("@koi/autonomous", () => {
     expect(calls).toEqual(["scheduler.dispose", "harness.dispose"]);
   });
 
-  test("still disposes harness when scheduler disposal throws", async () => {
+  test("does not dispose harness when scheduler disposal throws", async () => {
     const calls: string[] = [];
     const schedulerError = new Error("scheduler dispose failed");
     const harness = createHarnessStub({
@@ -266,7 +266,7 @@ describe("@koi/autonomous", () => {
     const agent = createAutonomousAgent({ harness, scheduler });
 
     await expect(agent.dispose()).rejects.toBe(schedulerError);
-    expect(calls).toEqual(["scheduler.dispose", "harness.dispose"]);
+    expect(calls).toEqual(["scheduler.dispose"]);
   });
 
   test("throws when harness disposal returns an error result", async () => {
@@ -288,18 +288,14 @@ describe("@koi/autonomous", () => {
     await expect(agent.dispose()).rejects.toBe(harnessError);
   });
 
-  test("aggregates scheduler and harness cleanup failures", async () => {
+  test("scheduler-dispose failure short-circuits before harness teardown is attempted", async () => {
     const schedulerError = new Error("scheduler dispose failed");
-    const harnessError = {
-      code: "INTERNAL",
-      message: "harness dispose failed",
-      retryable: false,
-    } as KoiError;
+    let harnessCalls = 0;
     const harness = createHarnessStub({
-      dispose: async () => ({
-        ok: false,
-        error: harnessError,
-      }),
+      dispose: async () => {
+        harnessCalls += 1;
+        return ok();
+      },
     });
     const scheduler = createSchedulerStub({
       dispose: async () => {
@@ -309,12 +305,8 @@ describe("@koi/autonomous", () => {
 
     const agent = createAutonomousAgent({ harness, scheduler });
 
-    await expect(agent.dispose()).rejects.toEqual(
-      new AggregateError(
-        [schedulerError, harnessError],
-        "autonomous dispose failed during scheduler and harness cleanup",
-      ),
-    );
+    await expect(agent.dispose()).rejects.toBe(schedulerError);
+    expect(harnessCalls).toBe(0);
   });
 
   test("concurrent dispose calls share a single teardown attempt", async () => {

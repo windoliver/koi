@@ -32,15 +32,12 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   let pendingLease: SessionLease | undefined;
 
   async function runDispose(): Promise<void> {
-    let schedulerError: unknown;
-
     if (!schedulerDisposed) {
-      try {
-        await parts.scheduler.dispose();
-        schedulerDisposed = true;
-      } catch (error) {
-        schedulerError = error;
-      }
+      // Fail fast: if the scheduler cannot confirm shutdown, do not touch the
+      // harness — a still-active scheduler can resume() against an already
+      // disposed harness, breaking the stop-before-dispose invariant.
+      await parts.scheduler.dispose();
+      schedulerDisposed = true;
     }
 
     while (!harnessDisposed) {
@@ -56,18 +53,8 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
           // with the updated lease so the live session is actually revoked.
           continue;
         }
-        if (schedulerError !== undefined) {
-          throw new AggregateError(
-            [schedulerError, error],
-            "autonomous dispose failed during scheduler and harness cleanup",
-          );
-        }
         throw error;
       }
-    }
-
-    if (schedulerError !== undefined) {
-      throw schedulerError;
     }
   }
 

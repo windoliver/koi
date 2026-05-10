@@ -65,18 +65,23 @@ export function reconcileTaskBoard(
   options: AutonomousReconcileOptions = {},
 ): AutonomousReconcileResult {
   const board = deserializeBoard(snapshot);
-  const itemsById = new Map<TaskItemId, Task>(snapshot.items.map((task) => [task.id, task]));
   const orderedIds = topologicalSort(snapshotToItemsMap(board));
   const readyIds = new Set(board.ready().map((task) => task.id));
   const actions: AutonomousReconcileAction[] = [];
   const isStale = options.isDelegationStale;
 
   const activeDelegations = new Set<TaskItemId>();
-  for (const task of snapshot.items) {
+  const recoveringIds = new Set<TaskItemId>();
+  for (const task of board.all()) {
     const marker = pendingDelegationMarker(task);
     if (marker === undefined) continue;
     const stale = marker.malformed || (isStale?.(task, marker.delegatedTo) ?? false);
     if (stale) {
+      // clearDelegation mutates task.version. The same dispatch can not be
+      // emitted in this pass because its OCC token would already be stale by
+      // the time the consumer applied the cleanup. Callers run reconciliation
+      // again after applying clearDelegation to pick up the redispatch.
+      recoveringIds.add(task.id);
       actions.push({
         kind: "clearDelegation",
         taskId: task.id,
@@ -89,8 +94,8 @@ export function reconcileTaskBoard(
 
   for (const taskId of orderedIds) {
     if (!readyIds.has(taskId)) continue;
-    if (activeDelegations.has(taskId)) continue;
-    const task = itemsById.get(taskId);
+    if (activeDelegations.has(taskId) || recoveringIds.has(taskId)) continue;
+    const task = board.get(taskId);
     if (task === undefined) continue;
     const agentType = delegatedAgentType(task);
     if (agentType === undefined) continue;
@@ -103,11 +108,11 @@ export function reconcileTaskBoard(
   }
   const cancelled = new Map<TaskItemId, CancellationOrigin>();
   for (const taskId of orderedIds) {
-    const task = itemsById.get(taskId);
+    const task = board.get(taskId);
     if (task === undefined) continue;
     if (task.status !== "pending" && task.status !== "in_progress") continue;
     for (const depId of task.dependencies) {
-      const dep = itemsById.get(depId);
+      const dep = board.get(depId);
       if (dep === undefined) continue;
       let origin: CancellationOrigin | undefined;
       if (dep.status === "killed") {

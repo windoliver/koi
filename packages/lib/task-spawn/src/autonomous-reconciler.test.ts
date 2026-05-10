@@ -70,7 +70,7 @@ describe("reconcileTaskBoard", () => {
     }
   });
 
-  test("stale delegations are cleared and immediately redispatched in the same pass", () => {
+  test("stale delegations emit clearDelegation alone; redispatch is left to a follow-up pass", () => {
     const board = createTaskBoard().add({
       id: taskItemId("stale"),
       subject: "recover me",
@@ -86,9 +86,8 @@ describe("reconcileTaskBoard", () => {
     const result = reconcileTaskBoard(serializeBoard(board.value), {
       isDelegationStale: () => true,
     });
-    expect(result.actions).toMatchObject([
+    expect(result.actions).toEqual([
       { kind: "clearDelegation", taskId: taskItemId("stale"), delegatedTo: "worker-1" },
-      { kind: "dispatch", taskId: taskItemId("stale"), agentType: "reviewer" },
     ]);
   });
 
@@ -269,9 +268,8 @@ describe("reconcileTaskBoard", () => {
     const result = reconcileTaskBoard(serializeBoard(board.value), {
       isDelegationStale: (_task, delegatedTo) => delegatedTo === "worker-dead",
     });
-    expect(result.actions).toMatchObject([
+    expect(result.actions).toEqual([
       { kind: "clearDelegation", taskId: taskItemId("dead"), delegatedTo: "worker-dead" },
-      { kind: "dispatch", taskId: taskItemId("dead"), agentType: "reviewer" },
     ]);
   });
 
