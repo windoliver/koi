@@ -17,7 +17,7 @@ Current snapshot:
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
 | lib | 144 | 736 | 125 |
-| meta | 5 | 117 | 4 |
+| meta | 5 | 118 | 4 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
 | sandbox | 12 | 67 | 12 |
@@ -198,7 +198,7 @@ Each line shows package name, package directory, package description, test-file 
 
 - `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 68. Docs: docs/L3/cli.md.
 - `@koi/auto-harness` (packages/meta/auto-harness) - L3 composition wiring for auto-harness synthesis session controls and policy-cache attachment. Tests: 1. Docs: -.
-- `@koi/nexus` (packages/meta/nexus) - L3 Nexus composition wiring for the active v2 Nexus package set. Tests: 5. Docs: docs/L3/nexus.md.
+- `@koi/nexus` (packages/meta/nexus) - L3 Nexus composition wiring for the active v2 Nexus package set. Tests: 6. Docs: docs/L3/nexus.md.
 - `@koi/rlm-stack` (packages/meta/rlm-stack) - L3 composition wiring @koi/middleware-rlm with @koi/context-manager threshold coordination. Tests: 3. Docs: docs/L2/rlm-stack.md, docs/L3/rlm-stack.md.
 - `@koi/runtime` (packages/meta/runtime) - L3 meta-package: wires Phase 1 kernel + L2 packages into a bootable runtime with progressive stub replacement. Tests: 40. Docs: docs/L3/runtime.md.
 

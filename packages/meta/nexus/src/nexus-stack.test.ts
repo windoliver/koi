@@ -1,4 +1,11 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
+
+// Module mocks below use `mock.module()` which persists across files in the
+// same bun process. Restore at the end so sibling integration tests can
+// exercise real implementations.
+afterAll(() => {
+  mock.restore();
+});
 
 const mockCreateGlobalBackends = mock(async () => ({
   registry: { kind: "registry" },
