@@ -29,8 +29,9 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   let schedulerDisposed = false;
   let harnessDisposed = false;
   let inFlight: Promise<void> | undefined;
+  let pendingLease: SessionLease | undefined;
 
-  async function runDispose(lease: SessionLease | undefined): Promise<void> {
+  async function runDispose(): Promise<void> {
     let schedulerError: unknown;
 
     if (!schedulerDisposed) {
@@ -44,7 +45,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
 
     if (!harnessDisposed) {
       try {
-        assertOk(await parts.harness.dispose(lease));
+        assertOk(await parts.harness.dispose(pendingLease));
         harnessDisposed = true;
       } catch (error) {
         if (schedulerError !== undefined) {
@@ -68,8 +69,9 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     middleware: () => middleware,
     providers: () => providers,
     dispose: (lease?: SessionLease) => {
+      if (lease !== undefined) pendingLease = lease;
       if (inFlight !== undefined) return inFlight;
-      const attempt = runDispose(lease).finally(() => {
+      const attempt = runDispose().finally(() => {
         if (inFlight === attempt) inFlight = undefined;
       });
       inFlight = attempt;

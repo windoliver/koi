@@ -90,6 +90,35 @@ describe("@koi/autonomous", () => {
     ]);
   });
 
+  test("a later concurrent dispose call can supply the lease the first call lacked", async () => {
+    const received: Array<SessionLease | undefined> = [];
+    let releaseScheduler!: () => void;
+    const schedulerGate = new Promise<void>((resolve) => {
+      releaseScheduler = resolve;
+    });
+    const harness = createHarnessStub({
+      dispose: async (lease) => {
+        received.push(lease);
+        return ok();
+      },
+    });
+    const scheduler = createSchedulerStub({
+      dispose: async () => {
+        await schedulerGate;
+      },
+    });
+    const lease = { sessionId: "session-late" } as unknown as SessionLease;
+
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    const first = agent.dispose();
+    const second = agent.dispose(lease);
+    releaseScheduler();
+    await Promise.all([first, second]);
+
+    expect(received).toEqual([lease]);
+  });
+
   test("forwards an active SessionLease to harness.dispose", async () => {
     const received: Array<SessionLease | undefined> = [];
     const harness = createHarnessStub({
