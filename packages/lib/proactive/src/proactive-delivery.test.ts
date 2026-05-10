@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ChannelAdapter, OutboundMessage } from "@koi/core";
+import type { InboxEnvelope, InboxSink } from "./inbox-sink.js";
 import { createProactiveDelivery } from "./proactive-delivery.js";
 
 function stubAdapter(name: string, send?: (m: OutboundMessage) => Promise<void>): ChannelAdapter {
@@ -622,5 +623,97 @@ describe("createProactiveDelivery", () => {
       failures: [{ channel: "email", error: "smtp" }],
     });
     expect(calls).toEqual(["email"]);
+  });
+
+  test("low with inbox configured → enqueue called, channel NOT called", async () => {
+    const enqueued: InboxEnvelope[] = [];
+    const channelCalls: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      channelCalls.push("slack");
+    });
+    const t = 1_700_000_000_000;
+    const inbox: InboxSink = {
+      enqueue: (env) => {
+        enqueued.push(env);
+      },
+    };
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+      now: () => t,
+    });
+
+    const r = await delivery.send({
+      priority: "low",
+      content: [{ kind: "text", text: "summary" }],
+      threadId: "T1",
+      metadata: { source: "composition" },
+    });
+
+    expect(r).toEqual({ ok: true, delivered: ["inbox"] });
+    expect(channelCalls).toEqual([]);
+    expect(enqueued).toEqual([
+      {
+        content: [{ kind: "text", text: "summary" }],
+        threadId: "T1",
+        metadata: { source: "composition" },
+        enqueuedAt: t,
+      },
+    ]);
+  });
+
+  test("low without inbox → falls through to channel routing", async () => {
+    const calls: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      calls.push("slack");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+    });
+
+    const r = await delivery.send({ priority: "low", content: [{ kind: "text", text: "x" }] });
+    expect(r).toEqual({ ok: true, delivered: ["slack"] });
+    expect(calls).toEqual(["slack"]);
+  });
+
+  test("normal with inbox configured → still routes to channel (inbox is low-only)", async () => {
+    const enqueued: InboxEnvelope[] = [];
+    const channelCalls: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      channelCalls.push("slack");
+    });
+    const inbox: InboxSink = {
+      enqueue: (env) => {
+        enqueued.push(env);
+      },
+    };
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+    });
+
+    const r = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
+    expect(r).toEqual({ ok: true, delivered: ["slack"] });
+    expect(channelCalls).toEqual(["slack"]);
+    expect(enqueued).toEqual([]);
+  });
+
+  test("enqueuedAt uses injected now() value verbatim", async () => {
+    const enqueued: InboxEnvelope[] = [];
+    const t = 42;
+    const inbox: InboxSink = {
+      enqueue: (env) => {
+        enqueued.push(env);
+      },
+    };
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+      now: () => t,
+    });
+
+    await delivery.send({ priority: "low", content: [{ kind: "text", text: "x" }] });
+    expect(enqueued[0]?.enqueuedAt).toBe(42);
   });
 });
