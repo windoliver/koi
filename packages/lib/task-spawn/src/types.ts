@@ -7,8 +7,10 @@
 
 import type {
   AgentId,
-  AgentManifest,
   AgentResolver,
+  SpawnFn as CoreSpawnFn,
+  SpawnRequest as CoreSpawnRequest,
+  SpawnResult as CoreSpawnResult,
   KoiError,
   Result,
   TaskableAgent,
@@ -25,20 +27,20 @@ export type {
 } from "@koi/core";
 
 /** Options passed to the spawn callback by the task tool. */
-export interface TaskSpawnRequest {
-  readonly description: string;
-  readonly agentName: string;
-  readonly manifest: AgentManifest;
-  readonly signal: AbortSignal;
-}
+export type TaskSpawnRequest = CoreSpawnRequest;
 
-/** Result returned by the spawn (or message) callback. */
-export type TaskSpawnResult =
-  | { readonly ok: true; readonly output: string }
-  | { readonly ok: false; readonly error: string };
+/**
+ * Result returned by the spawn (or message) callback.
+ *
+ * Accepts both the unified core shape (`error: KoiError`) and the legacy
+ * `error: string` shape during the v2 unification migration. The runtime
+ * `extractOutput` helper normalizes both. New code should produce the core
+ * shape; this widening is a temporary compatibility surface.
+ */
+export type TaskSpawnResult = CoreSpawnResult | { readonly ok: false; readonly error: string };
 
 /** Spawn callback — wires task-spawn to the L1 lifecycle without an L1 import. */
-export type SpawnFn = (request: TaskSpawnRequest) => Promise<TaskSpawnResult>;
+export type SpawnFn = CoreSpawnFn;
 
 /** Request sent to a live copilot agent via the message path. */
 export interface TaskMessageRequest {
@@ -108,7 +110,7 @@ export function isTaskSpawnSuccess(
 
 export function isTaskSpawnFailure(
   result: TaskSpawnResult,
-): result is { readonly ok: false; readonly error: string } {
+): result is { readonly ok: false; readonly error: KoiError } {
   return result.ok === false;
 }
 

@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 221 workspace packages
+- 222 workspace packages
 - 11 package families
-- 221 packages with local test files
-- 197 packages with dedicated package docs
+- 222 packages with local test files
+- 198 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,8 +16,8 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 145 | 760 | 126 |
-| meta | 5 | 118 | 4 |
+| lib | 145 | 764 | 126 |
+| meta | 6 | 119 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
 | sandbox | 12 | 67 | 12 |
@@ -116,7 +116,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/hooks` (packages/lib/hooks) - Hook loader, schema validation, session-scoped hook lifecycle management, and stop-gate coordination. Tests: 20. Docs: docs/L2/hooks.md.
 - `@koi/ipc-local` (packages/lib/ipc-local) - In-process mailbox IPC: in-memory MailboxComponent with microtask dispatch and MailboxRouter for multi-agent routing. Tests: 3. Docs: docs/L2/ipc-local.md.
 - `@koi/ipc-nexus` (packages/lib/ipc-nexus) - Nexus-backed MailboxComponent with optional local fallback. Tests: 2. Docs: docs/L2/ipc-nexus.md.
-- `@koi/long-running` (packages/lib/long-running) - Long-running harness — multi-turn agent lifecycle with soft checkpointing, pause/resume, and crash recovery. Tests: 1. Docs: docs/L2/long-running.md.
+- `@koi/long-running` (packages/lib/long-running) - Long-running harness — multi-turn agent lifecycle with soft checkpointing, pause/resume, and crash recovery. Tests: 3. Docs: docs/L2/long-running.md.
 - `@koi/loop` (packages/lib/loop) - Convergence loop primitive — re-runs an agent until a deterministic verifier passes or a budget is exhausted. Tests: 8. Docs: docs/L2/loop.md.
 - `@koi/lsp` (packages/lib/lsp) - LSP client tools: hover, definition, references, diagnostics, symbols. Tests: 9. Docs: docs/L2/lsp.md.
 - `@koi/middleware-ace` (packages/lib/middleware-ace) - Adaptive Continuous Enhancement — trajectory-to-playbook self-improvement loop (stat pipeline + injection). Tests: 11. Docs: docs/L2/middleware-ace.md.
@@ -174,7 +174,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/snapshot-store-sqlite` (packages/lib/snapshot-store-sqlite) - L2 storage adapter: SnapshotChainStore<T> over SQLite with recursive-CTE walks and mark-sweep GC. Tests: 5. Docs: docs/L2/snapshot-store-sqlite.md.
 - `@koi/spawn-tools` (packages/lib/spawn-tools) - LLM-callable agent spawn tool + TaskCascade helper for coordinator orchestration (L2). Tests: 6. Docs: docs/L2/spawn-tools.md.
 - `@koi/task-board` (packages/lib/task-board) - Immutable TaskBoard with DAG validation, cycle detection, and topological sort. Tests: 3. Docs: -.
-- `@koi/task-spawn` (packages/lib/task-spawn) - Lightweight task tool for zero-friction subagent spawning + copilot routing. Tests: 6. Docs: docs/L2/task-spawn.md.
+- `@koi/task-spawn` (packages/lib/task-spawn) - Lightweight task tool for zero-friction subagent spawning + copilot routing. Tests: 8. Docs: docs/L2/task-spawn.md.
 - `@koi/task-tools` (packages/lib/task-tools) - LLM-callable task management tools — create, get, update, list, stop, output (L2). Tests: 2. Docs: docs/L2/task-tools.md.
 - `@koi/tasks` (packages/lib/tasks) - Pluggable task board persistence — in-memory and file-based backends. Tests: 12. Docs: docs/L2/tasks.md.
 - `@koi/team-runtime` (packages/lib/team-runtime) - Parallel multi-agent team orchestration with event replay, dependency-aware scheduling, and resource locking. Tests: 9. Docs: docs/L2/team-runtime.md.
@@ -195,10 +195,11 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/workspace-conformance` (packages/lib/workspace-conformance) - Shared bun:test conformance suite for WorkspaceBackend implementations. Tests: 1. Docs: docs/L2/workspace-conformance.md.
 - `@koi/workspace-nexus` (packages/lib/workspace-nexus) - Nexus-backed WorkspaceBackend with optional local fallback. Tests: 4. Docs: docs/L2/workspace-nexus.md.
 
-## meta (5)
+## meta (6)
 
 - `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 68. Docs: docs/L3/cli.md.
 - `@koi/auto-harness` (packages/meta/auto-harness) - L3 composition wiring for auto-harness synthesis session controls and policy-cache attachment. Tests: 1. Docs: -.
+- `@koi/autonomous` (packages/meta/autonomous) - L3 autonomous composition facade for long-running harness, scheduler, and task-aware helper wiring. Tests: 1. Docs: docs/L2/autonomous.md, docs/L3/autonomous.md.
 - `@koi/nexus` (packages/meta/nexus) - L3 Nexus composition wiring for the active v2 Nexus package set. Tests: 6. Docs: docs/L3/nexus.md.
 - `@koi/rlm-stack` (packages/meta/rlm-stack) - L3 composition wiring @koi/middleware-rlm with @koi/context-manager threshold coordination. Tests: 3. Docs: docs/L2/rlm-stack.md, docs/L3/rlm-stack.md.
 - `@koi/runtime` (packages/meta/runtime) - L3 meta-package: wires Phase 1 kernel + L2 packages into a bootable runtime with progressive stub replacement. Tests: 40. Docs: docs/L3/runtime.md.

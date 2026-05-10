@@ -327,7 +327,7 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
 
   // ── Meta (L3) ────────────────────────────────────────────────────────
   "@koi/autonomous":
-    "Compose long-running harness, scheduler, and checkpoint/inbox middleware into autonomous agents",
+    "L3 autonomous composition facade for long-running harness, scheduler, and task-aware helper wiring",
   "@koi/cli": "Interactive command-line interface for agent initialization and local execution",
   "@koi/context-arena":
     "Allocate token budgets across context management middleware with preset-driven profiles",

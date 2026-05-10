@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import type { KoiError } from "@koi/core";
 import {
   createMapAgentResolver,
   createTaskToolDescriptor,
   isTaskSpawnFailure,
   isTaskSpawnSuccess,
 } from "./types.js";
+
+function createFailure(message: string): KoiError {
+  return { code: "EXTERNAL", message, retryable: true };
+}
 
 describe("createTaskToolDescriptor", () => {
   test("uses generic schema when no agents", () => {
@@ -27,10 +32,10 @@ describe("createTaskToolDescriptor", () => {
 describe("type guards", () => {
   test("isTaskSpawnSuccess", () => {
     expect(isTaskSpawnSuccess({ ok: true, output: "x" })).toBe(true);
-    expect(isTaskSpawnSuccess({ ok: false, error: "y" })).toBe(false);
+    expect(isTaskSpawnSuccess({ ok: false, error: createFailure("y") })).toBe(false);
   });
   test("isTaskSpawnFailure", () => {
-    expect(isTaskSpawnFailure({ ok: false, error: "y" })).toBe(true);
+    expect(isTaskSpawnFailure({ ok: false, error: createFailure("y") })).toBe(true);
     expect(isTaskSpawnFailure({ ok: true, output: "x" })).toBe(false);
   });
 });
