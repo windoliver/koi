@@ -2,6 +2,8 @@ import { createNexusAgentProvider } from "./agent-provider.js";
 import { createGlobalBackends } from "./global-backends.js";
 import type {
   GlobalBackendFactories,
+  GlobalBackendFlags,
+  NexusAgentProviderConfig,
   NexusBundle,
   NexusDashboardRow,
   NexusFeatureScope,
@@ -157,6 +159,119 @@ function buildDashboard(
   };
 }
 
+type AgentProviderShape = NexusStackConfig["agentProvider"];
+
+const AGENT_FACTORY_KEYS = {
+  filesystem: "createFileSystem",
+  mailbox: "createMailbox",
+  "snapshot-store": "createSnapshotStore",
+  "playbook-store": "createPlaybookStore",
+  "handoff-store": "createHandoffStore",
+} as const satisfies Record<keyof typeof AGENT_FEATURES, keyof AgentProviderShape>;
+
+function resolveGlobalFeatures(
+  config: NexusStackConfig,
+  fallbackActive: boolean,
+  features: Record<string, FeatureMap[string]>,
+  effectiveFlags: Record<keyof typeof GLOBAL_FEATURES, boolean | undefined>,
+  selectedGlobalFactories: MutableGlobalBackendFactories,
+): void {
+  for (const [key, sourcePackage] of Object.entries(GLOBAL_FEATURES)) {
+    const k = key as keyof typeof GLOBAL_FEATURES;
+    const enabled = config.global[k] !== false;
+    if (!enabled) {
+      features[key] = makeFeature(key, "global", sourcePackage, false, false, "disabled");
+      continue;
+    }
+    if (!fallbackActive) {
+      features[key] = makeFeature(key, "global", sourcePackage, true, true, "nexus");
+      continue;
+    }
+    const fallbackFactory = config.fallback?.globalFactories?.[k];
+    if (fallbackFactory !== undefined) {
+      selectedGlobalFactories[k as keyof GlobalBackendFactories] =
+        fallbackFactory as GlobalBackendFactories[keyof GlobalBackendFactories];
+      features[key] = makeFeature(key, "global", sourcePackage, true, true, "fallback");
+    } else {
+      effectiveFlags[k] = false;
+      features[key] = makeFeature(key, "global", sourcePackage, true, false, "unavailable");
+    }
+  }
+}
+
+function resolveAgentFeatures(
+  config: NexusStackConfig,
+  selectedAgentProvider: AgentProviderShape,
+  fallbackActive: boolean,
+  features: Record<string, FeatureMap[string]>,
+): void {
+  for (const [key, sourcePackage] of Object.entries(AGENT_FEATURES)) {
+    const factoryKey = AGENT_FACTORY_KEYS[key as keyof typeof AGENT_FEATURES];
+    const hasFactory = selectedAgentProvider[factoryKey] !== undefined;
+    features[key] = makeFeature(
+      key,
+      "agent",
+      sourcePackage,
+      true,
+      hasFactory,
+      hasFactory ? (fallbackActive ? "fallback" : "nexus") : "unavailable",
+    );
+  }
+  const hasScratchpad = selectedAgentProvider.createScratchpad !== undefined;
+  features.scratchpad = makeFeature(
+    "scratchpad",
+    "group",
+    GROUP_FEATURES.scratchpad,
+    config.enableScratchpad,
+    config.enableScratchpad && hasScratchpad,
+    !config.enableScratchpad
+      ? "disabled"
+      : hasScratchpad
+        ? fallbackActive
+          ? "fallback"
+          : "nexus"
+        : "unavailable",
+  );
+  const hasWorkspace = selectedAgentProvider.createWorkspace !== undefined;
+  features.workspace = makeFeature(
+    "workspace",
+    "opt-in",
+    OPT_IN_FEATURES.workspace,
+    config.enableWorkspace,
+    config.enableWorkspace && hasWorkspace,
+    !config.enableWorkspace
+      ? "disabled"
+      : hasWorkspace
+        ? fallbackActive
+          ? "fallback"
+          : "nexus"
+        : "unavailable",
+  );
+}
+
+function selectFlags(
+  effectiveFlags: Record<keyof typeof GLOBAL_FEATURES, boolean | undefined>,
+): GlobalBackendFlags {
+  const flags: { -readonly [K in keyof GlobalBackendFlags]: GlobalBackendFlags[K] } = {};
+  for (const k of Object.keys(GLOBAL_FEATURES) as (keyof typeof GLOBAL_FEATURES)[]) {
+    const v = effectiveFlags[k];
+    if (v !== undefined) flags[k] = v;
+  }
+  return flags;
+}
+
+function makeHealthFn(
+  config: NexusStackConfig,
+  features: Record<string, FeatureMap[string]>,
+  fallbackActive: boolean,
+): () => Promise<NexusHealthSnapshot> {
+  return async () => {
+    const transport = await probeTransport(config);
+    const dashboard = buildDashboard(transport, features, fallbackActive);
+    return { status: dashboard.status, fallbackActive, transport, features, dashboard };
+  };
+}
+
 export async function createNexusStack(config: NexusStackConfig): Promise<NexusBundle> {
   const initialTransport = await probeTransport(config);
   const fallbackActive =
@@ -171,119 +286,22 @@ export async function createNexusStack(config: NexusStackConfig): Promise<NexusB
     scheduler: config.global.scheduler,
   };
   const selectedGlobalFactories: MutableGlobalBackendFactories = { ...config.globalFactories };
+  resolveGlobalFeatures(config, fallbackActive, features, effectiveFlags, selectedGlobalFactories);
 
-  for (const [key, sourcePackage] of Object.entries(GLOBAL_FEATURES)) {
-    const enabled = config.global[key as keyof typeof GLOBAL_FEATURES] !== false;
-    if (!enabled) {
-      features[key] = makeFeature(key, "global", sourcePackage, false, false, "disabled");
-      continue;
-    }
-
-    if (fallbackActive) {
-      const fallbackFactory =
-        config.fallback?.globalFactories?.[key as keyof typeof GLOBAL_FEATURES];
-      if (fallbackFactory !== undefined) {
-        selectedGlobalFactories[key as keyof GlobalBackendFactories] =
-          fallbackFactory as GlobalBackendFactories[keyof GlobalBackendFactories];
-        features[key] = makeFeature(key, "global", sourcePackage, true, true, "fallback");
-      } else {
-        effectiveFlags[key as keyof typeof GLOBAL_FEATURES] = false;
-        features[key] = makeFeature(key, "global", sourcePackage, true, false, "unavailable");
-      }
-      continue;
-    }
-
-    features[key] = makeFeature(key, "global", sourcePackage, true, true, "nexus");
-  }
-
-  const selectedAgentProvider = fallbackActive
+  const selectedAgentProvider: AgentProviderShape = fallbackActive
     ? { ...config.agentProvider, ...config.fallback?.agentProvider }
     : config.agentProvider;
-
-  for (const [key, sourcePackage] of Object.entries(AGENT_FEATURES)) {
-    const hasFactory =
-      selectedAgentProvider[
-        (
-          {
-            filesystem: "createFileSystem",
-            mailbox: "createMailbox",
-            "snapshot-store": "createSnapshotStore",
-            "playbook-store": "createPlaybookStore",
-            "handoff-store": "createHandoffStore",
-          } as const
-        )[key as keyof typeof AGENT_FEATURES]
-      ] !== undefined;
-    features[key] = makeFeature(
-      key,
-      "agent",
-      sourcePackage,
-      true,
-      hasFactory,
-      hasFactory ? (fallbackActive ? "fallback" : "nexus") : "unavailable",
-    );
-  }
-
-  features.scratchpad = makeFeature(
-    "scratchpad",
-    "group",
-    GROUP_FEATURES.scratchpad,
-    config.enableScratchpad,
-    config.enableScratchpad && selectedAgentProvider.createScratchpad !== undefined,
-    !config.enableScratchpad
-      ? "disabled"
-      : selectedAgentProvider.createScratchpad !== undefined
-        ? fallbackActive
-          ? "fallback"
-          : "nexus"
-        : "unavailable",
-  );
-
-  features.workspace = makeFeature(
-    "workspace",
-    "opt-in",
-    OPT_IN_FEATURES.workspace,
-    config.enableWorkspace,
-    config.enableWorkspace && selectedAgentProvider.createWorkspace !== undefined,
-    !config.enableWorkspace
-      ? "disabled"
-      : selectedAgentProvider.createWorkspace !== undefined
-        ? fallbackActive
-          ? "fallback"
-          : "nexus"
-        : "unavailable",
-  );
+  resolveAgentFeatures(config, selectedAgentProvider, fallbackActive, features);
 
   const provider = createNexusAgentProvider({
     ...selectedAgentProvider,
     enableScratchpad: config.enableScratchpad,
     enableWorkspace: config.enableWorkspace,
-  });
-  const backends = await createGlobalBackends(selectedGlobalFactories, {
-    ...(effectiveFlags.registry !== undefined ? { registry: effectiveFlags.registry } : {}),
-    ...(effectiveFlags.permissions !== undefined
-      ? { permissions: effectiveFlags.permissions }
-      : {}),
-    ...(effectiveFlags.audit !== undefined ? { audit: effectiveFlags.audit } : {}),
-    ...(effectiveFlags.search !== undefined ? { search: effectiveFlags.search } : {}),
-    ...(effectiveFlags.scheduler !== undefined ? { scheduler: effectiveFlags.scheduler } : {}),
-  });
-
+  } satisfies NexusAgentProviderConfig);
+  const backends = await createGlobalBackends(selectedGlobalFactories, selectFlags(effectiveFlags));
   const disposers: Array<() => void | Promise<void>> = [provider.detach];
-  if (config.dispose !== undefined) {
-    disposers.push(...config.dispose);
-  }
-
-  const health = async (): Promise<NexusHealthSnapshot> => {
-    const transport = await probeTransport(config);
-    const dashboard = buildDashboard(transport, features, fallbackActive);
-    return {
-      status: dashboard.status,
-      fallbackActive,
-      transport,
-      features,
-      dashboard,
-    };
-  };
+  if (config.dispose !== undefined) disposers.push(...config.dispose);
+  const health = makeHealthFn(config, features, fallbackActive);
 
   return {
     backends,
