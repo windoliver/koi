@@ -141,85 +141,109 @@ function createNexusMailboxClient(transport: NexusTransport, prefix: string): Ne
   };
 }
 
+async function findExistingDecision(
+  mailbox: NexusMailboxClient,
+  req: EscalationRequest,
+  coordinatorAgentId: string,
+): Promise<
+  | { kind: "found"; decision: EscalationDecision }
+  | { kind: "miss" }
+  | { kind: "error"; decision: EscalationDecision }
+> {
+  const inbox = await mailbox.list(String(req.agentId), 50);
+  if (!inbox.ok) {
+    return {
+      kind: "error",
+      decision:
+        inbox.error.code === "VALIDATION"
+          ? malformedInboxDecision()
+          : rejectDecision(inbox.error.message),
+    };
+  }
+  const match = inbox.value.find((m) => matchesDecisionEnvelope(m, req, coordinatorAgentId));
+  return match !== undefined
+    ? { kind: "found", decision: match.payload.decision }
+    : { kind: "miss" };
+}
+
+async function sendEscalationRequest(
+  mailbox: NexusMailboxClient,
+  req: EscalationRequest,
+  coordinatorAgentId: string,
+  clock: () => number,
+): Promise<EscalationDecision | undefined> {
+  const sendResult = await mailbox.send({
+    from: req.agentId,
+    to: coordinatorAgentId,
+    kind: "request",
+    correlationId: req.requestId as never,
+    ttlSeconds: Math.max(1, Math.ceil((req.expiresAt - clock()) / 1_000)),
+    type: PERMISSION_ESCALATION_REQUEST_TYPE,
+    payload: {
+      kind: PERMISSION_ESCALATION_REQUEST_TYPE,
+      request: req,
+      workerAgentId: req.agentId,
+      coordinatorAgentId: coordinatorAgentId as never,
+      createdAt: clock(),
+      expiresAt: req.expiresAt,
+    } satisfies PermissionEscalationRequestRecord,
+  });
+  return sendResult.ok ? undefined : rejectDecision(sendResult.error.message);
+}
+
+async function pollForDecision(
+  mailbox: NexusMailboxClient,
+  req: EscalationRequest,
+  coordinatorAgentId: string,
+  clock: () => number,
+  pollIntervalMs: number,
+): Promise<EscalationDecision> {
+  while (clock() < req.expiresAt) {
+    const result = await findExistingDecision(mailbox, req, coordinatorAgentId);
+    if (result.kind === "found" || result.kind === "error") return result.decision;
+    if (pollIntervalMs > 0) await Bun.sleep(pollIntervalMs);
+  }
+  return timeoutDecision();
+}
+
+async function executeEscalationRequest(
+  config: NexusPermissionEscalationConfig,
+  mailbox: NexusMailboxClient,
+  clock: () => number,
+  req: EscalationRequest,
+): Promise<EscalationDecision> {
+  if (req.expiresAt <= clock()) return timeoutDecision();
+  if (req.agentId !== config.agentId) {
+    return rejectDecision("permission escalation agentId does not match bound client identity");
+  }
+
+  // Reconnect-safe resume: check inbox for an already-persisted matching
+  // decision before sending a new request.
+  const existing = await findExistingDecision(mailbox, req, config.coordinatorAgentId);
+  if (existing.kind === "found" || existing.kind === "error") return existing.decision;
+
+  const sendError = await sendEscalationRequest(mailbox, req, config.coordinatorAgentId, clock);
+  if (sendError !== undefined) return sendError;
+
+  return pollForDecision(
+    mailbox,
+    req,
+    config.coordinatorAgentId,
+    clock,
+    config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+  );
+}
+
 export function createNexusPermissionEscalation(
   config: NexusPermissionEscalationConfig,
 ): PermissionEscalation {
   const validated = validateNexusPermissionEscalationConfig(config);
-  if (!validated.ok) {
-    throw new Error(validated.error.message);
-  }
+  if (!validated.ok) throw new Error(validated.error.message);
 
   const mailbox = createNexusMailboxClient(config.transport, config.requestMethodPrefix ?? "ipc");
   const clock = config.clock ?? Date.now;
 
   return {
-    async request(req: EscalationRequest): Promise<EscalationDecision> {
-      if (req.expiresAt <= clock()) {
-        return timeoutDecision();
-      }
-      if (req.agentId !== config.agentId) {
-        return rejectDecision("permission escalation agentId does not match bound client identity");
-      }
-
-      // Reconnect-safe resume: check inbox for an already-persisted decision
-      // matching this requestId before sending a new request. Avoids duplicate
-      // approval prompts when a worker retries the same logical escalation.
-      const existingInbox = await mailbox.list(String(req.agentId), 50);
-      if (!existingInbox.ok) {
-        return existingInbox.error.code === "VALIDATION"
-          ? malformedInboxDecision()
-          : rejectDecision(existingInbox.error.message);
-      }
-      const existingDecision = existingInbox.value.find((message) =>
-        matchesDecisionEnvelope(message, req, config.coordinatorAgentId),
-      );
-      if (existingDecision !== undefined) {
-        return existingDecision.payload.decision;
-      }
-
-      const sendResult = await mailbox.send({
-        from: req.agentId,
-        to: config.coordinatorAgentId,
-        kind: "request",
-        correlationId: req.requestId as never,
-        ttlSeconds: Math.max(1, Math.ceil((req.expiresAt - clock()) / 1_000)),
-        type: PERMISSION_ESCALATION_REQUEST_TYPE,
-        payload: {
-          kind: PERMISSION_ESCALATION_REQUEST_TYPE,
-          request: req,
-          workerAgentId: req.agentId,
-          coordinatorAgentId: config.coordinatorAgentId,
-          createdAt: clock(),
-          expiresAt: req.expiresAt,
-        } satisfies PermissionEscalationRequestRecord,
-      });
-      if (!sendResult.ok) {
-        return rejectDecision(sendResult.error.message);
-      }
-
-      while (clock() < req.expiresAt) {
-        const inboxResult = await mailbox.list(String(req.agentId), 50);
-        if (!inboxResult.ok) {
-          return inboxResult.error.code === "VALIDATION"
-            ? malformedInboxDecision()
-            : rejectDecision(inboxResult.error.message);
-        }
-
-        const match = inboxResult.value.find((message) =>
-          matchesDecisionEnvelope(message, req, config.coordinatorAgentId),
-        );
-
-        if (match !== undefined) {
-          return match.payload.decision;
-        }
-
-        const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-        if (pollIntervalMs > 0) {
-          await Bun.sleep(pollIntervalMs);
-        }
-      }
-
-      return timeoutDecision();
-    },
+    request: (req: EscalationRequest) => executeEscalationRequest(config, mailbox, clock, req),
   };
 }

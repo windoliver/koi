@@ -1,4 +1,4 @@
-import type { EscalationDecision, EscalationRequest, KoiError, Result } from "@koi/core";
+import type { AgentId, EscalationDecision, EscalationRequest, KoiError, Result } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import {
   type NexusPermissionEscalationCoordinatorConfig,
@@ -138,13 +138,52 @@ function createNexusMailboxClient(transport: NexusTransport, prefix: string): Ne
   };
 }
 
+async function resolveSingleRequest(
+  record: PermissionEscalationRequestRecord,
+  clock: () => number,
+  resolve: (request: EscalationRequest) => Promise<EscalationDecision>,
+): Promise<EscalationDecision> {
+  if (record.expiresAt <= clock()) return timeoutDecision();
+  return resolve(record.request)
+    .then((resolved) => (record.expiresAt <= clock() ? timeoutDecision() : resolved))
+    .catch((error: unknown) =>
+      rejectDecision(
+        error instanceof Error ? error.message : "permission escalation approval failed",
+      ),
+    );
+}
+
+async function publishDecisionForRecord(
+  mailbox: NexusMailboxClient,
+  coordinatorAgentId: AgentId,
+  record: PermissionEscalationRequestRecord,
+  fingerprint: string,
+  decision: EscalationDecision,
+  clock: () => number,
+): Promise<boolean> {
+  const sendResult = await mailbox.send({
+    from: coordinatorAgentId,
+    to: record.workerAgentId,
+    kind: "response",
+    correlationId: record.request.requestId,
+    type: PERMISSION_ESCALATION_DECISION_TYPE,
+    payload: {
+      requestId: record.request.requestId,
+      workerAgentId: record.workerAgentId,
+      coordinatorAgentId,
+      decision,
+      resolvedAt: clock(),
+      requestFingerprint: fingerprint,
+    } satisfies PermissionEscalationDecisionRecord,
+  });
+  return sendResult.ok;
+}
+
 export function createNexusPermissionEscalationCoordinator(
   config: NexusPermissionEscalationCoordinatorConfig,
 ) {
   const validated = validateNexusPermissionEscalationCoordinatorConfig(config);
-  if (!validated.ok) {
-    throw new Error(validated.error.message);
-  }
+  if (!validated.ok) throw new Error(validated.error.message);
 
   const mailbox = createNexusMailboxClient(config.transport, config.requestMethodPrefix ?? "ipc");
   const clock = config.clock ?? Date.now;
@@ -159,57 +198,29 @@ export function createNexusPermissionEscalationCoordinator(
       resolve: (request: EscalationRequest) => Promise<EscalationDecision>,
     ): Promise<number> {
       const inboxResult = await mailbox.list(String(config.coordinatorAgentId), 50);
-      if (!inboxResult.ok) {
-        return 0;
-      }
+      if (!inboxResult.ok) return 0;
 
       let handled = 0;
       for (const message of inboxResult.value) {
-        if (!matchesRequestEnvelope(message, config.coordinatorAgentId)) {
-          continue;
-        }
-
+        if (!matchesRequestEnvelope(message, config.coordinatorAgentId)) continue;
         const record = message.payload;
         const fingerprint = computeEscalationRequestFingerprint(record.request);
         const dedupKey = `${record.workerAgentId}\x00${record.request.requestId}\x00${fingerprint}`;
-        if (seenKeys.has(dedupKey)) {
-          continue;
-        }
-        const decision =
-          record.expiresAt <= clock()
-            ? timeoutDecision()
-            : await resolve(record.request)
-                .then((resolved) => (record.expiresAt <= clock() ? timeoutDecision() : resolved))
-                .catch((error: unknown) =>
-                  rejectDecision(
-                    error instanceof Error
-                      ? error.message
-                      : "permission escalation approval failed",
-                  ),
-                );
-
-        const sendResult = await mailbox.send({
-          from: config.coordinatorAgentId,
-          to: record.workerAgentId,
-          kind: "response",
-          correlationId: record.request.requestId,
-          type: PERMISSION_ESCALATION_DECISION_TYPE,
-          payload: {
-            requestId: record.request.requestId,
-            workerAgentId: record.workerAgentId,
-            coordinatorAgentId: config.coordinatorAgentId,
-            decision,
-            resolvedAt: clock(),
-            requestFingerprint: fingerprint,
-          } satisfies PermissionEscalationDecisionRecord,
-        });
-
-        if (sendResult.ok) {
+        if (seenKeys.has(dedupKey)) continue;
+        const decision = await resolveSingleRequest(record, clock, resolve);
+        const sent = await publishDecisionForRecord(
+          mailbox,
+          config.coordinatorAgentId,
+          record,
+          fingerprint,
+          decision,
+          clock,
+        );
+        if (sent) {
           seenKeys.add(dedupKey);
           handled += 1;
         }
       }
-
       return handled;
     },
     dispose(): void {},
