@@ -96,6 +96,7 @@ export function createGovernanceSignalSource(
         },
         { ...options, sampleRateMs: undefined },
         now,
+        () => closed,
       );
       const state = new Map<string, { alerting: boolean; lastEmittedAt: number }>();
       let inFlight = false;

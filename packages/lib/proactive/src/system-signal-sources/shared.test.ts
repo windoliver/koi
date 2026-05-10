@@ -82,6 +82,52 @@ describe("createAsyncEmitter", () => {
     await Promise.resolve();
     expect(seen).toEqual([100, 191]);
   });
+
+  test("suppresses queued delivery when isClosed becomes true before microtask runs", async () => {
+    const seen: string[] = [];
+    let closed = false;
+    const emitter = createAsyncEmitter(
+      (value) => seen.push(value.kind),
+      {},
+      Date.now,
+      () => closed,
+    );
+
+    emitter.emit({
+      kind: "governance",
+      sensor: "error_rate",
+      value: 0.4,
+      limit: 0.3,
+      direction: "above",
+      emittedAt: 1,
+    });
+    closed = true;
+
+    await Promise.resolve();
+    expect(seen).toEqual([]);
+  });
+
+  test("rejects emission entirely when already closed at emit time", async () => {
+    const seen: string[] = [];
+    const emitter = createAsyncEmitter(
+      (value) => seen.push(value.kind),
+      {},
+      Date.now,
+      () => true,
+    );
+
+    emitter.emit({
+      kind: "governance",
+      sensor: "error_rate",
+      value: 0.4,
+      limit: 0.3,
+      direction: "above",
+      emittedAt: 1,
+    });
+
+    await Promise.resolve();
+    expect(seen).toEqual([]);
+  });
 });
 
 describe("createSubscriptionController", () => {

@@ -50,6 +50,8 @@ export function createGroveSignalSource(config: GroveSignalSourceConfig): System
       const emitter = createAsyncEmitter(
         createClosedAwareGroveHandler(handler, () => closed),
         options,
+        Date.now,
+        () => closed,
       );
       const eventSource = config.eventSourceFactory?.(config.groveUrl);
       if (eventSource === undefined) return () => {};

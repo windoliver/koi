@@ -99,10 +99,15 @@ export function createNexusSignalSource(config: NexusSignalSourceConfig): System
     name: "nexus",
     watch(handler, options) {
       let closed = false;
-      const emitter = createAsyncEmitter((signal) => {
-        if (closed) return;
-        handler(signal);
-      }, options);
+      const emitter = createAsyncEmitter(
+        (signal) => {
+          if (closed) return;
+          handler(signal);
+        },
+        options,
+        Date.now,
+        () => closed,
+      );
       const unsubscribeUpstream =
         config.subscribe?.(config.channels, (event) => {
           if (closed) return;

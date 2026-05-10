@@ -8,12 +8,15 @@ export function createAsyncEmitter(
   handler: (signal: SystemSignal) => void,
   options: SystemSignalSourceOptions | undefined,
   now: () => number = Date.now,
+  isClosed: () => boolean = () => false,
 ): AsyncEmitter {
   let lastDeliveredAt = -Infinity;
 
   return {
     emit(signal) {
+      if (isClosed()) return;
       queueMicrotask(() => {
+        if (isClosed()) return;
         const minGap = options?.sampleRateMs;
         if (minGap !== undefined && now() - lastDeliveredAt < minGap) return;
         handler(signal);
