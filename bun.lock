@@ -1218,6 +1218,13 @@
         "@koi/validation": "workspace:*",
       },
     },
+    "packages/lib/team-runtime": {
+      "name": "@koi/team-runtime",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/test": {
       "name": "@koi/test",
       "version": "0.0.0",
@@ -3056,6 +3063,8 @@
     "@koi/task-tools": ["@koi/task-tools@workspace:packages/lib/task-tools"],
 
     "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
+
+    "@koi/team-runtime": ["@koi/team-runtime@workspace:packages/lib/team-runtime"],
 
     "@koi/temporal": ["@koi/temporal@workspace:packages/exec/temporal"],
 

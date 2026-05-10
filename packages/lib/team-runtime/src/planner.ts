@@ -1,0 +1,75 @@
+import type { TeamRuntimeSnapshot, TeamRuntimeTask } from "./state.js";
+
+function topologicalTaskOrder(tasks: readonly TeamRuntimeTask[]): readonly string[] {
+  const tasksById = new Map(tasks.map((task) => [task.taskId, task] as const));
+  const dependents = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+
+  for (const task of tasks) {
+    dependents.set(task.taskId, []);
+    inDegree.set(task.taskId, 0);
+  }
+
+  for (const task of tasks) {
+    let degree = 0;
+    for (const dependencyId of task.dependencies) {
+      if (!tasksById.has(dependencyId)) {
+        continue;
+      }
+      degree += 1;
+      const downstream = dependents.get(dependencyId);
+      if (downstream !== undefined) {
+        downstream.push(task.taskId);
+      }
+    }
+    inDegree.set(task.taskId, degree);
+  }
+
+  const queue = tasks.filter((task) => inDegree.get(task.taskId) === 0).map((task) => task.taskId);
+  const ordered: string[] = [];
+
+  for (let index = 0; index < queue.length; index += 1) {
+    const taskId = queue[index];
+    if (taskId === undefined) {
+      continue;
+    }
+
+    ordered.push(taskId);
+    for (const dependentId of dependents.get(taskId) ?? []) {
+      const nextDegree = (inDegree.get(dependentId) ?? 0) - 1;
+      inDegree.set(dependentId, nextDegree);
+      if (nextDegree === 0) {
+        queue.push(dependentId);
+      }
+    }
+  }
+
+  return ordered;
+}
+
+export function planRunnableTasks(snapshot: TeamRuntimeSnapshot): readonly TeamRuntimeTask[] {
+  const blocked = new Set(snapshot.blockedTaskIds);
+  const runnableById = new Map(
+    snapshot.board
+      .ready()
+      .filter((task) => !blocked.has(task.taskId))
+      .map((task) => [task.taskId, task] as const),
+  );
+
+  const reservedResources = new Set(snapshot.activeResources);
+  const ordered: TeamRuntimeTask[] = [];
+
+  if (snapshot.hasUnknownActiveResources) return [];
+
+  for (const taskId of topologicalTaskOrder(snapshot.board.all())) {
+    const task = runnableById.get(taskId);
+    if (task === undefined) continue;
+    const resources = task.sharedResources ?? [];
+    const conflicts = resources.some((resource) => reservedResources.has(resource));
+    if (conflicts) continue;
+    for (const resource of resources) reservedResources.add(resource);
+    ordered.push(task);
+  }
+
+  return ordered;
+}

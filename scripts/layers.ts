@@ -138,6 +138,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/task-spawn",
   "@koi/task-tools",
   "@koi/tasks",
+  "@koi/team-runtime",
   "@koi/temporal",
   "@koi/tools-bash",
   "@koi/workspace",
