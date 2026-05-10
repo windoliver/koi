@@ -1442,6 +1442,7 @@
         "@koi/nexus-client": "workspace:*",
         "@koi/nexus-delegation": "workspace:*",
         "@koi/nexus-sandbox": "workspace:*",
+        "@koi/permission-escalation-nexus": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
         "@koi/playbook-store-sqlite": "workspace:*",
@@ -2192,6 +2193,14 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
         "@koi/engine-reconcile": "workspace:*",
+      },
+    },
+    "packages/security/permission-escalation-nexus": {
+      "name": "@koi/permission-escalation-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/security/permissions": {
@@ -2965,6 +2974,8 @@
     "@koi/nexus-sandbox": ["@koi/nexus-sandbox@workspace:packages/net/nexus-sandbox"],
 
     "@koi/outcome-evaluator": ["@koi/outcome-evaluator@workspace:packages/lib/outcome-evaluator"],
+
+    "@koi/permission-escalation-nexus": ["@koi/permission-escalation-nexus@workspace:packages/security/permission-escalation-nexus"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
 

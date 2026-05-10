@@ -103,6 +103,7 @@
     "@koi/model-openai-compat": "workspace:*",
     "@koi/model-router": "workspace:*",
     "@koi/permissions": "workspace:*",
+    "@koi/permission-escalation-nexus": "workspace:*",
     "@koi/playbook-store-sqlite": "workspace:*",
     "@koi/plugins": "workspace:*",
     "@koi/query-engine": "workspace:*",

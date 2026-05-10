@@ -38,10 +38,14 @@ import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
 import { formatContextEngineSwapNotice, microcompact } from "@koi/context-manager";
 import type {
   Agent,
+  ApprovalDecision,
+  ApprovalHandler,
   AuditEntry,
   ComponentProvider,
   ContentBlock,
   EngineEvent,
+  EscalationDecision,
+  EscalationRequest,
   GovernanceController,
   InboundMessage,
   JsonObject,
@@ -353,6 +357,148 @@ export function clampContextLength(raw: number | undefined): number | undefined 
 
 export function selectTuiRuntimeMode(flags: Pick<TuiFlags, "gatewayUrl">): "local" | "remote" {
   return flags.gatewayUrl === undefined ? "local" : "remote";
+}
+
+function asJsonObject(value: unknown): JsonObject | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  return value as JsonObject;
+}
+
+function extractGrantedGrants(
+  approval: Extract<ApprovalDecision, { readonly kind: "modify" }>,
+  fallback: readonly string[],
+): readonly string[] | undefined {
+  const updated = asJsonObject(approval.updatedInput);
+  const rawRequested = updated?.requestedGrants;
+  const rawGranted = updated?.grantedGrants;
+  const candidate = Array.isArray(rawGranted)
+    ? rawGranted
+    : Array.isArray(rawRequested)
+      ? rawRequested
+      : undefined;
+  if (candidate === undefined || candidate.some((value) => typeof value !== "string"))
+    return undefined;
+  const fallbackSet = new Set(fallback);
+  const granted = candidate.filter((value): value is string => typeof value === "string");
+  return granted.every((value) => fallbackSet.has(value)) ? granted : undefined;
+}
+
+export function mapApprovalDecisionToEscalationDecision(
+  request: EscalationRequest,
+  approval: ApprovalDecision,
+): EscalationDecision {
+  switch (approval.kind) {
+    case "allow":
+    case "always-allow":
+      return { decision: "approved", grantedGrants: request.requestedGrants };
+    case "deny":
+      return { decision: "rejected", reason: approval.reason };
+    case "modify": {
+      const grantedGrants = extractGrantedGrants(approval, request.requestedGrants);
+      return grantedGrants !== undefined
+        ? { decision: "approved", grantedGrants }
+        : {
+            decision: "rejected",
+            reason: "permission escalation modification must narrow requestedGrants",
+          };
+    }
+  }
+}
+
+export async function resolvePermissionEscalationRequest(
+  approvalHandler: ApprovalHandler,
+  request: EscalationRequest,
+): Promise<EscalationDecision> {
+  const input: JsonObject = {
+    requestId: request.requestId,
+    agentId: request.agentId,
+    requestedGrants: [...request.requestedGrants],
+    purposeStatement: request.purposeStatement,
+    expiresAt: request.expiresAt,
+    ...(asJsonObject(request.context) !== undefined
+      ? { context: asJsonObject(request.context) }
+      : {}),
+  };
+  const approval = await approvalHandler({
+    toolId: "permission_escalation",
+    input,
+    reason: request.purposeStatement,
+    metadata: {
+      requestId: request.requestId,
+      agentId: request.agentId,
+    },
+  });
+  return mapApprovalDecisionToEscalationDecision(request, approval);
+}
+
+export async function pollPermissionEscalationCoordinatorOnce(
+  runtimeHandle: Pick<
+    KoiRuntimeHandle,
+    "permissionEscalationMode" | "pollPermissionEscalationCoordinator"
+  >,
+  approvalHandler: ApprovalHandler,
+): Promise<number> {
+  if (
+    runtimeHandle.permissionEscalationMode !== "nexus" ||
+    runtimeHandle.pollPermissionEscalationCoordinator === undefined
+  ) {
+    return 0;
+  }
+  return runtimeHandle.pollPermissionEscalationCoordinator((request) =>
+    resolvePermissionEscalationRequest(approvalHandler, request),
+  );
+}
+
+function startPermissionEscalationCoordinatorLoop(
+  runtimeHandle: Pick<
+    KoiRuntimeHandle,
+    | "permissionEscalationMode"
+    | "pollPermissionEscalationCoordinator"
+    | "disposePermissionEscalationCoordinator"
+  >,
+  approvalHandler: ApprovalHandler,
+  pollIntervalMs = 250,
+): { readonly dispose: () => void } | undefined {
+  if (
+    runtimeHandle.permissionEscalationMode !== "nexus" ||
+    runtimeHandle.pollPermissionEscalationCoordinator === undefined
+  ) {
+    return undefined;
+  }
+
+  let disposed = false;
+  let inFlight = false;
+  let timer: ReturnType<typeof createUnrefTimer> | undefined;
+
+  const schedule = (): void => {
+    if (disposed) return;
+    timer = createUnrefTimer(() => {
+      void tick();
+    }, pollIntervalMs);
+  };
+
+  const tick = async (): Promise<void> => {
+    if (disposed || inFlight) return;
+    inFlight = true;
+    try {
+      await pollPermissionEscalationCoordinatorOnce(runtimeHandle, approvalHandler);
+    } catch (err) {
+      console.warn("[koi:tui] permission escalation coordinator poll failed", err);
+    } finally {
+      inFlight = false;
+      schedule();
+    }
+  };
+
+  schedule();
+  return {
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      timer?.cancel();
+      runtimeHandle.disposePermissionEscalationCoordinator?.();
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2267,6 +2413,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
   let runtimeHandle: KoiRuntimeHandle | null = null;
+  let permissionEscalationCoordinatorLoop: { readonly dispose: () => void } | undefined;
   const runtimeMode = selectTuiRuntimeMode(flags);
   let gatewayClient: TuiGatewayClient | null = null;
   let activeRemoteRequestId: string | null = null;
@@ -2393,6 +2540,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         } catch {}
         try {
           await registryOnlyBridge?.close();
+        } catch {}
+        try {
+          permissionEscalationCoordinatorLoop?.dispose();
         } catch {}
         try {
           if (runtimeHandle !== null) {
@@ -3138,6 +3288,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             return;
           }
           runtimeHandle = handle;
+          permissionEscalationCoordinatorLoop = startPermissionEscalationCoordinatorLoop(
+            handle,
+            labeledApprovalHandler,
+          );
           // #1767 Phase 6: surface context-engine swap events as TUI notices
           // through the single-writer store. Subscribing at the controller
           // level (rather than reading the run-stream `custom` event) covers
@@ -3656,6 +3810,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
         try {
           await registryOnlyBridge?.close();
+        } catch {
+          // Best-effort — must not block force-quit.
+        }
+        try {
+          permissionEscalationCoordinatorLoop?.dispose();
         } catch {
           // Best-effort — must not block force-quit.
         }
@@ -4398,6 +4557,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       } catch (disposeErr) {
         process.stderr.write(
           `[koi tui] registry-only bridge close failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
+      try {
+        permissionEscalationCoordinatorLoop?.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] permission escalation coordinator dispose failed during shutdown: ${
             disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
           }\n`,
         );
