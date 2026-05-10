@@ -72,6 +72,7 @@
       - "packages/**/auto-harness/**"
       - "packages/**/cli/**"
       - "packages/**/gateway-stack/**"
+      - "packages/**/nexus/**"
       - "packages/**/rlm-stack/**"
       - "packages/**/runtime/**"
 
@@ -114,6 +115,7 @@
       - "!packages/**/hook-prompt/**"
       - "!packages/**/memory/**"
       - "!packages/**/model-registry/**"
+      - "!packages/**/nexus/**"
       - "!packages/**/nexus-client/**"
       - "!packages/**/query-engine/**"
       - "!packages/**/redaction/**"

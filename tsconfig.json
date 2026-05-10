@@ -42,6 +42,7 @@
     { "path": "packages/sandbox/sandbox-vercel" },
     { "path": "packages/security/permissions" },
     { "path": "packages/meta/auto-harness" },
+    { "path": "packages/meta/nexus" },
     { "path": "packages/meta/runtime" }
   ]
 }

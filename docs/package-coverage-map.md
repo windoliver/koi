@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 218 workspace packages
+- 219 workspace packages
 - 11 package families
-- 218 packages with local test files
-- 194 packages with dedicated package docs
+- 219 packages with local test files
+- 195 packages with dedicated package docs
 
 ## Family Summary
 
@@ -17,7 +17,7 @@ Current snapshot:
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
 | lib | 144 | 745 | 125 |
-| meta | 4 | 112 | 3 |
+| meta | 5 | 118 | 4 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
 | sandbox | 12 | 67 | 12 |
@@ -194,10 +194,11 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/workspace-conformance` (packages/lib/workspace-conformance) - Shared bun:test conformance suite for WorkspaceBackend implementations. Tests: 1. Docs: docs/L2/workspace-conformance.md.
 - `@koi/workspace-nexus` (packages/lib/workspace-nexus) - Nexus-backed WorkspaceBackend with optional local fallback. Tests: 4. Docs: docs/L2/workspace-nexus.md.
 
-## meta (4)
+## meta (5)
 
 - `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 68. Docs: docs/L3/cli.md.
 - `@koi/auto-harness` (packages/meta/auto-harness) - L3 composition wiring for auto-harness synthesis session controls and policy-cache attachment. Tests: 1. Docs: -.
+- `@koi/nexus` (packages/meta/nexus) - L3 Nexus composition wiring for the active v2 Nexus package set. Tests: 6. Docs: docs/L3/nexus.md.
 - `@koi/rlm-stack` (packages/meta/rlm-stack) - L3 composition wiring @koi/middleware-rlm with @koi/context-manager threshold coordination. Tests: 3. Docs: docs/L2/rlm-stack.md, docs/L3/rlm-stack.md.
 - `@koi/runtime` (packages/meta/runtime) - L3 meta-package: wires Phase 1 kernel + L2 packages into a bootable runtime with progressive stub replacement. Tests: 40. Docs: docs/L3/runtime.md.
 
