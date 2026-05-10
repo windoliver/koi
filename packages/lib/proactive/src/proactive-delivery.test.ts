@@ -34,10 +34,17 @@ describe("createProactiveDelivery", () => {
 
   test("high priority routes to preferredChannel", async () => {
     const sent: { channel: string; msg: OutboundMessage }[] = [];
-    const slack = stubAdapter("slack", async (m) => { sent.push({ channel: "slack", msg: m }); });
-    const email = stubAdapter("email", async (m) => { sent.push({ channel: "email", msg: m }); });
+    const slack = stubAdapter("slack", async (m) => {
+      sent.push({ channel: "slack", msg: m });
+    });
+    const email = stubAdapter("email", async (m) => {
+      sent.push({ channel: "email", msg: m });
+    });
     const delivery = createProactiveDelivery({
-      channels: new Map([["slack", slack], ["email", email]]),
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
       preferences: { preferredChannel: "email" },
     });
 
@@ -54,10 +61,17 @@ describe("createProactiveDelivery", () => {
 
   test("high priority falls back to first channel when no preferred", async () => {
     const sent: string[] = [];
-    const slack = stubAdapter("slack", async () => { sent.push("slack"); });
-    const email = stubAdapter("email", async () => { sent.push("email"); });
+    const slack = stubAdapter("slack", async () => {
+      sent.push("slack");
+    });
+    const email = stubAdapter("email", async () => {
+      sent.push("email");
+    });
     const delivery = createProactiveDelivery({
-      channels: new Map([["slack", slack], ["email", email]]),
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
     });
 
     const result = await delivery.send({
@@ -71,7 +85,9 @@ describe("createProactiveDelivery", () => {
 
   test("normal and low priority behave identically to high in Phase 3", async () => {
     const sent: string[] = [];
-    const slack = stubAdapter("slack", async () => { sent.push("slack"); });
+    const slack = stubAdapter("slack", async () => {
+      sent.push("slack");
+    });
     const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
 
     const r1 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
@@ -84,7 +100,9 @@ describe("createProactiveDelivery", () => {
 
   test("threadId and metadata forwarded verbatim to OutboundMessage", async () => {
     const captured: OutboundMessage[] = [];
-    const slack = stubAdapter("slack", async (m) => { captured.push(m); });
+    const slack = stubAdapter("slack", async (m) => {
+      captured.push(m);
+    });
     const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
 
     await delivery.send({
@@ -104,10 +122,17 @@ describe("createProactiveDelivery", () => {
 
   test("urgent priority fans out to all channels", async () => {
     const sent: string[] = [];
-    const slack = stubAdapter("slack", async () => { sent.push("slack"); });
-    const email = stubAdapter("email", async () => { sent.push("email"); });
+    const slack = stubAdapter("slack", async () => {
+      sent.push("slack");
+    });
+    const email = stubAdapter("email", async () => {
+      sent.push("email");
+    });
     const delivery = createProactiveDelivery({
-      channels: new Map([["slack", slack], ["email", email]]),
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
     });
 
     const result = await delivery.send({
@@ -121,9 +146,14 @@ describe("createProactiveDelivery", () => {
 
   test("urgent partial failure — one channel succeeds, one fails", async () => {
     const slack = stubAdapter("slack", async () => {});
-    const email = stubAdapter("email", async () => { throw new Error("smtp down"); });
+    const email = stubAdapter("email", async () => {
+      throw new Error("smtp down");
+    });
     const delivery = createProactiveDelivery({
-      channels: new Map([["slack", slack], ["email", email]]),
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
     });
 
     const result = await delivery.send({
@@ -135,10 +165,17 @@ describe("createProactiveDelivery", () => {
   });
 
   test("urgent total failure — every channel fails → all_failed with all in failures", async () => {
-    const slack = stubAdapter("slack", async () => { throw new Error("boom"); });
-    const email = stubAdapter("email", async () => { throw new Error("smtp down"); });
+    const slack = stubAdapter("slack", async () => {
+      throw new Error("boom");
+    });
+    const email = stubAdapter("email", async () => {
+      throw new Error("smtp down");
+    });
     const delivery = createProactiveDelivery({
-      channels: new Map([["slack", slack], ["email", email]]),
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
     });
 
     const result = await delivery.send({
@@ -149,7 +186,9 @@ describe("createProactiveDelivery", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toBe("all_failed");
-    const failures = [...(result.failures ?? [])].sort((a, b) => a.channel.localeCompare(b.channel));
+    const failures = [...(result.failures ?? [])].sort((a, b) =>
+      a.channel.localeCompare(b.channel),
+    );
     expect(failures).toEqual([
       { channel: "email", error: "smtp down" },
       { channel: "slack", error: "boom" },
@@ -157,7 +196,7 @@ describe("createProactiveDelivery", () => {
   });
 
   test("rate limit blocks normal priority after cap", async () => {
-    let t = 1_700_000_000_000;
+    const t = 1_700_000_000_000;
     const slack = stubAdapter("slack", async () => {});
     const delivery = createProactiveDelivery({
       channels: new Map([["slack", slack]]),
@@ -205,7 +244,10 @@ describe("createProactiveDelivery", () => {
       now: () => t,
     });
 
-    const r = await delivery.send({ priority: "urgent", content: [{ kind: "text", text: "alert" }] });
+    const r = await delivery.send({
+      priority: "urgent",
+      content: [{ kind: "text", text: "alert" }],
+    });
     expect(r.ok).toBe(true);
   });
 
@@ -228,7 +270,9 @@ describe("createProactiveDelivery", () => {
   });
 
   test("adapter throw on single channel → all_failed without propagation", async () => {
-    const slack = stubAdapter("slack", async () => { throw new Error("network"); });
+    const slack = stubAdapter("slack", async () => {
+      throw new Error("network");
+    });
     const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
 
     const result = await delivery.send({
@@ -246,7 +290,9 @@ describe("createProactiveDelivery", () => {
   test("two concurrent sends at cap=1 — exactly one passes", async () => {
     const t = 1_700_000_000_000;
     let releaseA: (() => void) | undefined;
-    const blocker = new Promise<void>((resolve) => { releaseA = resolve; });
+    const blocker = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
     let inFlight = 0;
     const slack = stubAdapter("slack", async () => {
       inFlight += 1;

@@ -121,7 +121,10 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
         // Urgent is its own path — fan-out, never gated by rate limit, never
         // consumes window capacity.
         const msg = buildOutbound(notification);
-        const entries = Array.from(config.channels.entries(), ([name, adapter]) => ({ name, adapter }));
+        const entries = Array.from(config.channels.entries(), ([name, adapter]) => ({
+          name,
+          adapter,
+        }));
         const results = await Promise.all(entries.map((c) => sendOne(c, msg)));
         const delivered: string[] = [];
         const failures: DeliveryFailure[] = [];
