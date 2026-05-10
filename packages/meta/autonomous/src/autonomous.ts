@@ -1,4 +1,5 @@
-import type { KoiError, Result } from "@koi/core";
+import type { ComponentProvider, KoiError, KoiMiddleware, Result } from "@koi/core";
+import { createSpawnFitnessWrapper, createTaskSpawnProvider, type SpawnFn } from "@koi/task-spawn";
 import type { AutonomousAgent, AutonomousAgentParts } from "./types.js";
 
 function assertOk(result: Result<void, KoiError>): void {
@@ -8,16 +9,35 @@ function assertOk(result: Result<void, KoiError>): void {
 }
 
 export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent {
+  const spawn: SpawnFn | undefined =
+    parts.spawn !== undefined && parts.spawnFitness !== undefined
+      ? createSpawnFitnessWrapper(parts.spawn, parts.spawnFitness)
+      : parts.spawn;
+
   const middleware = Object.freeze([
     parts.harness.createMiddleware(),
     ...(parts.extraMiddleware ?? []),
-  ]);
+  ]) as readonly KoiMiddleware[];
+
+  const providers = Object.freeze(
+    spawn !== undefined && parts.agentResolver !== undefined
+      ? [createTaskSpawnProvider({ agentResolver: parts.agentResolver, spawn })]
+      : [],
+  ) as readonly ComponentProvider[];
+
+  let disposed = false;
 
   return {
     harness: parts.harness,
     scheduler: parts.scheduler,
     middleware: () => middleware,
+    providers: () => providers,
     dispose: async () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+
       let schedulerError: unknown;
 
       try {
