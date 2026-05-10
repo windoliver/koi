@@ -158,6 +158,97 @@ describe("reconcileTaskBoard", () => {
     ]);
   });
 
+  test("emits revokeOwnedDownstream with the live owner for in_progress descendants", () => {
+    const board = createTaskBoard().addAll([
+      { id: taskItemId("root"), subject: "root", description: "root" },
+      {
+        id: taskItemId("child"),
+        subject: "child",
+        description: "child",
+      },
+    ]);
+    if (!board.ok) throw board.error;
+    const assignedChild = board.value.assign(taskItemId("child"), agentId("worker-c"));
+    if (!assignedChild.ok) throw assignedChild.error;
+    const assignedRoot = assignedChild.value.assign(taskItemId("root"), agentId("worker-r"));
+    if (!assignedRoot.ok) throw assignedRoot.error;
+    const failed = assignedRoot.value.fail(taskItemId("root"), {
+      code: "EXTERNAL",
+      message: "boom",
+      retryable: false,
+    });
+    if (!failed.ok) throw failed.error;
+
+    const snapshot = serializeBoard(failed.value);
+    // Inject a synthetic dependency: child depends on root. The board would
+    // reject this at build time because root is failed, so we splice it into
+    // the serialized snapshot to model the real-world legacy case where the
+    // dep edge already existed before root failed.
+    const patched = {
+      ...snapshot,
+      items: snapshot.items.map((task) =>
+        task.id === taskItemId("child") ? { ...task, dependencies: [taskItemId("root")] } : task,
+      ),
+    };
+
+    const result = reconcileTaskBoard(patched);
+    expect(result.actions).toMatchObject([
+      {
+        kind: "revokeOwnedDownstream",
+        taskId: taskItemId("child"),
+        blockedBy: taskItemId("root"),
+        reason: "upstream-failed",
+        owner: "worker-c",
+      },
+    ]);
+  });
+
+  test("emits escalateOrphanedDownstream for ownerless in_progress descendants", () => {
+    const board = createTaskBoard().add({
+      id: taskItemId("root"),
+      subject: "root",
+      description: "root",
+    });
+    if (!board.ok) throw board.error;
+    const assigned = board.value.assign(taskItemId("root"), agentId("worker-r"));
+    if (!assigned.ok) throw assigned.error;
+    const failed = assigned.value.fail(taskItemId("root"), {
+      code: "EXTERNAL",
+      message: "boom",
+      retryable: false,
+    });
+    if (!failed.ok) throw failed.error;
+
+    const snapshot = serializeBoard(failed.value);
+    // Inject a malformed legacy in_progress task with no assignedTo/lastAssignedTo.
+    const orphaned = {
+      ...snapshot,
+      items: [
+        ...snapshot.items,
+        {
+          id: taskItemId("orphan"),
+          subject: "legacy in-flight",
+          description: "no owner persisted",
+          dependencies: [taskItemId("root")],
+          status: "in_progress" as const,
+          version: 1,
+        },
+      ],
+    };
+
+    const result = reconcileTaskBoard(orphaned as never);
+    const escalations = result.actions.filter((a) => a.kind === "escalateOrphanedDownstream");
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      kind: "escalateOrphanedDownstream",
+      taskId: taskItemId("orphan"),
+      blockedBy: taskItemId("root"),
+      reason: "upstream-failed",
+    });
+    const cancellations = result.actions.filter((a) => a.kind === "cancelDownstream");
+    expect(cancellations).toEqual([]);
+  });
+
   test("propagates the killed-ancestor reason through transitive descendants", () => {
     const board = createTaskBoard().addAll([
       {

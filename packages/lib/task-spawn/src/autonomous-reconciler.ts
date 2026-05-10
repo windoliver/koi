@@ -41,6 +41,21 @@ export type AutonomousReconcileAction =
       readonly reason: "upstream-failed" | "upstream-killed";
       readonly owner: string;
       readonly version: number;
+    }
+  | {
+      /**
+       * Live (in_progress) descendant whose owner cannot be derived from
+       * the snapshot (assignedTo and lastAssignedTo both unset — legacy or
+       * corrupt persisted state). The caller MUST positively fence the live
+       * worker out of band before applying any terminal mutation; the
+       * reconciler refuses to emit a plain cancellation here so a worker
+       * cannot keep running after its ancestor has already failed.
+       */
+      readonly kind: "escalateOrphanedDownstream";
+      readonly taskId: TaskItemId;
+      readonly blockedBy: TaskItemId;
+      readonly reason: "upstream-failed" | "upstream-killed";
+      readonly version: number;
     };
 
 export interface AutonomousReconcileResult {
@@ -153,15 +168,28 @@ export function reconcileTaskBoard(
       }
       if (origin === undefined) continue;
       cancelled.set(taskId, origin);
-      if (task.status === "in_progress" && typeof task.assignedTo === "string") {
-        actions.push({
-          kind: "revokeOwnedDownstream",
-          taskId,
-          blockedBy: origin.blockedBy,
-          reason: origin.reason,
-          owner: task.assignedTo,
-          version: task.version,
-        });
+      if (task.status === "in_progress") {
+        const owner =
+          (typeof task.assignedTo === "string" ? task.assignedTo : undefined) ??
+          (typeof task.lastAssignedTo === "string" ? task.lastAssignedTo : undefined);
+        if (owner !== undefined) {
+          actions.push({
+            kind: "revokeOwnedDownstream",
+            taskId,
+            blockedBy: origin.blockedBy,
+            reason: origin.reason,
+            owner,
+            version: task.version,
+          });
+        } else {
+          actions.push({
+            kind: "escalateOrphanedDownstream",
+            taskId,
+            blockedBy: origin.blockedBy,
+            reason: origin.reason,
+            version: task.version,
+          });
+        }
         break;
       }
       actions.push({
