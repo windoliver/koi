@@ -446,4 +446,73 @@ describe("createProactiveDelivery", () => {
     const r3 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "3" }] });
     expect(r3).toEqual({ ok: true, delivered: ["slack"] });
   });
+
+  test("high: preferred succeeds → only preferred called", async () => {
+    const sent: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      sent.push("slack");
+    });
+    const email = stubAdapter("email", async () => {
+      sent.push("email");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { preferredChannel: "email" },
+    });
+
+    const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(r).toEqual({ ok: true, delivered: ["email"] });
+    expect(sent).toEqual(["email"]);
+  });
+
+  test("high: preferred fails, second succeeds → walks fallback in order", async () => {
+    const calls: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      calls.push("slack");
+    });
+    const email = stubAdapter("email", async () => {
+      calls.push("email");
+      throw new Error("smtp down");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { preferredChannel: "email" },
+    });
+
+    const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(r).toEqual({ ok: true, delivered: ["slack"] });
+    expect(calls).toEqual(["email", "slack"]);
+  });
+
+  test("high: every channel fails → all_failed with failures in attempt order", async () => {
+    const slack = stubAdapter("slack", async () => {
+      throw new Error("net");
+    });
+    const email = stubAdapter("email", async () => {
+      throw new Error("smtp");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { preferredChannel: "email" },
+    });
+
+    const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(r).toEqual({
+      ok: false,
+      reason: "all_failed",
+      failures: [
+        { channel: "email", error: "smtp" },
+        { channel: "slack", error: "net" },
+      ],
+    });
+  });
 });
