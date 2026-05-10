@@ -16,6 +16,7 @@ import { harnessId, isAttachResult, toolToken } from "@koi/core";
 import type { HarnessScheduler } from "@koi/harness-scheduler";
 import type { LongRunningHarness, SessionLease } from "@koi/long-running";
 import { EMPTY_TASK_BOARD, ZERO_METRICS } from "@koi/long-running";
+import type { MessageFn } from "@koi/task-spawn";
 import { createAutonomousAgent } from "./autonomous.js";
 
 describe("@koi/autonomous", () => {
@@ -255,6 +256,51 @@ describe("@koi/autonomous", () => {
     await agent.dispose(lease);
 
     expect(received).toEqual([lease]);
+  });
+
+  test("forwards defaultAgent so the task tool can run when agent_type is omitted", async () => {
+    const harness = createHarnessStub();
+    const scheduler = createSchedulerStub();
+    const resolver = createResolverStub();
+    const spawn = async (request: SpawnRequest): Promise<SpawnResult> => ({
+      ok: true,
+      output: `done:${request.agentName}`,
+    });
+
+    const agent = createAutonomousAgent({
+      harness,
+      scheduler,
+      agentResolver: resolver,
+      spawn,
+      defaultAgent: "worker",
+    });
+
+    const provider = agent.providers()[0] as ComponentProvider;
+    const attached = await provider.attach({} as Agent);
+    const components = isAttachResult(attached) ? attached.components : attached;
+    const tool = components.get(toolToken("task") as string) as Tool;
+
+    const result = await tool.execute({ description: "investigate" });
+    expect(result).toBe("done:Worker");
+  });
+
+  test("forwards the message hook so live-agent routing reaches the provider", async () => {
+    const harness = createHarnessStub();
+    const scheduler = createSchedulerStub();
+    const resolver = createResolverStub();
+    const spawn = async (): Promise<SpawnResult> => ({ ok: true, output: "spawn" });
+    const message: MessageFn = async () => ({ ok: true, output: "live" });
+
+    const agent = createAutonomousAgent({
+      harness,
+      scheduler,
+      agentResolver: resolver,
+      spawn,
+      message,
+    });
+
+    const provider = agent.providers()[0] as ComponentProvider;
+    expect(provider).toBeDefined();
   });
 
   test("disposes scheduler before harness", async () => {

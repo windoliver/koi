@@ -1,7 +1,7 @@
 import type { AgentResolver, ComponentProvider, KoiMiddleware } from "@koi/core";
 import type { HarnessScheduler } from "@koi/harness-scheduler";
 import type { LongRunningHarness, SessionLease } from "@koi/long-running";
-import type { SpawnFitnessWrapperConfig, SpawnFn } from "@koi/task-spawn";
+import type { MessageFn, SpawnFitnessWrapperConfig, SpawnFn } from "@koi/task-spawn";
 
 export interface AutonomousAgentParts {
   readonly harness: LongRunningHarness;
@@ -9,6 +9,12 @@ export interface AutonomousAgentParts {
   readonly agentResolver?: AgentResolver | undefined;
   readonly spawn?: SpawnFn | undefined;
   readonly spawnFitness?: SpawnFitnessWrapperConfig | undefined;
+  /** Default agent type used when the model omits `agent_type`. */
+  readonly defaultAgent?: string | undefined;
+  /** Optional live-agent message callback for routing to existing idle copilots. */
+  readonly message?: MessageFn | undefined;
+  /** Optional per-task wall-clock budget forwarded to the task tool. */
+  readonly maxDurationMs?: number | undefined;
   readonly extraMiddleware?: readonly KoiMiddleware[] | undefined;
 }
 

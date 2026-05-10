@@ -22,7 +22,15 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
 
   const providers = Object.freeze(
     spawn !== undefined && parts.agentResolver !== undefined
-      ? [createTaskSpawnProvider({ agentResolver: parts.agentResolver, spawn })]
+      ? [
+          createTaskSpawnProvider({
+            agentResolver: parts.agentResolver,
+            spawn,
+            ...(parts.defaultAgent !== undefined ? { defaultAgent: parts.defaultAgent } : {}),
+            ...(parts.message !== undefined ? { message: parts.message } : {}),
+            ...(parts.maxDurationMs !== undefined ? { maxDurationMs: parts.maxDurationMs } : {}),
+          }),
+        ]
       : [],
   ) as readonly ComponentProvider[];
 
