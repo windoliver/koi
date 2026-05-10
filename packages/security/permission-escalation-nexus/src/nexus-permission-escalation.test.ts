@@ -14,7 +14,7 @@ function ok<T>(value: T): Result<T, KoiError> {
 function makeTransport(): NexusTransport {
   return {
     kind: "http",
-    call: async () => ok({}),
+    call: async <T>() => ok({} as T),
     close: () => {},
   };
 }
@@ -23,8 +23,8 @@ describe("createNexusPermissionEscalation", () => {
   test("validates worker config success and error branches", () => {
     const workerConfig = {
       transport: makeTransport(),
-      agentId: "agent:worker",
-      coordinatorAgentId: "agent:leader",
+      agentId: "agent:worker" as never,
+      coordinatorAgentId: "agent:leader" as never,
       requestMethodPrefix: "ipc",
       pollIntervalMs: 0,
       clock: () => 0,
@@ -121,7 +121,7 @@ describe("createNexusPermissionEscalation", () => {
   test("validates coordinator config branches", () => {
     const coordinatorConfig = {
       transport: makeTransport(),
-      coordinatorAgentId: "agent:leader",
+      coordinatorAgentId: "agent:leader" as never,
       pollIntervalMs: 0,
       clock: () => 0,
     } as const;
@@ -256,9 +256,9 @@ describe("createNexusPermissionEscalation", () => {
     expect(decision).toEqual({ decision: "approved", grantedGrants: ["fs:write"] });
     expect(sendCalls).toHaveLength(1);
     expect(sendCalls[0]?.from).toBe("agent:worker");
-    expect(
-      (sendCalls[0]?.payload as { workerAgentId?: string } | undefined)?.workerAgentId,
-    ).toBe("agent:worker");
+    expect((sendCalls[0]?.payload as { workerAgentId?: string } | undefined)?.workerAgentId).toBe(
+      "agent:worker",
+    );
     expect(listCalls).toEqual([
       { agentId: "agent:worker", limit: 50 },
       { agentId: "agent:worker", limit: 50 },
@@ -270,9 +270,9 @@ describe("createNexusPermissionEscalation", () => {
     const escalation = createNexusPermissionEscalation({
       transport: {
         kind: "http",
-        call: async (method) => {
+        call: async <T>(method: string) => {
           calls.push(method);
-          return ok({});
+          return ok({} as T);
         },
         close: () => {},
       },

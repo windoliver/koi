@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { KoiError, PermissionDecision, Result } from "@koi/core";
+import type { EscalationDecision, KoiError, Result } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import { createNexusPermissionEscalationCoordinator } from "./nexus-permission-escalation-coordinator.js";
 
@@ -155,9 +155,7 @@ describe("createNexusPermissionEscalationCoordinator", () => {
     expect(count).toBe(1);
     expect(called).toBe(false);
     expect(sent).toHaveLength(1);
-    expect(
-      (sent[0]?.payload as { decision?: PermissionDecision } | undefined)?.decision,
-    ).toEqual({
+    expect((sent[0]?.payload as { decision?: EscalationDecision } | undefined)?.decision).toEqual({
       decision: "expired",
       reason: "permission escalation timed out",
     });
@@ -218,9 +216,7 @@ describe("createNexusPermissionEscalationCoordinator", () => {
     });
 
     expect(count).toBe(1);
-    expect(
-      (sent[0]?.payload as { decision?: PermissionDecision } | undefined)?.decision,
-    ).toEqual({
+    expect((sent[0]?.payload as { decision?: EscalationDecision } | undefined)?.decision).toEqual({
       decision: "expired",
       reason: "permission escalation timed out",
     });
@@ -312,9 +308,7 @@ describe("createNexusPermissionEscalationCoordinator", () => {
 
     expect(count).toBe(1);
     expect(sent).toHaveLength(1);
-    expect(
-      (sent[0]?.payload as { requestId?: string } | undefined)?.requestId,
-    ).toBe("req-valid");
+    expect((sent[0]?.payload as { requestId?: string } | undefined)?.requestId).toBe("req-valid");
   });
 
   test("does not re-resolve or re-send the same durable request on repeated polls", async () => {
@@ -365,7 +359,7 @@ describe("createNexusPermissionEscalationCoordinator", () => {
       clock: () => 0,
     });
 
-    const resolve = async (): Promise<PermissionDecision> => {
+    const resolve = async (): Promise<EscalationDecision> => {
       resolveCalls += 1;
       return { decision: "approved", grantedGrants: ["fs:write"] };
     };

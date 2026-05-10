@@ -1,17 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { NexusTransport } from "@koi/nexus-client";
 import {
-  createNexusPermissionEscalation,
-  createNexusPermissionEscalationCoordinator,
-} from "./index.js";
-import {
   validateNexusPermissionEscalationConfig,
   validateNexusPermissionEscalationCoordinatorConfig,
 } from "./config.js";
+import {
+  createNexusPermissionEscalation,
+  createNexusPermissionEscalationCoordinator,
+} from "./index.js";
 
 function makeTransport(): NexusTransport {
   return {
-    call: async () => ({ ok: true, value: {} }),
+    call: async <T>() => ({ ok: true, value: {} as T }),
     close: () => {},
   };
 }

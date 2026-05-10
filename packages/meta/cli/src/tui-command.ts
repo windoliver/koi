@@ -44,11 +44,11 @@ import type {
   ComponentProvider,
   ContentBlock,
   EngineEvent,
+  EscalationDecision,
+  EscalationRequest,
   GovernanceController,
   InboundMessage,
   JsonObject,
-  PermissionDecision,
-  PermissionRequest,
   RichTrajectoryStep,
   SessionId,
   SessionTranscript,
@@ -383,10 +383,10 @@ function extractGrantedGrants(
   return granted.every((value) => fallbackSet.has(value)) ? granted : undefined;
 }
 
-export function mapApprovalDecisionToPermissionDecision(
-  request: PermissionRequest,
+export function mapApprovalDecisionToEscalationDecision(
+  request: EscalationRequest,
   approval: ApprovalDecision,
-): PermissionDecision {
+): EscalationDecision {
   switch (approval.kind) {
     case "allow":
     case "always-allow":
@@ -407,8 +407,8 @@ export function mapApprovalDecisionToPermissionDecision(
 
 export async function resolvePermissionEscalationRequest(
   approvalHandler: ApprovalHandler,
-  request: PermissionRequest,
-): Promise<PermissionDecision> {
+  request: EscalationRequest,
+): Promise<EscalationDecision> {
   const input: JsonObject = {
     requestId: request.requestId,
     agentId: request.agentId,
@@ -428,7 +428,7 @@ export async function resolvePermissionEscalationRequest(
       agentId: request.agentId,
     },
   });
-  return mapApprovalDecisionToPermissionDecision(request, approval);
+  return mapApprovalDecisionToEscalationDecision(request, approval);
 }
 
 export async function pollPermissionEscalationCoordinatorOnce(

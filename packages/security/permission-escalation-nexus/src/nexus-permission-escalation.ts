@@ -1,8 +1,14 @@
-import type { KoiError, PermissionDecision, PermissionEscalation, PermissionRequest, Result } from "@koi/core";
+import type {
+  EscalationDecision,
+  EscalationRequest,
+  KoiError,
+  PermissionEscalation,
+  Result,
+} from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import {
-  validateNexusPermissionEscalationConfig,
   type NexusPermissionEscalationConfig,
+  validateNexusPermissionEscalationConfig,
 } from "./config.js";
 import {
   PERMISSION_ESCALATION_DECISION_TYPE,
@@ -42,18 +48,18 @@ interface NexusMailboxClient {
   ) => Promise<Result<readonly NexusEnvelope[], KoiError>>;
 }
 
-function malformedInboxDecision(): PermissionDecision {
+function malformedInboxDecision(): EscalationDecision {
   return {
     decision: "rejected",
     reason: "permission escalation inbox response was malformed",
   };
 }
 
-function timeoutDecision(): PermissionDecision {
+function timeoutDecision(): EscalationDecision {
   return { decision: "expired", reason: "permission escalation timed out" };
 }
 
-function rejectDecision(reason: string): PermissionDecision {
+function rejectDecision(reason: string): EscalationDecision {
   return { decision: "rejected", reason };
 }
 
@@ -84,7 +90,7 @@ function isInboxResponse(value: unknown): value is NexusInboxResponse {
 
 function matchesDecisionEnvelope(
   message: NexusEnvelope,
-  req: PermissionRequest,
+  req: EscalationRequest,
   coordinatorAgentId: string,
 ): message is NexusEnvelope & { readonly payload: PermissionEscalationDecisionRecord } {
   return (
@@ -144,7 +150,7 @@ export function createNexusPermissionEscalation(
   const clock = config.clock ?? Date.now;
 
   return {
-    async request(req: PermissionRequest): Promise<PermissionDecision> {
+    async request(req: EscalationRequest): Promise<EscalationDecision> {
       if (req.expiresAt <= clock()) {
         return timeoutDecision();
       }

@@ -58,10 +58,7 @@ function validateTransport(
 }
 
 function validateOptionalPollIntervalMs(value: unknown): value is number | undefined {
-  return (
-    value === undefined ||
-    (typeof value === "number" && Number.isFinite(value) && value >= 0)
-  );
+  return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
 function validateOptionalClock(value: unknown): value is (() => number) | undefined {
@@ -86,10 +83,7 @@ function validateWorkerConfigShape(
   if (!isNonEmptyString(obj.coordinatorAgentId)) {
     return validationError("config.coordinatorAgentId must be provided");
   }
-  if (
-    obj.requestMethodPrefix !== undefined &&
-    !isNonEmptyString(obj.requestMethodPrefix)
-  ) {
+  if (obj.requestMethodPrefix !== undefined && !isNonEmptyString(obj.requestMethodPrefix)) {
     return validationError("config.requestMethodPrefix must be a non-empty string");
   }
   if (!validateOptionalPollIntervalMs(obj.pollIntervalMs)) {
@@ -117,10 +111,7 @@ export function validateNexusPermissionEscalationCoordinatorConfig(
   if (!isNonEmptyString(obj.coordinatorAgentId)) {
     return validationError("config.coordinatorAgentId must be provided");
   }
-  if (
-    obj.requestMethodPrefix !== undefined &&
-    !isNonEmptyString(obj.requestMethodPrefix)
-  ) {
+  if (obj.requestMethodPrefix !== undefined && !isNonEmptyString(obj.requestMethodPrefix)) {
     return validationError("config.requestMethodPrefix must be a non-empty string");
   }
   if (!validateOptionalPollIntervalMs(obj.pollIntervalMs)) {

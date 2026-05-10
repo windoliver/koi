@@ -49,6 +49,8 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  EscalationDecision,
+  EscalationRequest,
   FileSystemBackend,
   GovernanceBackend,
   GovernanceController,
@@ -1118,7 +1120,7 @@ export interface KoiRuntimeHandle {
    * drives the polling lifecycle in a later assembly layer.
    */
   readonly pollPermissionEscalationCoordinator?:
-    | ((resolve: (request: PermissionRequest) => Promise<PermissionDecision>) => Promise<number>)
+    | ((resolve: (request: EscalationRequest) => Promise<EscalationDecision>) => Promise<number>)
     | undefined;
   /**
    * Optional cleanup hook for the Nexus permission escalation coordinator.
@@ -1555,7 +1557,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const hostId = config.hostId ?? "koi-tui";
   const permissionEscalationMode = config.permissionEscalation?.mode ?? "local";
   let pollPermissionEscalationCoordinator:
-    | ((resolve: (request: PermissionRequest) => Promise<PermissionDecision>) => Promise<number>)
+    | ((resolve: (request: EscalationRequest) => Promise<EscalationDecision>) => Promise<number>)
     | undefined;
   let disposePermissionEscalationCoordinator: (() => void) | undefined;
   let workerPermissionEscalation: import("@koi/core").PermissionEscalation | undefined;

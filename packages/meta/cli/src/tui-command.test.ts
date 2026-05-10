@@ -14,13 +14,13 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ApprovalHandler, EngineEvent, PermissionRequest } from "@koi/core";
+import type { ApprovalHandler, EngineEvent, EscalationRequest } from "@koi/core";
 import { COMMAND_DEFINITIONS, createEventBatcher, createInitialState, createStore } from "@koi/tui";
 import {
   computeLiveMcpStatus,
   drainEngineStream,
   isSpawnStackActive,
-  mapApprovalDecisionToPermissionDecision,
+  mapApprovalDecisionToEscalationDecision,
   pollPermissionEscalationCoordinatorOnce,
   renderTranscriptMarkdown,
   resolvePermissionEscalationRequest,
@@ -42,7 +42,7 @@ async function* makeErrorStream(): AsyncGenerator<EngineEvent> {
   throw new Error("engine crash");
 }
 
-const samplePermissionRequest: PermissionRequest = {
+const sampleEscalationRequest: EscalationRequest = {
   requestId: "req-1",
   agentId: "agent:worker" as never,
   requestedGrants: ["fs:write"],
@@ -60,7 +60,7 @@ describe("permission escalation coordinator helpers", () => {
 
     const decision = await resolvePermissionEscalationRequest(
       approvalHandler,
-      samplePermissionRequest,
+      sampleEscalationRequest,
     );
 
     expect(decision).toEqual({
@@ -75,9 +75,9 @@ describe("permission escalation coordinator helpers", () => {
     ]);
   });
 
-  test("mapApprovalDecisionToPermissionDecision narrows grants from modify decisions", () => {
+  test("mapApprovalDecisionToEscalationDecision narrows grants from modify decisions", () => {
     expect(
-      mapApprovalDecisionToPermissionDecision(samplePermissionRequest, {
+      mapApprovalDecisionToEscalationDecision(sampleEscalationRequest, {
         kind: "modify",
         updatedInput: {
           requestedGrants: [],
@@ -99,9 +99,9 @@ describe("permission escalation coordinator helpers", () => {
     const runtimeHandle = {
       permissionEscalationMode: "nexus" as const,
       pollPermissionEscalationCoordinator: async (
-        resolve: (request: PermissionRequest) => Promise<unknown>,
+        resolve: (request: EscalationRequest) => Promise<unknown>,
       ) => {
-        const decision = await resolve(samplePermissionRequest);
+        const decision = await resolve(sampleEscalationRequest);
         expect(decision).toEqual({
           decision: "approved",
           grantedGrants: ["fs:write"],

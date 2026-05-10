@@ -1,8 +1,8 @@
-import type { KoiError, PermissionDecision, PermissionRequest, Result } from "@koi/core";
+import type { EscalationDecision, EscalationRequest, KoiError, Result } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import {
-  validateNexusPermissionEscalationCoordinatorConfig,
   type NexusPermissionEscalationCoordinatorConfig,
+  validateNexusPermissionEscalationCoordinatorConfig,
 } from "./config.js";
 import {
   PERMISSION_ESCALATION_DECISION_TYPE,
@@ -40,11 +40,11 @@ interface NexusMailboxClient {
   ) => Promise<Result<readonly NexusEnvelope[], KoiError>>;
 }
 
-function timeoutDecision(): PermissionDecision {
+function timeoutDecision(): EscalationDecision {
   return { decision: "expired", reason: "permission escalation timed out" };
 }
 
-function rejectDecision(reason: string): PermissionDecision {
+function rejectDecision(reason: string): EscalationDecision {
   return { decision: "rejected", reason };
 }
 
@@ -56,12 +56,12 @@ function isInboxResponse(value: unknown): value is NexusInboxResponse {
   );
 }
 
-function isPermissionRequest(value: unknown): value is PermissionRequest {
+function isEscalationRequest(value: unknown): value is EscalationRequest {
   if (typeof value !== "object" || value === null) {
     return false;
   }
 
-  const candidate = value as Partial<PermissionRequest>;
+  const candidate = value as Partial<EscalationRequest>;
   return (
     typeof candidate.requestId === "string" &&
     typeof candidate.agentId === "string" &&
@@ -80,7 +80,7 @@ function isRequestRecord(value: unknown): value is PermissionEscalationRequestRe
   const candidate = value as Partial<PermissionEscalationRequestRecord>;
   return (
     candidate.kind === PERMISSION_ESCALATION_REQUEST_TYPE &&
-    isPermissionRequest(candidate.request) &&
+    isEscalationRequest(candidate.request) &&
     typeof candidate.workerAgentId === "string" &&
     typeof candidate.coordinatorAgentId === "string" &&
     typeof candidate.createdAt === "number" &&
@@ -151,7 +151,7 @@ export function createNexusPermissionEscalationCoordinator(
 
   return {
     async pollOnce(
-      resolve: (request: PermissionRequest) => Promise<PermissionDecision>,
+      resolve: (request: EscalationRequest) => Promise<EscalationDecision>,
     ): Promise<number> {
       const inboxResult = await mailbox.list(String(config.coordinatorAgentId), 50);
       if (!inboxResult.ok) {
@@ -175,7 +175,9 @@ export function createNexusPermissionEscalationCoordinator(
                 .then((resolved) => (record.expiresAt <= clock() ? timeoutDecision() : resolved))
                 .catch((error: unknown) =>
                   rejectDecision(
-                    error instanceof Error ? error.message : "permission escalation approval failed",
+                    error instanceof Error
+                      ? error.message
+                      : "permission escalation approval failed",
                   ),
                 );
 
