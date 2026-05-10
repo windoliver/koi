@@ -20,6 +20,21 @@ Before the delegation consolidation (#860), multi-agent dispatch was split acros
 - **Periodic state saves** — engine state persisted every N turns for crash recovery
 - **7 tools, clear progression** — plan -> dispatch (auto) -> review -> synthesize
 
+## Autonomous Notification Helpers
+
+`@koi/long-running` now also exports the notification utilities used by
+`@koi/autonomous`.
+
+- `sendWithRetry(send, message, options)` retries transient delivery failures
+  and returns typed success/failure metadata instead of throwing on retry
+  exhaustion.
+- `createCompletionNotifier(config)` formats completed and failed
+  `HarnessStatus` transitions into outbound messages and sends them through the
+  retry helper.
+
+These helpers are intentionally best-effort and stay outside the harness state
+machine, which keeps the L3 autonomous facade dependency-injected and small.
+
 ---
 
 ## What This Enables

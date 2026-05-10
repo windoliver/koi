@@ -15,6 +15,20 @@ direct access to `@koi/engine` and `spawnChildAgent()`, violating layer rules.
 `task-spawn` solves this by injecting a single `task` tool that the LLM calls
 naturally, while the spawn/message mechanics are wired externally.
 
+## Autonomous Helpers
+
+This package now also holds the lower-layer autonomous helpers assembled by
+`@koi/autonomous`.
+
+- `reconcileTaskBoard(snapshot)` computes deterministic dispatch and
+  stale-delegation recovery actions from task-board state.
+- `createSpawnFitnessWrapper(spawn, config)` records spawn outcomes without
+  changing the original `SpawnResult` or any thrown error.
+
+The public spawn contract is aligned with the unified core spawn types, so
+`TaskSpawnRequest`, `TaskSpawnResult`, and `SpawnFn` follow the shared
+`@koi/core` `SpawnRequest` / `SpawnResult` / `SpawnFn` surface.
+
 ## What This Enables
 
 ```
@@ -175,6 +189,8 @@ Validation via `validateTaskSpawnConfig()` returns `Result<TaskSpawnConfig, KoiE
 |----------|---------|---------|
 | `createTaskSpawnProvider(config)` | `ComponentProvider` | Attaches `tool:task` to an agent |
 | `createTaskTool(config)` | `Promise<Tool>` | Creates the task tool directly |
+| `reconcileTaskBoard(snapshot)` | `AutonomousReconcileResult` | Computes autonomous dispatch and recovery actions |
+| `createSpawnFitnessWrapper(spawn, config)` | `SpawnFn` | Adds best-effort spawn outcome recording |
 | `createTaskToolDescriptor(summaries)` | `ToolDescriptor` | Builds descriptor with agent_type enum |
 | `createMapAgentResolver(agents)` | `AgentResolver` | Wraps a static map as a resolver |
 | `createRegistryAgentResolver(catalog, registry)` | `AgentResolver` | Wraps catalog + live AgentRegistry with `findLive()` |
@@ -189,8 +205,8 @@ Validation via `validateTaskSpawnConfig()` returns `Result<TaskSpawnConfig, KoiE
 | `TaskableAgentSummary` | Lightweight summary for enum generation |
 | `LiveAgentHandle` | Agent ID + state (`"idle"` / `"busy"`) |
 | `AgentResolver` | Dynamic lookup: `resolve()`, `list()`, optional `findLive()` |
-| `TaskSpawnRequest` | Input to `spawn()`: description, manifest, signal |
-| `TaskSpawnResult` | `{ ok: true, output }` or `{ ok: false, error }` |
+| `TaskSpawnRequest` | Alias of the unified core `SpawnRequest` |
+| `TaskSpawnResult` | Alias of the unified core `SpawnResult` |
 | `SpawnFn` | `(request) => Promise<TaskSpawnResult>` |
 | `TaskMessageRequest` | Input to `message()`: agentId, description, signal |
 | `MessageFn` | `(request) => Promise<TaskSpawnResult>` |

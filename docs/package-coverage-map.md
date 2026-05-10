@@ -198,6 +198,7 @@ Each line shows package name, package directory, package description, test-file 
 ## meta (5)
 
 - `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 68. Docs: docs/L3/cli.md.
+- `@koi/autonomous` (packages/meta/autonomous) - L3 autonomous composition facade for long-running harness, scheduler, and task-aware helper wiring. Tests: 7. Docs: docs/L3/autonomous.md.
 - `@koi/auto-harness` (packages/meta/auto-harness) - L3 composition wiring for auto-harness synthesis session controls and policy-cache attachment. Tests: 1. Docs: -.
 - `@koi/nexus` (packages/meta/nexus) - L3 Nexus composition wiring for the active v2 Nexus package set. Tests: 6. Docs: docs/L3/nexus.md.
 - `@koi/rlm-stack` (packages/meta/rlm-stack) - L3 composition wiring @koi/middleware-rlm with @koi/context-manager threshold coordination. Tests: 3. Docs: docs/L2/rlm-stack.md, docs/L3/rlm-stack.md.
