@@ -2330,6 +2330,47 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
   );
 
   test(
+    "seq-aware store: terminal delete reaches backend even when a prior " +
+      "fire-and-forget step save is hung",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const observed: string[] = [];
+      const store: CompositionCheckpointStore = {
+        save: () => new Promise(() => {}),
+        delete: () => {
+          observed.push("delete-applied");
+        },
+        load: () => undefined,
+        list: () => [],
+        seqAware: true,
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-terminal-unblocked",
+        checkpointStoreTimeoutMs: 30,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      const result = await executor.execute(trigger(), plan);
+      expect(result.status).toBe("executed");
+      // Pre-fix the terminal delete chained behind the hung step save
+      // and never reached the backend. Post-fix it bypasses the chain
+      // on seq-aware stores and lands directly.
+      await new Promise<void>((r) => setTimeout(r, 50));
+      expect(observed).toContain("delete-applied");
+    },
+  );
+
+  test(
     "fire-and-forget in_progress saves: execute() latency does NOT scale with " +
       "step count on a degraded backend",
     async () => {
