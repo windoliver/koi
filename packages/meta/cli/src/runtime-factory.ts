@@ -30,6 +30,13 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
+import {
+  createDefaultRiskScorer,
+  createZoneEvaluator,
+  EDIT_TEST_FILES_PROFILE,
+  READ_ONLY_PROFILE,
+  SCRIPTED_CLEANUP_PROFILE,
+} from "@koi/approval-zones";
 import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
 import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
 import { createNexusAuditSink } from "@koi/audit-sink-nexus";
@@ -828,6 +835,15 @@ export interface KoiRuntimeConfig {
    * When provided, durable approvals survive process restart.
    */
   readonly persistentApprovals?: ApprovalStore | undefined;
+  /**
+   * Approval-zones profile (issue #1644). When set, wires
+   * `@koi/approval-zones` into the permissions middleware so matching tool
+   * calls can be auto-allowed without prompting. Sourced from
+   * `KOI_ZONES_PROFILE` env var by the TUI host. Unknown values are ignored
+   * (no zones applied). Sandbox-then-auto verdicts always fall through to
+   * prompt here because the CLI does not wire a sandbox router.
+   */
+  readonly zonesProfile?: "read-only" | "edit-test-files" | "scripted-cleanup" | undefined;
   /**
    * Pre-constructed current-model override middleware. When provided, runs
    * OUTER of `modelRouterMiddleware` and rewrites `request.model` to the
@@ -2291,9 +2307,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // createPermissionBackend now sets supportsDefaultDenyMarker: true and stamps
   // fall-through ask decisions with IS_DEFAULT_ASK, enabling full dual-key semantic
   // enforcement. allowLegacyBackendBashFallback is no longer needed here.
+  const zonesEvaluator = (() => {
+    switch (config.zonesProfile) {
+      case "read-only":
+        return createZoneEvaluator({
+          zones: READ_ONLY_PROFILE,
+          scorer: createDefaultRiskScorer({ projectRoot: cwd }),
+        });
+      case "edit-test-files":
+        return createZoneEvaluator({
+          zones: EDIT_TEST_FILES_PROFILE,
+          scorer: createDefaultRiskScorer({ projectRoot: cwd }),
+        });
+      case "scripted-cleanup":
+        return createZoneEvaluator({
+          zones: SCRIPTED_CLEANUP_PROFILE,
+          scorer: createDefaultRiskScorer({ projectRoot: cwd }),
+        });
+      default:
+        return undefined;
+    }
+  })();
+
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
+    ...(zonesEvaluator !== undefined ? { zones: { evaluator: zonesEvaluator } } : {}),
     ...(config.approvalTimeoutMs !== undefined
       ? { approvalTimeoutMs: config.approvalTimeoutMs }
       : {}),

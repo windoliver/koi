@@ -1392,6 +1392,7 @@
         "@koi/ace-types": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
+        "@koi/approval-zones": "workspace:*",
         "@koi/artifacts": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-nexus": "workspace:*",
