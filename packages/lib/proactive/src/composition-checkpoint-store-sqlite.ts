@@ -87,6 +87,10 @@ export function sqliteCompositionCheckpointStore(
   const deleteByKey: SqliteStatementLike = db.prepare(
     `DELETE FROM ${table} WHERE execution_id = ?`,
   );
+  const selectAll: SqliteStatementLike = db.prepare(
+    `SELECT execution_id, plan_hash, next_step_index, step_results, phase, saved_at ` +
+      `FROM ${table}`,
+  );
 
   function encodeStepResults(stepResults: readonly unknown[]): readonly CheckpointValue[] {
     if (encoder === null) return stepResults as readonly CheckpointValue[];
@@ -146,32 +150,70 @@ export function sqliteCompositionCheckpointStore(
       // aligned with the L0 contract (`T | undefined`).
       const raw = selectByKey.get(id);
       if (raw === undefined || raw === null) return undefined;
-      const row = raw as {
-        readonly plan_hash: string;
-        readonly next_step_index: number;
-        readonly step_results: string;
-        readonly phase: string;
-        readonly saved_at: number;
-      };
-      if (!VALID_PHASES.has(row.phase as CheckpointPhase)) {
-        // A row with an unrecognized phase indicates corruption (CHECK
-        // constraint should prevent insertion, but external writers could
-        // bypass it). Surface as undefined so the caller starts fresh
-        // rather than acting on garbage.
-        return undefined;
-      }
-      const stepResults = JSON.parse(row.step_results) as readonly CheckpointValue[];
-      return {
-        executionId: id,
-        planHash: row.plan_hash,
-        nextStepIndex: row.next_step_index,
-        stepResults,
-        phase: row.phase as CheckpointPhase,
-        savedAt: row.saved_at,
-      };
+      return decodeRow(id, raw);
     },
     delete: (id) => {
       deleteByKey.run(id);
     },
+    list: () => {
+      const rows = selectAll.all();
+      const out: CheckpointSnapshot[] = [];
+      for (const raw of rows) {
+        if (raw === null || typeof raw !== "object") continue;
+        const executionIdField = (raw as { readonly execution_id?: unknown }).execution_id;
+        if (typeof executionIdField !== "string" || executionIdField === "") continue;
+        const decoded = decodeRow(executionIdField, raw);
+        if (decoded !== undefined) out.push(decoded);
+      }
+      return out;
+    },
+  };
+}
+
+// Defensive row decode. The persisted SQLite row sits on the restart
+// boundary, so any corruption / schema drift / manual repair mistake
+// must not throw out of `load()` — that would block recovery exactly
+// when the store is supposed to help. Returns `undefined` on any
+// malformed input so the caller starts fresh rather than acting on
+// garbage. Validates the same invariants the in-memory store enforces
+// on save: matching length/index, non-empty ids, integer index.
+function decodeRow(executionId: string, raw: unknown): CheckpointSnapshot | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const row = raw as {
+    readonly plan_hash?: unknown;
+    readonly next_step_index?: unknown;
+    readonly step_results?: unknown;
+    readonly phase?: unknown;
+    readonly saved_at?: unknown;
+  };
+  const planHash = row.plan_hash;
+  const nextStepIndexField = row.next_step_index;
+  const stepResultsJson = row.step_results;
+  const phaseField = row.phase;
+  const savedAtField = row.saved_at;
+  if (typeof planHash !== "string" || planHash === "") return undefined;
+  if (typeof nextStepIndexField !== "number" || !Number.isInteger(nextStepIndexField)) {
+    return undefined;
+  }
+  if (nextStepIndexField < 0) return undefined;
+  if (typeof phaseField !== "string") return undefined;
+  if (!VALID_PHASES.has(phaseField as CheckpointPhase)) return undefined;
+  if (typeof savedAtField !== "number" || !Number.isFinite(savedAtField)) return undefined;
+  if (typeof stepResultsJson !== "string") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stepResultsJson);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  if (parsed.length !== nextStepIndexField) return undefined;
+  return {
+    executionId,
+    planHash,
+    nextStepIndex: nextStepIndexField,
+    stepResults: parsed as readonly CheckpointValue[],
+    phase: phaseField as CheckpointPhase,
+    savedAt: savedAtField,
   };
 }

@@ -97,6 +97,17 @@ export interface CompositionCheckpointStore {
     executionId: string,
   ) => CheckpointSnapshot | undefined | Promise<CheckpointSnapshot | undefined>;
   readonly delete: (executionId: string) => void | Promise<void>;
+  /**
+   * Enumerate stored snapshots. The primary restart-recovery primitive:
+   * after a crash the host typically does NOT know which execution ids
+   * were in flight, so it cannot use `load(id)` directly. `list()` gives
+   * the host an authoritative inventory so it can re-trigger or
+   * reconcile each surviving execution. Implementations MAY return them
+   * in any order. Hosts that only care about in-flight work should
+   * filter by `phase === "in_progress"` (or `"failed"`); a successful
+   * execution has already been `delete()`d by the executor.
+   */
+  readonly list: () => readonly CheckpointSnapshot[] | Promise<readonly CheckpointSnapshot[]>;
 }
 
 function isCheckpointValue(value: unknown, ancestors: Set<unknown>): boolean {
@@ -207,6 +218,13 @@ export function createInMemoryCheckpointStore(
     },
     delete: (id) => {
       snapshots.delete(id);
+    },
+    list: () => {
+      const out: CheckpointSnapshot[] = [];
+      for (const stored of snapshots.values()) {
+        out.push(structuredClone(stored));
+      }
+      return out;
     },
   };
 }

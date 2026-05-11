@@ -1176,14 +1176,21 @@ export function createCompositionExecutor(
       const state = { committedNewWork: false, acquiredSessionSlot: false };
       const result = await runPlan(trigger, plan, state);
       // Terminal snapshot housekeeping. Pure success deletes the snapshot
-      // (no in-flight execution to resume). Any non-terminal-success
-      // outcome — failed / unsupported / requires_approval — leaves a
-      // `phase: "failed"` snapshot so hosts can enumerate executions that
-      // stopped short. (`requires_approval` runs zero steps; the snapshot
-      // is still useful as a signal that the plan was attempted.)
+      // (no in-flight execution to resume). `failed` / `unsupported`
+      // persist a `phase: "failed"` snapshot so hosts can enumerate
+      // executions that stopped short.
+      //
+      // `requires_approval` is intentionally NOT collapsed into "failed":
+      // the plan ran zero steps, committed nothing, and is awaiting an
+      // external decision tracked through the host's approval channel —
+      // not through the checkpoint store. Persisting a "failed" snapshot
+      // here would cause restart-watchdog flows to confuse "pending
+      // human approval" with "execution actually failed" and auto-retry
+      // or page operators on an approval-gated plan. Skip the snapshot
+      // and let the existing approval signal contract own that state.
       if (result.status === "executed") {
         await deleteProgress();
-      } else {
+      } else if (result.status !== "requires_approval") {
         // Cast widening: result.stepResults narrows differently per status
         // (failed/unsupported include the final non-executed step). Snapshot
         // only the executed prefix to match `nextStepIndex` semantics.

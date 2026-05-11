@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { createInMemoryCheckpointStore } from "./composition-checkpoint-store.js";
+import {
+  type CheckpointSnapshot,
+  createInMemoryCheckpointStore,
+} from "./composition-checkpoint-store.js";
 
 describe("createInMemoryCheckpointStore", () => {
   test("load before any save returns undefined", async () => {
@@ -315,5 +318,60 @@ describe("createInMemoryCheckpointStore", () => {
         savedAt: 1,
       }),
     ).not.toThrow();
+  });
+
+  test("list returns every stored snapshot; emptied after delete", async () => {
+    const store = createInMemoryCheckpointStore();
+    expect(await store.list()).toEqual([]);
+
+    await store.save({
+      executionId: "a",
+      planHash: "h",
+      nextStepIndex: 1,
+      stepResults: [1],
+      phase: "in_progress",
+      savedAt: 1,
+    });
+    await store.save({
+      executionId: "b",
+      planHash: "h",
+      nextStepIndex: 0,
+      stepResults: [],
+      phase: "failed",
+      savedAt: 2,
+    });
+
+    const all = await store.list();
+    const ids = all.map((s) => s.executionId).sort();
+    expect(ids).toEqual(["a", "b"]);
+
+    await store.delete("a");
+    const remaining = await store.list();
+    expect(remaining.map((s) => s.executionId)).toEqual(["b"]);
+  });
+
+  test("list returns deep clones — mutating result does not affect stored state", async () => {
+    const store = createInMemoryCheckpointStore();
+    const snap: CheckpointSnapshot = {
+      executionId: "a",
+      planHash: "h",
+      nextStepIndex: 1,
+      stepResults: [{ nested: { value: "original" } }],
+      phase: "in_progress",
+      savedAt: 1,
+    };
+    await store.save(snap);
+
+    const listed = await store.list();
+    // Mutate the returned object's nested field.
+    const first = listed[0];
+    if (first !== undefined) {
+      (first.stepResults[0] as { nested: { value: string } }).nested.value = "MUTATED";
+    }
+
+    const reloaded = await store.load("a");
+    expect((reloaded?.stepResults[0] as { nested: { value: string } }).nested.value).toBe(
+      "original",
+    );
   });
 });
