@@ -207,3 +207,11 @@ The following are filed separately and not yet implemented:
 - **Classifier-driven normalization** — coalesce repeated probes on same resource into single decision cache key
 
 See issue #1650 for tracking.
+
+---
+
+## Approval Zones (#1644)
+
+When the rule evaluator returns `ask` and both persistent + session approvals miss, an optional **approval-zone evaluator** can convert the verdict into auto-allow or sandbox-then-auto before the user is prompted. See `@koi/approval-zones` and `docs/L2/security-approval-zones.md`.
+
+Zones never override `allow` or `deny` from the rule evaluator; they only intercept `ask`.
