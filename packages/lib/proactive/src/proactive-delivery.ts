@@ -261,9 +261,19 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
   const now = config.now ?? Date.now;
   const cap = preferences?.maxNotificationsPerHour;
   const WINDOW_MS = 3_600_000;
-  // let: window mutates on every successful non-urgent send and on every gate
-  // check (slides out entries older than now() - WINDOW_MS).
-  const window: number[] = [];
+  // Rate-limit reservations carry both a wall-clock timestamp (for window
+  // pruning) and a monotonic id (for token-based refund). Storing just
+  // timestamps was unsafe once timeouts existed: two concurrent sends in
+  // the same millisecond reserve identical `t` values, one times out
+  // (slot must stay consumed — delivery may still succeed), and the
+  // other hard-fails. A by-timestamp refund could remove the wrong
+  // reservation, reopening capacity early under fail-closed conditions.
+  interface RateLimitReservation {
+    readonly id: number;
+    readonly t: number;
+  }
+  const window: RateLimitReservation[] = [];
+  let nextReservationId = 0;
 
   const quietStart = preferences?.quietHoursStart;
   const quietEnd = preferences?.quietHoursEnd;
@@ -288,27 +298,35 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
   function pruneWindow(t: number): void {
     while (window.length > 0) {
       const head = window[0];
-      if (head === undefined || head > t - WINDOW_MS) break;
+      if (head === undefined || head.t > t - WINDOW_MS) break;
       window.shift();
     }
   }
 
-  function reserveSlot(t: number, priority: DeliveryPriority): boolean {
-    if (priority === "urgent") return true;
-    if (cap === undefined) return true;
+  // Sentinel for "no reservation taken" (urgent priority or rate-limit
+  // disabled). Refund is a no-op for this value.
+  const NO_RESERVATION = -1;
+
+  function reserveSlot(t: number, priority: DeliveryPriority): number {
+    if (priority === "urgent") return NO_RESERVATION;
+    if (cap === undefined) return NO_RESERVATION;
     pruneWindow(t);
-    if (window.length >= cap) return false;
+    if (window.length >= cap) return NO_RESERVATION;
     // Reserve synchronously so concurrent same-instant sends cannot both pass.
-    window.push(t);
-    return true;
+    const id = nextReservationId++;
+    window.push({ id, t });
+    return id;
   }
 
-  function refundSlot(t: number, priority: DeliveryPriority): void {
-    if (priority === "urgent" || cap === undefined) return;
-    // Remove the most-recent matching entry — undoes a failed delivery so it
-    // does not consume capacity.
-    for (let i = window.length - 1; i >= 0; i--) {
-      if (window[i] === t) {
+  function refundSlot(reservationId: number): void {
+    if (reservationId === NO_RESERVATION) return;
+    // Remove by id, not by timestamp — two concurrent sends in the same
+    // millisecond carry distinct ids, so a hard-failure refund cannot
+    // accidentally delete a sibling timed-out reservation that must stay
+    // consumed (its delivery may still succeed).
+    for (let i = 0; i < window.length; i++) {
+      const entry = window[i];
+      if (entry !== undefined && entry.id === reservationId) {
         window.splice(i, 1);
         return;
       }
@@ -435,12 +453,13 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
         return { ok: false, reason: "quiet_hours" };
       }
       if (notification.priority === "high") {
-        if (!reserveSlot(t, notification.priority)) {
+        const highReservation = reserveSlot(t, notification.priority);
+        if (highReservation === NO_RESERVATION && cap !== undefined) {
           return { ok: false, reason: "rate_limited" };
         }
         const order = selectHighOrder(config.channels, preferences?.preferredChannel);
         if (order.length === 0) {
-          refundSlot(t, notification.priority);
+          refundSlot(highReservation);
           return { ok: false, reason: "no_channels" };
         }
         const failures: DeliveryFailure[] = [];
@@ -469,20 +488,21 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
             return { ok: false, reason: "timed_out", failures };
           }
         }
-        refundSlot(t, notification.priority);
+        refundSlot(highReservation);
         return { ok: false, reason: "all_failed", failures };
       }
-      if (!reserveSlot(t, notification.priority)) {
+      const normalReservation = reserveSlot(t, notification.priority);
+      if (normalReservation === NO_RESERVATION && cap !== undefined) {
         return { ok: false, reason: "rate_limited" };
       }
       const target = selectPreferred(config.channels, preferences?.preferredChannel);
       if (target === undefined) {
-        refundSlot(t, notification.priority);
+        refundSlot(normalReservation);
         return { ok: false, reason: "no_channels" };
       }
       const built = buildOutbound(notification);
       if (!built.ok) {
-        refundSlot(t, notification.priority);
+        refundSlot(normalReservation);
         return {
           ok: false,
           reason: "all_failed",
@@ -496,7 +516,7 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
         if (outcome.kind === "timeout") {
           return { ok: false, reason: "timed_out", failures: [outcome.failure] };
         }
-        refundSlot(t, notification.priority);
+        refundSlot(normalReservation);
         return { ok: false, reason: "all_failed", failures: [outcome.failure] };
       }
       return { ok: true, delivered: [target.name] };

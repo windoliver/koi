@@ -516,26 +516,35 @@ export function createCompositionExecutor(
   const missingExecutionId =
     checkpointStore !== undefined && (executionId === undefined || executionId === "");
 
+  // Serialize all store ops per executor instance. Necessary because
+  // withTimeout abandons the executor's view of a stalled op via
+  // Promise.race, but the underlying save/delete keeps running. Without
+  // serialization a slow save() that the executor gave up on could
+  // commit AFTER a later delete(), resurrecting a stale snapshot for an
+  // execution that already finished — or overwriting a newer terminal
+  // `failed` row with an older `in_progress` payload. Chaining every op
+  // onto a single per-executor promise enforces store-side ordering even
+  // when the executor stops awaiting individual ops.
+  let storeOpQueue: Promise<void> = Promise.resolve();
+
   // Bound observability-only store I/O so a stalled/hung backend cannot
   // strand execute() after side effects have already committed. Treats
   // timeout as a swallowed failure (matches the "checkpoints are
   // observability-only" contract). `timeoutMs <= 0` opts out — only safe
   // for synchronous in-memory stores where awaiting cannot stall.
   async function withTimeout<T>(op: () => Promise<T> | T, timeoutMs: number): Promise<void> {
-    let opPromise: Promise<T> | T;
-    try {
-      opPromise = op();
-    } catch {
-      // Synchronous throw from save/delete — same observability-only policy.
-      return;
-    }
-    if (!(opPromise instanceof Promise)) return; // sync success
-    if (timeoutMs <= 0) {
+    // Chain this op behind any already-queued op. The queue swallows
+    // failures so one bad op does not poison the chain.
+    const queued = storeOpQueue.then(async () => {
       try {
-        await opPromise;
+        await op();
       } catch {
         // observability-only
       }
+    });
+    storeOpQueue = queued;
+    if (timeoutMs <= 0) {
+      await queued;
       return;
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -544,14 +553,7 @@ export function createCompositionExecutor(
       timer = setTimeout(() => resolve(timeoutSentinel), timeoutMs);
     });
     try {
-      const winner = await Promise.race([
-        opPromise.then(
-          () => "ok" as const,
-          () => "err" as const,
-        ),
-        timeoutPromise,
-      ]);
-      void winner; // either branch is observability-only; nothing to surface
+      await Promise.race([queued, timeoutPromise]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
