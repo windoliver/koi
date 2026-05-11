@@ -13,6 +13,34 @@ import type {
 
 export type { SqliteDatabaseLike, SqliteStatementLike };
 
+/**
+ * Local extension of `SqliteStatementLike` adding `.all(...)` — required by
+ * the checkpoint store's `list()` enumeration but NOT widened onto the
+ * shared `SqliteStatementLike` contract so existing `sqliteCompositionExecutionLog`
+ * consumers that implemented only `run` and `get` continue to type-check.
+ * Both `bun:sqlite` and `node:sqlite` provide `.all(...)` natively, so the
+ * runtime check in `sqliteCompositionCheckpointStore` will pass for both
+ * canonical drivers; custom shims that omit it will fail explicitly at
+ * construction.
+ */
+interface SqliteStatementLikeAll extends SqliteStatementLike {
+  readonly all: (...params: (string | null)[]) => readonly unknown[];
+}
+
+/**
+ * Diagnostics for a row that could not be decoded into a `CheckpointSnapshot`
+ * (corrupt JSON, schema drift, manual repair mistake, or missing field).
+ * Surfaced through `SqliteCheckpointStoreConfig.onCorruptRow` so a host
+ * sweeping `list()` for restart recovery does not silently lose track of
+ * an execution that needs operator attention.
+ */
+export interface CheckpointStoreCorruptRow {
+  /** Best-effort executionId from the row; `undefined` if even that column is unrecoverable. */
+  readonly executionId: string | undefined;
+  /** Short reason describing what failed to decode. */
+  readonly reason: string;
+}
+
 export interface SqliteCheckpointStoreConfig {
   readonly tableName?: string;
   /**
@@ -23,6 +51,16 @@ export interface SqliteCheckpointStoreConfig {
    * to `null` to opt out and require pre-encoded `CheckpointValue` inputs.
    */
   readonly encoder?: CheckpointEncoder | null;
+  /**
+   * Diagnostics callback invoked when `load(id)` or `list()` encounters a
+   * row it cannot decode (corrupt JSON, drift, missing field). The callback
+   * MUST NOT throw — failures inside the callback are swallowed so a
+   * faulty diagnostics handler cannot break recovery. Hosts that wire this
+   * can log, page operators, or store a side-channel reconciliation queue
+   * so executions whose checkpoints decode-failed never become invisible.
+   * When omitted, corrupt rows are silently dropped (legacy behavior).
+   */
+  readonly onCorruptRow?: (record: CheckpointStoreCorruptRow) => void;
 }
 
 const VALID_PHASES = new Set<CheckpointPhase>(["in_progress", "completed", "failed"]);
@@ -58,6 +96,16 @@ export function sqliteCompositionCheckpointStore(
     throw new Error(`sqliteCompositionCheckpointStore: invalid tableName "${table}"`);
   }
   const encoder = config.encoder === undefined ? safeJsonEncoder : config.encoder;
+  const onCorruptRow = config.onCorruptRow;
+
+  function reportCorrupt(executionId: string | undefined, reason: string): void {
+    if (onCorruptRow === undefined) return;
+    try {
+      onCorruptRow({ executionId, reason });
+    } catch {
+      // A faulty diagnostics callback must not break recovery.
+    }
+  }
 
   db.exec(
     `CREATE TABLE IF NOT EXISTS ${table} (` +
@@ -87,10 +135,23 @@ export function sqliteCompositionCheckpointStore(
   const deleteByKey: SqliteStatementLike = db.prepare(
     `DELETE FROM ${table} WHERE execution_id = ?`,
   );
-  const selectAll: SqliteStatementLike = db.prepare(
+  const selectAllStmt = db.prepare(
     `SELECT execution_id, plan_hash, next_step_index, step_results, phase, saved_at ` +
       `FROM ${table}`,
   );
+  // Feature-detect `.all(...)` — both bun:sqlite and node:sqlite provide it,
+  // but the shared `SqliteStatementLike` contract does not require it (and we
+  // intentionally do not widen that contract to keep existing execution-log
+  // shims compatible). A custom shim that omits it will fail explicitly here
+  // rather than at the first call to `list()`.
+  if (typeof (selectAllStmt as Partial<SqliteStatementLikeAll>).all !== "function") {
+    throw new Error(
+      "sqliteCompositionCheckpointStore: provided SqliteDatabaseLike returned " +
+        "a Statement without an `all(...)` method — required for list() " +
+        "enumeration. Both bun:sqlite and node:sqlite supply this natively.",
+    );
+  }
+  const selectAll = selectAllStmt as SqliteStatementLikeAll;
 
   function encodeStepResults(stepResults: readonly unknown[]): readonly CheckpointValue[] {
     if (encoder === null) return stepResults as readonly CheckpointValue[];
@@ -150,7 +211,11 @@ export function sqliteCompositionCheckpointStore(
       // aligned with the L0 contract (`T | undefined`).
       const raw = selectByKey.get(id);
       if (raw === undefined || raw === null) return undefined;
-      return decodeRow(id, raw);
+      const decoded = decodeRow(id, raw);
+      if (decoded === undefined) {
+        reportCorrupt(id, "row failed to decode (load)");
+      }
+      return decoded;
     },
     delete: (id) => {
       deleteByKey.run(id);
@@ -159,11 +224,21 @@ export function sqliteCompositionCheckpointStore(
       const rows = selectAll.all();
       const out: CheckpointSnapshot[] = [];
       for (const raw of rows) {
-        if (raw === null || typeof raw !== "object") continue;
+        if (raw === null || typeof raw !== "object") {
+          reportCorrupt(undefined, "row is not an object (list)");
+          continue;
+        }
         const executionIdField = (raw as { readonly execution_id?: unknown }).execution_id;
-        if (typeof executionIdField !== "string" || executionIdField === "") continue;
+        if (typeof executionIdField !== "string" || executionIdField === "") {
+          reportCorrupt(undefined, "row missing or empty execution_id (list)");
+          continue;
+        }
         const decoded = decodeRow(executionIdField, raw);
-        if (decoded !== undefined) out.push(decoded);
+        if (decoded === undefined) {
+          reportCorrupt(executionIdField, "row failed to decode (list)");
+          continue;
+        }
+        out.push(decoded);
       }
       return out;
     },

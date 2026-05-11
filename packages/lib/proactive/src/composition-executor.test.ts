@@ -2034,27 +2034,20 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
   });
 
   test(
-    "checkpoint store ops are serialized per executor: a slow save cannot " +
-      "commit AFTER a later delete (no stale-snapshot resurrection)",
+    "checkpoint store ops are serialized per executor when ops complete in time " +
+      "(in-order save → delete observed on the store side)",
     async () => {
       const { scheduler } = schedulerStub();
-      // Order the test observes ops complete on the STORE side. Even if the
-      // executor's view of save() times out, the underlying op finishes
-      // before the next op runs — so a slow save will never overtake a
-      // later delete and resurrect a stale snapshot.
-      const observed: { op: "save" | "delete"; at: number }[] = [];
-      let releaseSlowSave: (() => void) | undefined;
-      const slowSavePromise = new Promise<void>((resolve) => {
-        releaseSlowSave = resolve;
-      });
-
+      const observed: ("save" | "delete")[] = [];
       const store: CompositionCheckpointStore = {
         save: async () => {
-          await slowSavePromise;
-          observed.push({ op: "save", at: observed.length });
+          // Yield once to introduce async ordering pressure.
+          await Promise.resolve();
+          observed.push("save");
         },
         delete: async () => {
-          observed.push({ op: "delete", at: observed.length });
+          await Promise.resolve();
+          observed.push("delete");
         },
         load: () => undefined,
         list: () => [],
@@ -2066,9 +2059,7 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
         executionLog: inMemoryExecutionLog().log,
         checkpointStore: store,
         executionId: "exec-serialize",
-        // Short timeout so the executor returns before save resolves; the
-        // store-side ordering must still hold.
-        checkpointStoreTimeoutMs: 25,
+        checkpointStoreTimeoutMs: 5_000,
       });
       const plan: CompositionPlan = {
         triggerId: "trigger-1",
@@ -2080,14 +2071,74 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
 
       const result = await executor.execute(trigger(), plan);
       expect(result.status).toBe("executed");
-      // Nothing visible yet — save is still hung.
-      expect(observed).toEqual([]);
-
-      // Release the hung save; ordering must put save BEFORE delete.
-      releaseSlowSave?.();
-      // Drain microtasks so the chained delete runs.
+      // Drain microtasks so chained ops settle.
       await new Promise<void>((r) => setTimeout(r, 10));
-      expect(observed.map((o) => o.op)).toEqual(["save", "delete"]);
+      expect(observed).toEqual(["save", "delete"]);
+    },
+  );
+
+  test(
+    "hung store op does not permanently block later ops: chain resets " +
+      "after timeout so subsequent executions can progress",
+    async () => {
+      const { scheduler } = schedulerStub();
+      // First save hangs forever. With strict chaining, the terminal
+      // delete would queue behind it indefinitely. With chain reset on
+      // timeout, the second executor's save should still complete.
+      let saveCount = 0;
+      const observed: ("save-applied" | "delete-applied")[] = [];
+      const store: CompositionCheckpointStore = {
+        save: () => {
+          saveCount += 1;
+          if (saveCount === 1) return new Promise<void>(() => {}); // hung
+          observed.push("save-applied");
+        },
+        delete: () => {
+          observed.push("delete-applied");
+        },
+        load: () => undefined,
+        list: () => [],
+      };
+      const executor1 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-hung-1",
+        checkpointStoreTimeoutMs: 25,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+
+      const result1 = await executor1.execute(trigger(), plan);
+      expect(result1.status).toBe("executed");
+      // First save is still hung; chain was reset after its timeout so the
+      // terminal delete fired against the reset chain. observed should
+      // now include "delete-applied" (the terminal delete actually ran).
+      await new Promise<void>((r) => setTimeout(r, 40));
+      expect(observed).toContain("delete-applied");
+
+      // Second executor on the SAME store: its save must run (saveCount >= 2)
+      // because the chain reset prevented the hung first save from
+      // blocking it.
+      const executor2 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-hung-2",
+        checkpointStoreTimeoutMs: 25,
+      });
+      await executor2.execute(trigger(), plan);
+      await new Promise<void>((r) => setTimeout(r, 40));
+      expect(observed).toContain("save-applied");
     },
   );
 
