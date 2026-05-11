@@ -857,6 +857,60 @@ describe("createProactiveDelivery", () => {
     expect(observedLen).toBe(1);
   });
 
+  test("non-cloneable metadata returns all_failed without throwing", async () => {
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
+    const r = await delivery.send({
+      priority: "normal",
+      content: [{ kind: "text", text: "hi" }],
+      metadata: { fn: () => 1 } as unknown as Record<string, unknown>,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toBe("all_failed");
+    expect(r.failures?.[0]?.channel).toBe("slack");
+  });
+
+  test("non-cloneable payload refunds rate-limit slot (no leak)", async () => {
+    const t = 1_700_000_000_000;
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { maxNotificationsPerHour: 1 },
+      now: () => t,
+    });
+    // Bad payload — cloning fails. Slot must be refunded.
+    const r1 = await delivery.send({
+      priority: "normal",
+      content: [{ kind: "text", text: "x" }],
+      metadata: { fn: () => 1 } as unknown as Record<string, unknown>,
+    });
+    expect(r1.ok).toBe(false);
+    // Slot was refunded → next valid send still passes at cap=1.
+    const r2 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "ok" }] });
+    expect(r2).toEqual({ ok: true, delivered: ["slack"] });
+  });
+
+  test("urgent fan-out with non-cloneable metadata wraps per-channel failures (no throw)", async () => {
+    const slack = stubAdapter("slack", async () => {});
+    const email = stubAdapter("email", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+    });
+    const r = await delivery.send({
+      priority: "urgent",
+      content: [{ kind: "text", text: "alert" }],
+      metadata: { fn: () => 1 } as unknown as Record<string, unknown>,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toBe("all_failed");
+    expect(r.failures?.length).toBe(2);
+  });
+
   test("throws when maxNotificationsPerHour is NaN", () => {
     const slack = stubAdapter("slack", async () => {});
     expect(() =>
