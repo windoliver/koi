@@ -21,10 +21,12 @@
     "optional": true
   },
   "dependencies": {
+    "@koi/approval-zones": "workspace:*",
     "@koi/bash-ast": "workspace:*",
     "@koi/bash-classifier": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
-    "@koi/hash": "workspace:*"
+    "@koi/hash": "workspace:*",
+    "@koi/sandbox-router": "workspace:*"
   }
 }

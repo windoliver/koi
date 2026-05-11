@@ -8,6 +8,8 @@
   "references": [
     { "path": "../../kernel/core" },
     { "path": "../../lib/errors" },
-    { "path": "../../lib/bash-ast" }
+    { "path": "../../lib/bash-ast" },
+    { "path": "../approval-zones" },
+    { "path": "../../sandbox/sandbox-router" }
   ]
 }
