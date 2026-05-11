@@ -613,11 +613,13 @@ export function createCompositionExecutor(
 
   async function deleteProgress(): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
-    // Bump the seq so a late save() observed by the backend after this
-    // delete cannot reuse the previous seq to resurrect state. Backends
-    // honoring seq treat the delete as the new high-watermark.
-    ++storeOpSeq;
-    await withTimeout(() => checkpointStore.delete(executionId), checkpointStoreTimeoutMs);
+    // Bump the seq and pass it into delete() so the backend can persist
+    // the watermark as a tombstone even when no row exists yet. Without
+    // this, a delayed save() that the executor abandoned via timeout
+    // could insert fresh state after this delete and resurrect a
+    // completed execution.
+    const seq = ++storeOpSeq;
+    await withTimeout(() => checkpointStore.delete(executionId, seq), checkpointStoreTimeoutMs);
   }
 
   async function emitGap(trigger: CompositionTrigger, step: CompositionStep): Promise<void> {
