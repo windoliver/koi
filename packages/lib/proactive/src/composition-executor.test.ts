@@ -1971,6 +1971,112 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     expect(saves[1]?.planHash).toBe("fixed-hash");
   });
 
+  test(
+    "executor seq remains monotonic across recreations for the same executionId " +
+      "(wall-clock anchored; restart-safe)",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const saves: CheckpointSnapshot[] = [];
+      const store: CompositionCheckpointStore = {
+        save: (snap) => {
+          saves.push(snap);
+        },
+        delete: () => {},
+        load: () => undefined,
+        list: () => [],
+      };
+      // Mock clock so first executor's seq starts at T1, second at T2 (later).
+      let t = 1_000_000;
+      const advancingNow = () => t++;
+      const exec1 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-shared",
+        now: advancingNow,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      await exec1.execute(trigger(), plan);
+      const seq1 = saves[saves.length - 1]?.seq;
+      expect(seq1).toBeDefined();
+
+      // Fresh executor for the SAME executionId — wall-clock has advanced.
+      t = 2_000_000;
+      const exec2 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-shared",
+        now: advancingNow,
+      });
+      await exec2.execute(trigger(), plan);
+      const seq2 = saves[saves.length - 1]?.seq;
+      expect(seq2).toBeDefined();
+      // Strict monotonicity across executor recreations.
+      expect(seq2!).toBeGreaterThan(seq1!);
+    },
+  );
+
+  test("zero-step preflight failure overwrites a prior in_progress snapshot (no phantom recovery)", async () => {
+    const { scheduler } = schedulerStub();
+    const saves: CheckpointSnapshot[] = [];
+    // Backend with a pre-existing snapshot from a prior attempt.
+    let stored: CheckpointSnapshot | undefined = {
+      executionId: "exec-stale",
+      planHash: "old-hash",
+      nextStepIndex: 3,
+      stepResults: ["a", "b", "c"],
+      phase: "in_progress",
+      savedAt: 100,
+      seq: 100,
+    };
+    const store: CompositionCheckpointStore = {
+      save: (snap) => {
+        saves.push(snap);
+        stored = snap;
+      },
+      load: () => stored,
+      delete: () => {
+        stored = undefined;
+      },
+      list: () => (stored === undefined ? [] : [stored]),
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-stale",
+    });
+    // Trigger-id mismatch → INVALID_PLAN before any step runs.
+    const plan: CompositionPlan = {
+      triggerId: "trigger-other",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    // Prior snapshot existed → preflight failure must overwrite it as
+    // phase=failed so restart watchdogs don't keep retrying a phantom
+    // in-flight execution. Last recorded save should be phase=failed.
+    expect(saves.length).toBeGreaterThan(0);
+    expect(saves[saves.length - 1]?.phase).toBe("failed");
+  });
+
   test("preflight failure with zero executed steps does NOT persist a failed snapshot", async () => {
     const { scheduler } = schedulerStub();
     const { store, saves, deletes } = recordingCheckpointStore();
