@@ -1098,7 +1098,7 @@ describe("createProactiveDelivery", () => {
     expect(Date.now() - start).toBeLessThan(1000);
   });
 
-  test("high fallback: with idempotencyKey, timeout falls back to next channel (dedupe-safe retry)", async () => {
+  test("high fallback: timeout is terminal even with idempotencyKey (no cross-channel dedupe ledger)", async () => {
     const calls: string[] = [];
     const slack = stubAdapter("slack", () => {
       calls.push("slack");
@@ -1120,12 +1120,13 @@ describe("createProactiveDelivery", () => {
       content: [{ kind: "text", text: "h" }],
       idempotencyKey: "dedupe-1",
     });
-    // Email delivered. Slack still hangs in background; idempotencyKey on
-    // both messages means downstream dedupe drops the late slack completion.
-    expect(r.ok).toBe(true);
-    if (!r.ok) throw new Error("unreachable");
-    expect(r.delivered).toEqual(["email"]);
-    expect(calls).toEqual(["slack", "email"]);
+    // idempotencyKey only dedupes within a single transport. Email and
+    // Slack don't share a delivery ledger, so cross-channel fallback after
+    // a timeout could double-notify if Slack later completes. Terminal.
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toBe("timed_out");
+    expect(calls).toEqual(["slack"]);
   });
 
   test("urgent partial timeout: success returned with partialFailures including timeout entry", async () => {
