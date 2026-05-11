@@ -160,6 +160,19 @@ export function sqliteCompositionCheckpointStore(
       // `x > NULL` evaluates to NULL → UPDATE skipped forever.
       `WHERE excluded.seq > COALESCE(${table}.seq, -1)`,
   );
+  // Unversioned save. Fails closed against mixed-version writers:
+  // - Existing row with tombstone=1 (set by a versioned delete) → UPDATE
+  //   skipped. A late legacy writer cannot resurrect a completed/deleted
+  //   execution.
+  // - Existing row with non-null seq (written by a versioned writer) →
+  //   UPDATE skipped. Once any versioned write has claimed the row, all
+  //   subsequent saves must carry a seq so the monotonic guard applies.
+  // - Existing legacy row (tombstone=0, seq IS NULL) → UPDATE applies
+  //   with last-writer-wins, matching pre-versioning behavior.
+  // - No existing row → INSERT applies with seq=NULL, tombstone=0.
+  // Note: `tombstone` is intentionally NOT set in the UPDATE clause —
+  // the WHERE filter already excludes tombstoned rows, and leaving the
+  // column alone removes any chance of clearing a tombstone here.
   const upsertUnguarded: SqliteStatementLike = db.prepare(
     `INSERT INTO ${table} (execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone) ` +
       `VALUES (?, ?, ?, ?, ?, ?, NULL, 0) ` +
@@ -168,8 +181,8 @@ export function sqliteCompositionCheckpointStore(
       `next_step_index = excluded.next_step_index, ` +
       `step_results = excluded.step_results, ` +
       `phase = excluded.phase, ` +
-      `saved_at = excluded.saved_at, ` +
-      `tombstone = 0`,
+      `saved_at = excluded.saved_at ` +
+      `WHERE ${table}.tombstone = 0 AND ${table}.seq IS NULL`,
   );
   const selectByKey: SqliteStatementLike = db.prepare(
     `SELECT plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone ` +

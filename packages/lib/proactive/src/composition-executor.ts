@@ -629,6 +629,28 @@ export function createCompositionExecutor(
     );
   }
 
+  // Re-save a previously loaded snapshot with phase=failed, preserving
+  // nextStepIndex / stepResults / planHash so the record of what
+  // actually executed survives a zero-step preflight failure on a
+  // stale-plan retry. A fresh seq is stamped so the watermark advances.
+  async function savePriorAsFailed(prior: CheckpointSnapshot): Promise<void> {
+    if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    const seq = nextSeq();
+    await withTimeout(
+      () =>
+        checkpointStore.save({
+          executionId,
+          planHash: prior.planHash,
+          nextStepIndex: prior.nextStepIndex,
+          stepResults: prior.stepResults,
+          phase: "failed",
+          savedAt: now(),
+          seq,
+        }),
+      checkpointStoreTimeoutMs,
+    );
+  }
+
   // Bounded `load()` probe used by the zero-step preflight cleanup path.
   // Returns `undefined` on hang, throw, or genuine absence — all three
   // collapse into "treat as no prior snapshot" so a degraded async
@@ -1342,16 +1364,19 @@ export function createCompositionExecutor(
           //    restart watchdogs loop retries on never-runnable plans.
           //
           // 2. Prior snapshot exists from an earlier attempt that DID
-          //    execute steps → overwrite to phase=failed. Leaving it as
-          //    in_progress would strand a phantom in-flight execution
-          //    in `list()` recovery sweeps.
+          //    execute steps → flip phase=failed while PRESERVING the
+          //    prior nextStepIndex / stepResults / planHash. Overwriting
+          //    with the current (zero-step, current-plan-hash) payload
+          //    would destroy the only record of what already executed,
+          //    breaking restart reconciliation and hiding committed side
+          //    effects from operators.
           // Probe with the same observability-only timeout as save/delete.
           // A degraded async backend on the preflight-failure path must
           // not strand execute() — drop to "treat as no prior" on timeout
           // or any throw.
           const prior = await loadProgressBounded(checkpointStore, executionId);
           if (prior !== undefined) {
-            await saveProgress(plan, executedPrefix, "failed");
+            await savePriorAsFailed(prior);
           }
         }
       }

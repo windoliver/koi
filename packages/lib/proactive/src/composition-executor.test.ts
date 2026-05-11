@@ -2102,11 +2102,18 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     const result = await executor.execute(trigger(), plan);
 
     expect(result.status).toBe("failed");
-    // Prior snapshot existed → preflight failure must overwrite it as
-    // phase=failed so restart watchdogs don't keep retrying a phantom
-    // in-flight execution. Last recorded save should be phase=failed.
+    // Prior snapshot existed → preflight failure must flip phase=failed
+    // WITHOUT destroying the record of what actually executed. The saved
+    // snapshot must preserve planHash / nextStepIndex / stepResults from
+    // the prior payload — overwriting with the current zero-step
+    // current-plan-hash payload would erase recovery state and hide
+    // committed side effects from operators.
     expect(saves.length).toBeGreaterThan(0);
-    expect(saves[saves.length - 1]?.phase).toBe("failed");
+    const last = saves[saves.length - 1];
+    expect(last?.phase).toBe("failed");
+    expect(last?.planHash).toBe("old-hash");
+    expect(last?.nextStepIndex).toBe(3);
+    expect(last?.stepResults).toEqual(["a", "b", "c"]);
   });
 
   test("preflight failure with zero executed steps does NOT persist a failed snapshot", async () => {
