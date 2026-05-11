@@ -7,7 +7,7 @@ Current snapshot:
 - 223 workspace packages
 - 11 package families
 - 223 packages with local test files
-- 198 packages with dedicated package docs
+- 199 packages with dedicated package docs
 
 ## Family Summary
 
@@ -22,7 +22,7 @@ Current snapshot:
 | net | 10 | 91 | 10 |
 | sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
-| security | 22 | 122 | 21 |
+| security | 22 | 122 | 22 |
 | ui | 2 | 57 | 2 |
 
 ## Package Inventory
@@ -257,7 +257,7 @@ Each line shows package name, package directory, package description, test-file 
 
 ## security (22)
 
-- `@koi/approval-zones` (packages/security/approval-zones) - Approval zones with risk scoring — converts ask verdicts into auto / sandbox-then-auto / ask. Tests: 6. Docs: -.
+- `@koi/approval-zones` (packages/security/approval-zones) - Approval zones with risk scoring — converts ask verdicts into auto / sandbox-then-auto / ask. Tests: 6. Docs: docs/L2/approval-zones.md.
 - `@koi/audit-sink-ndjson` (packages/security/audit-sink-ndjson) - Buffered NDJSON file sink for @koi/middleware-audit. Tests: 1. Docs: docs/L2/audit-sink-ndjson.md.
 - `@koi/audit-sink-nexus` (packages/security/audit-sink-nexus) - Nexus-backed AuditSink — batched writes with interval and size triggers. Tests: 2. Docs: docs/L2/audit-sink-nexus.md.
 - `@koi/audit-sink-sqlite` (packages/security/audit-sink-sqlite) - SQLite sink with WAL mode and time+kind index for @koi/middleware-audit. Tests: 1. Docs: docs/L2/audit-sink-sqlite.md.
