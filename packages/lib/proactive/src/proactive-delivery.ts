@@ -146,7 +146,11 @@ function validateQuietHours(prefs: DeliveryPreferences | undefined): void {
       throw new Error("quietHoursStart must not equal quietHoursEnd");
     }
   }
-  if (timezone !== undefined) {
+  // Only validate timezone when quiet-hours are actually enabled. Hosts often
+  // reuse a broader user-preferences object (with a stale or invalid tz) for
+  // delivery wiring; rejecting it here would disable urgent/high paths that
+  // never consult quiet hours.
+  if (sSet && eSet && timezone !== undefined) {
     try {
       new Intl.DateTimeFormat("en-US", {
         timeZone: timezone,
@@ -226,12 +230,32 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
     send: async (notification) => {
       const t = now();
       if (notification.priority === "low" && inbox !== undefined) {
-        const envelope: InboxEnvelope = {
-          content: notification.content,
-          ...(notification.threadId !== undefined ? { threadId: notification.threadId } : {}),
-          ...(notification.metadata !== undefined ? { metadata: notification.metadata } : {}),
-          enqueuedAt: t,
-        };
+        // Deep-clone payload — sinks that retain envelopes (queue, scratchpad,
+        // persistent store) must not see later caller mutations, and a sink
+        // that mutates the envelope must not corrupt the caller's original
+        // notification. Same boundary discipline as channel sends.
+        let envelope: InboxEnvelope;
+        try {
+          envelope = {
+            content: structuredClone(notification.content),
+            ...(notification.threadId !== undefined ? { threadId: notification.threadId } : {}),
+            ...(notification.metadata !== undefined
+              ? { metadata: structuredClone(notification.metadata) }
+              : {}),
+            enqueuedAt: t,
+          };
+        } catch (e: unknown) {
+          return {
+            ok: false,
+            reason: "all_failed",
+            failures: [
+              {
+                channel: "inbox",
+                error: e instanceof Error ? e.message : "notification content not cloneable",
+              },
+            ],
+          };
+        }
         try {
           await inbox.enqueue(envelope);
           return { ok: true, delivered: ["inbox"] };

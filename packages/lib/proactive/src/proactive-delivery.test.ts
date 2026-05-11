@@ -857,6 +857,78 @@ describe("createProactiveDelivery", () => {
     expect(observedLen).toBe(1);
   });
 
+  test("low+inbox: caller mutation after send does not affect queued envelope", async () => {
+    const captured: InboxEnvelope[] = [];
+    const inbox: InboxSink = {
+      enqueue: (env) => {
+        captured.push(env);
+      },
+    };
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+    });
+
+    const content: ContentBlock[] = [{ kind: "text", text: "original" }];
+    const metadata: Record<string, unknown> = { tag: "v1" };
+    await delivery.send({ priority: "low", content, metadata });
+
+    // Caller mutates after send.
+    content.push({ kind: "text", text: "INJECTED" });
+    metadata["tag"] = "CORRUPTED";
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.content).toEqual([{ kind: "text", text: "original" }]);
+    expect(captured[0]?.metadata).toEqual({ tag: "v1" });
+  });
+
+  test("low+inbox: sink mutation does not corrupt caller's notification", async () => {
+    const inbox: InboxSink = {
+      enqueue: (env) => {
+        // Misbehaving sink mutates envelope.
+        (env.content as ContentBlock[]).push({ kind: "text", text: "POISON" });
+      },
+    };
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+    });
+
+    const content: ContentBlock[] = [{ kind: "text", text: "x" }];
+    await delivery.send({ priority: "low", content });
+    expect(content).toEqual([{ kind: "text", text: "x" }]);
+  });
+
+  test("low+inbox: non-cloneable metadata returns all_failed without throwing", async () => {
+    const inbox: InboxSink = { enqueue: () => {} };
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+    });
+    const r = await delivery.send({
+      priority: "low",
+      content: [{ kind: "text", text: "x" }],
+      metadata: { fn: () => 1 } as unknown as Record<string, unknown>,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toBe("all_failed");
+    expect(r.failures?.[0]?.channel).toBe("inbox");
+  });
+
+  test("preferences.timezone alone (no quiet hours) does not throw", () => {
+    const slack = stubAdapter("slack", async () => {});
+    expect(() =>
+      createProactiveDelivery({
+        channels: new Map([["slack", slack]]),
+        preferences: { timezone: "Not/A_Real_Tz" }, // invalid IANA, but quiet hours not enabled
+      }),
+    ).not.toThrow();
+  });
+
   test("non-cloneable metadata returns all_failed without throwing", async () => {
     const slack = stubAdapter("slack", async () => {});
     const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
