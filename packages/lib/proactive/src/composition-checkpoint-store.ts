@@ -234,8 +234,7 @@ export function createInMemoryCheckpointStore(
   return {
     save: (snapshot) => {
       // Stale-write guard: drop if a strictly-newer write was already
-      // observed for this executionId. Snapshots without `seq` are
-      // accepted as last-writer-wins (legacy behavior preserved).
+      // observed for this executionId.
       if (snapshot.seq !== undefined) {
         const hw = seqWatermarks.get(snapshot.executionId);
         if (hw !== undefined && snapshot.seq <= hw) {
@@ -243,6 +242,14 @@ export function createInMemoryCheckpointStore(
           return;
         }
         seqWatermarks.set(snapshot.executionId, snapshot.seq);
+      } else if (seqWatermarks.has(snapshot.executionId)) {
+        // Mixed-version writer guard, mirroring the SQLite backend's
+        // `WHERE tombstone = 0 AND seq IS NULL` UPSERT clause. Once any
+        // versioned write or versioned delete has claimed this row, an
+        // unversioned save() from a legacy/older caller in a rolling
+        // deploy must NOT overwrite or resurrect it. Pure legacy rows
+        // (no watermark ever set) still accept last-writer-wins.
+        return;
       }
       // Encode first so executor `unknown` outputs are sanitized before
       // structural validation. validateSnapshot still enforces invariants
