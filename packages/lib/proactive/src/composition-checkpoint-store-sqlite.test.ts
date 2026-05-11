@@ -381,6 +381,55 @@ describe("sqliteCompositionCheckpointStore", () => {
     expect(loaded?.seq).toBe(6);
   });
 
+  test(
+    "mixed-version writers: unversioned save() cannot resurrect a tombstoned " +
+      "execution written by versioned delete(id, seq)",
+    () => {
+      const db = new Database(":memory:");
+      const store = sqliteCompositionCheckpointStore(db);
+      // Versioned writer finishes execution and tombstones with seq=10.
+      store.save(snapshot({ stepResults: ["committed"], seq: 5 }));
+      store.delete("exec-1", 10);
+      expect(loadSync(store, "exec-1")).toBeUndefined();
+      // Older caller in a rolling deploy calls save() WITHOUT a seq. Pre-fix
+      // this overwrote the tombstone via `tombstone = 0` in the unguarded
+      // UPSERT, resurrecting the execution. Post-fix the UPDATE is filtered
+      // by `WHERE tombstone = 0 AND seq IS NULL`.
+      store.save(snapshot({ stepResults: ["RESURRECTED"] }));
+      expect(loadSync(store, "exec-1")).toBeUndefined();
+    },
+  );
+
+  test(
+    "mixed-version writers: unversioned save() cannot overwrite a row " +
+      "claimed by a versioned writer (non-null seq)",
+    () => {
+      const db = new Database(":memory:");
+      const store = sqliteCompositionCheckpointStore(db);
+      // Versioned writer holds the row at seq=7.
+      store.save(snapshot({ stepResults: ["versioned"], seq: 7 }));
+      // Legacy caller tries to overwrite without a seq → must be filtered.
+      store.save(snapshot({ stepResults: ["legacy-clobber"] }));
+      const loaded = loadSync(store, "exec-1");
+      expect(loaded?.stepResults).toEqual(["versioned"]);
+      expect(loaded?.seq).toBe(7);
+    },
+  );
+
+  test("unversioned save() still works on a pure legacy row (seq IS NULL, no tombstone)", () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db);
+    // Direct INSERT to simulate a row written before the seq column existed.
+    db.prepare(
+      "INSERT INTO composition_checkpoint " +
+        "(execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone) " +
+        "VALUES (?, ?, ?, ?, ?, ?, NULL, 0)",
+    ).run("exec-1", "h0", 0, "[]", "in_progress", 1_000);
+    // Legacy save() must still UPSERT this row (back-compat).
+    store.save(snapshot({ stepResults: ["legacy-update"], savedAt: 2_000 }));
+    expect(loadSync(store, "exec-1")?.stepResults).toEqual(["legacy-update"]);
+  });
+
   test("list skips corrupt rows instead of throwing", () => {
     const db = new Database(":memory:");
     const store = sqliteCompositionCheckpointStore(db);
