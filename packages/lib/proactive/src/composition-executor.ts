@@ -607,7 +607,16 @@ export function createCompositionExecutor(
         }),
       ]);
       if (result === timeoutSentinel) {
-        // Leave seqSeeded false — next op retries the probe.
+        // Probe hung. Mark seeded so subsequent step saves do NOT
+        // re-pay the timeout cost — the goal of fire-and-forget step
+        // saves is that a degraded backend adds AT MOST one bounded
+        // wait per plan, not one per step. We fall back to the
+        // wall-clock seed for the remainder of this executor's life;
+        // the seq guard at a seq-aware backend still rejects late
+        // writes whose seq is below the stored watermark, so the
+        // worst-case observable effect is missing checkpoints for
+        // this run, never resurrected state.
+        seqSeeded = true;
         return;
       }
       if (typeof result === "number" && result >= storeOpSeq) {
@@ -615,9 +624,11 @@ export function createCompositionExecutor(
       }
       seqSeeded = true;
     } catch {
-      // Probe failures must not block emission. Leave seqSeeded false
-      // so a subsequent op can retry — a transient throw should not
-      // permanently disable durable seq seeding.
+      // Probe throw — also a one-shot signal. Same rationale as
+      // timeout: do NOT retry on every step. Mark seeded and fall
+      // back to wall-clock-anchored seq. A persistent backend error
+      // here would otherwise add a probe attempt per step.
+      seqSeeded = true;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

@@ -215,11 +215,16 @@ export function sqliteCompositionCheckpointStore(
       // against NULL and never advance).
       `seq = MAX(COALESCE(seq, -1), excluded.seq)`,
   );
-  // Legacy unversioned delete for callers that pass no seq. Plain
-  // tombstone UPDATE: matches existing rows only. Late saves remain
-  // possible but the caller opted out of the seq guard.
-  const deleteTombstoneLegacy: SqliteStatementLike = db.prepare(
-    `UPDATE ${table} SET tombstone = 1 WHERE execution_id = ?`,
+  // Legacy unversioned delete for callers that pass no seq. Physical
+  // DELETE (not tombstone): the unversioned upsert path is filtered
+  // by `tombstone = 0 AND seq IS NULL`, so a tombstone left here
+  // would permanently block any later legacy save() for the same
+  // executionId — turning `save -> delete -> save` into a silent
+  // black hole on rolling deploys. Physical delete preserves true
+  // last-writer-wins semantics for unversioned callers; seq-aware
+  // protection only applies when callers opt in via delete(id, seq).
+  const deleteLegacy: SqliteStatementLike = db.prepare(
+    `DELETE FROM ${table} WHERE execution_id = ?`,
   );
   const selectAllStmt = db.prepare(
     `SELECT execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone ` +
@@ -334,7 +339,7 @@ export function sqliteCompositionCheckpointStore(
         }
         deleteTombstoneVersioned.run(id, String(seq));
       } else {
-        deleteTombstoneLegacy.run(id);
+        deleteLegacy.run(id);
       }
     },
     list: () => {
