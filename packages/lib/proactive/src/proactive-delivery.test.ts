@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ChannelAdapter, OutboundMessage } from "@koi/core";
+import type { ChannelAdapter, ContentBlock, OutboundMessage } from "@koi/core";
 import type { InboxEnvelope, InboxSink } from "./inbox-sink.js";
 import { createProactiveDelivery } from "./proactive-delivery.js";
 
@@ -795,6 +795,66 @@ describe("createProactiveDelivery", () => {
     // A normal send still passes — cap=1 not consumed.
     const r3 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
     expect(r3).toEqual({ ok: true, delivered: ["slack"] });
+  });
+
+  test("urgent fan-out gives each adapter its own message (mutating adapter does not poison siblings)", async () => {
+    const received: { channel: string; contentLen: number }[] = [];
+    const slack = stubAdapter("slack", async (m) => {
+      // Misbehaving adapter mutates its input.
+      (m.content as ContentBlock[]).push({ kind: "text", text: "INJECTED" });
+      received.push({ channel: "slack", contentLen: m.content.length });
+    });
+    const email = stubAdapter("email", async (m) => {
+      received.push({ channel: "email", contentLen: m.content.length });
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+    });
+
+    await delivery.send({
+      priority: "urgent",
+      content: [{ kind: "text", text: "hi" }],
+    });
+
+    // Both adapters received messages with original 1-element content.
+    // Without per-adapter clones, email could observe length 2.
+    expect(received.find((r) => r.channel === "email")?.contentLen).toBe(1);
+  });
+
+  test("high fallback gives each attempt its own message (mutating adapter does not poison fallback)", async () => {
+    let secondLen: number | undefined;
+    const slack = stubAdapter("slack", async (m) => {
+      (m.content as ContentBlock[]).push({ kind: "text", text: "INJECTED" });
+      throw new Error("slack down");
+    });
+    const email = stubAdapter("email", async (m) => {
+      secondLen = m.content.length;
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { preferredChannel: "slack" },
+    });
+
+    await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(secondLen).toBe(1);
+  });
+
+  test("buildOutbound clones content — caller mutation after send does not affect adapter input", async () => {
+    let observedLen: number | undefined;
+    const slack = stubAdapter("slack", async (m) => {
+      observedLen = m.content.length;
+    });
+    const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
+    const content: ContentBlock[] = [{ kind: "text", text: "hi" }];
+    await delivery.send({ priority: "normal", content });
+    // Adapter saw original length, even if caller mutates after.
+    expect(observedLen).toBe(1);
   });
 
   test("throws when maxNotificationsPerHour is NaN", () => {
