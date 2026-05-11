@@ -444,7 +444,6 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           return { ok: false, reason: "no_channels" };
         }
         const failures: DeliveryFailure[] = [];
-        let anyTimeout = false;
         for (const target of order) {
           // Per-attempt cloned message so an adapter that mutates its input
           // cannot poison subsequent fallback attempts. Clone failure on a
@@ -461,22 +460,14 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           }
           failures.push(outcome.failure);
           if (outcome.kind === "timeout") {
-            anyTimeout = true;
-            // Timeout: the adapter contract has no abort, so the original
-            // send may complete after this returns. Falling back risks
-            // double-delivery UNLESS the caller passed an idempotencyKey, in
-            // which case downstream dedupe makes retry safe — continue
-            // walking remaining channels. Without a key, terminal.
-            if (notification.idempotencyKey === undefined) {
-              return { ok: false, reason: "timed_out", failures };
-            }
+            // Timeout is always terminal for high fallback. Adapter contract
+            // has no abort, so the original send may still complete. Falling
+            // back to a different transport would risk double-delivery —
+            // `idempotencyKey` only dedupes within the same transport, never
+            // across (e.g. Slack and email don't share a delivery ledger).
+            // Slot stays consumed: we may have delivered.
+            return { ok: false, reason: "timed_out", failures };
           }
-        }
-        // Every attempt exhausted. If any was a timeout we still don't know
-        // whether something delivered — keep the slot consumed and report
-        // timed_out. Otherwise refund and report all_failed.
-        if (anyTimeout) {
-          return { ok: false, reason: "timed_out", failures };
         }
         refundSlot(t, notification.priority);
         return { ok: false, reason: "all_failed", failures };

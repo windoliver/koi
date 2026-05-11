@@ -10,10 +10,14 @@ export {
   DEFAULT_COMPOSITION_APPROVAL_POLICY,
 } from "./composition-approval.js";
 export {
+  type CheckpointEncoder,
   type CheckpointPhase,
   type CheckpointSnapshot,
+  type CheckpointValue,
   type CompositionCheckpointStore,
   createInMemoryCheckpointStore,
+  type InMemoryCheckpointStoreConfig,
+  safeJsonEncoder,
 } from "./composition-checkpoint-store.js";
 export {
   type SqliteDatabaseLike,

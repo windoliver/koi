@@ -180,18 +180,21 @@ describe("createInMemoryCheckpointStore", () => {
     ).toThrow(/not JSON-serializable/);
   });
 
-  test("save throws when stepResults contain an Error instance", () => {
+  test("save sanitizes Error instance via default JSON encoder (no throw)", async () => {
     const store = createInMemoryCheckpointStore();
     expect(() =>
       store.save({
         executionId: "exec-1",
         planHash: "h1",
         nextStepIndex: 1,
-        stepResults: [new Error("boom") as unknown as never],
+        stepResults: [new Error("boom") as unknown],
         phase: "in_progress",
         savedAt: 1,
       }),
-    ).toThrow(/not JSON-serializable/);
+    ).not.toThrow();
+    // Error instance is encoded as {} by JSON.stringify (no enumerable keys).
+    const loaded = await store.load("exec-1");
+    expect(loaded?.stepResults).toEqual([{}]);
   });
 
   test("save throws when stepResults contain a cyclic object", () => {
@@ -203,7 +206,21 @@ describe("createInMemoryCheckpointStore", () => {
         executionId: "exec-1",
         planHash: "h1",
         nextStepIndex: 1,
-        stepResults: [cyclic as unknown as never],
+        stepResults: [cyclic as unknown],
+        phase: "in_progress",
+        savedAt: 1,
+      }),
+    ).toThrow(/could not be encoded/);
+  });
+
+  test("save with encoder=null preserves legacy strict behavior — Error throws", () => {
+    const store = createInMemoryCheckpointStore({ encoder: null });
+    expect(() =>
+      store.save({
+        executionId: "exec-1",
+        planHash: "h1",
+        nextStepIndex: 1,
+        stepResults: [new Error("boom") as unknown],
         phase: "in_progress",
         savedAt: 1,
       }),

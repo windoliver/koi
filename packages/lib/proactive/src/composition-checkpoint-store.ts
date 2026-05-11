@@ -3,22 +3,7 @@ export type CheckpointPhase = "in_progress" | "completed" | "failed";
 /**
  * JSON-serializable value type for checkpoint payloads. Constrained so
  * future durable backends (Temporal, SQLite, Redis) can persist
- * snapshots without runtime serialization surprises — `unknown` would
- * accept functions, Error instances, class instances, and cyclic
- * structures that the in-memory store can hold but a wire format
- * cannot.
- *
- * NOTE on executor compatibility: `CompositionStepResult.output` and
- * the various handler return types in `composition-executor.ts` are
- * declared `unknown` — broader than `CheckpointValue`. The executor
- * wiring slice (tracked separately) MUST encode each step output into
- * a `CheckpointValue` before passing it here (e.g. via a configurable
- * codec defaulting to `JSON.parse(JSON.stringify(...))` with explicit
- * rejection of NaN/Infinity, or a host-supplied encoder). Hosts that
- * return non-encodable outputs from handlers must either fix the
- * handler or supply a codec — `save` is intentionally strict so this
- * mismatch surfaces at the executor boundary, never silently in the
- * durable backend.
+ * snapshots without runtime serialization surprises.
  */
 export type CheckpointValue =
   | string
@@ -27,6 +12,54 @@ export type CheckpointValue =
   | null
   | readonly CheckpointValue[]
   | { readonly [key: string]: CheckpointValue };
+
+/**
+ * Codec converting an arbitrary executor step output into a
+ * `CheckpointValue`. Returns `{ ok: true, value }` on success or
+ * `{ ok: false, error }` to surface a save-time failure to the caller
+ * (rather than throwing). Hosts wire this so the executor — whose
+ * `CompositionStepResult.output` is `unknown` — can persist progress
+ * without aborting on, e.g., a `Date`, `Map`, or class instance.
+ *
+ * The package ships `safeJsonEncoder` as a default that round-trips
+ * through `JSON.parse(JSON.stringify(...))`, accepts the JSON subset
+ * (objects, arrays, strings, finite numbers, booleans, null), drops
+ * `undefined`/functions/symbols silently (matching `JSON.stringify`),
+ * and rejects cycles, `NaN`/`Infinity`, and BigInt.
+ */
+export interface CheckpointEncoder {
+  readonly encode: (
+    value: unknown,
+  ) => { ok: true; value: CheckpointValue } | { ok: false; error: string };
+}
+
+function jsonReplacer(_key: string, value: unknown): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error(`non-finite number (${String(value)}) is not JSON-serializable`);
+  }
+  if (typeof value === "bigint") {
+    throw new Error("bigint is not JSON-serializable");
+  }
+  return value;
+}
+
+export const safeJsonEncoder: CheckpointEncoder = {
+  encode: (value) => {
+    try {
+      const json = JSON.stringify(value, jsonReplacer);
+      if (json === undefined) {
+        // top-level undefined / function / symbol
+        return {
+          ok: false,
+          error: "value is not JSON-serializable (undefined / function / symbol)",
+        };
+      }
+      return { ok: true, value: JSON.parse(json) as CheckpointValue };
+    } catch (e: unknown) {
+      return { ok: false, error: e instanceof Error ? e.message : "JSON encode failed" };
+    }
+  },
+};
 
 export interface CheckpointSnapshot {
   readonly executionId: string;
@@ -43,11 +76,13 @@ export interface CheckpointSnapshot {
   readonly nextStepIndex: number;
   /**
    * Results of steps already executed, in order. `stepResults.length`
-   * MUST equal `nextStepIndex`. Validated at runtime to be JSON-serializable
-   * (no functions, no Error instances, no cycles) so durable backends
-   * can persist without surprises.
+   * MUST equal `nextStepIndex`. On `save`, each entry is passed through
+   * the configured encoder (default: `safeJsonEncoder`) which converts
+   * arbitrary executor `unknown` outputs into `CheckpointValue` — so
+   * hosts can pass raw step results without pre-sanitizing. On `load`,
+   * results are returned as `CheckpointValue[]` (already encoded).
    */
-  readonly stepResults: readonly CheckpointValue[];
+  readonly stepResults: readonly unknown[];
   readonly phase: CheckpointPhase;
   /**
    * Wall-clock from injected `now()` at the time of save. Useful for
@@ -117,15 +152,52 @@ function validateSnapshot(snapshot: CheckpointSnapshot): void {
   }
 }
 
-export function createInMemoryCheckpointStore(): CompositionCheckpointStore {
+export interface InMemoryCheckpointStoreConfig {
+  /**
+   * Optional encoder applied to each `stepResults[i]` BEFORE structural
+   * validation. Lets executors hand in `unknown` outputs (Date, Map, class
+   * instances, etc.) and have the store sanitize them via the configured
+   * codec instead of throwing. Defaults to `safeJsonEncoder` (JSON
+   * round-trip) — set to `null` to opt out and require pre-encoded
+   * `CheckpointValue` inputs (legacy strict behavior).
+   */
+  readonly encoder?: CheckpointEncoder | null;
+}
+
+export function createInMemoryCheckpointStore(
+  config: InMemoryCheckpointStoreConfig = {},
+): CompositionCheckpointStore {
+  const encoder = config.encoder === undefined ? safeJsonEncoder : config.encoder;
   const snapshots = new Map<string, CheckpointSnapshot>();
+
+  function encodeStepResults(stepResults: readonly unknown[]): readonly CheckpointValue[] {
+    if (encoder === null) return stepResults as readonly CheckpointValue[];
+    const out: CheckpointValue[] = [];
+    for (let i = 0; i < stepResults.length; i++) {
+      const result = encoder.encode(stepResults[i]);
+      if (!result.ok) {
+        throw new Error(`stepResults[${i}] could not be encoded: ${result.error}`);
+      }
+      out.push(result.value);
+    }
+    return out;
+  }
+
   return {
     save: (snapshot) => {
-      validateSnapshot(snapshot);
+      // Encode first so executor `unknown` outputs are sanitized before
+      // structural validation. validateSnapshot still enforces invariants
+      // (length match, non-empty ids, valid index, no cycles in encoded
+      // result) so opting out of the encoder still yields safe storage.
+      const encoded: CheckpointSnapshot = {
+        ...snapshot,
+        stepResults: encodeStepResults(snapshot.stepResults),
+      };
+      validateSnapshot(encoded);
       // Defensive deep-clone so post-save mutation of the caller's object
       // (or its nested objects/arrays) cannot rewrite persisted state.
       // Validation has already proven the snapshot is JSON-serializable.
-      snapshots.set(snapshot.executionId, structuredClone(snapshot));
+      snapshots.set(encoded.executionId, structuredClone(encoded));
     },
     load: (id) => {
       const stored = snapshots.get(id);
