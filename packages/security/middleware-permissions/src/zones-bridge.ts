@@ -1,6 +1,23 @@
 import type { ZoneEvaluator, ZoneVerdict } from "@koi/approval-zones";
-import type { PermissionQuery } from "@koi/core";
+import type { PermissionQuery, SandboxProfile } from "@koi/core";
 import type { SandboxRouter } from "@koi/sandbox-router";
+
+/**
+ * Read-only preview profile for `sandbox-then-auto`.
+ *
+ * Deny-by-default: filesystem reads closed, network disabled, hard
+ * timeout + memory cap. The preview is a *rehearsal* — the host re-run
+ * is what actually has side effects. This profile codifies the safety
+ * intent documented in #1644 ("sandboxed execution provides damage
+ * containment"); without an explicit profile the router would apply
+ * adapter defaults that may grant broad network / fs access and
+ * undermine the rehearsal value.
+ */
+const PREVIEW_PROFILE: SandboxProfile = {
+  filesystem: { defaultReadAccess: "closed" },
+  network: { allow: false },
+  resources: { timeoutMs: 30_000, maxMemoryMb: 256 },
+};
 
 export interface ZoneAuditSink {
   record(
@@ -92,7 +109,7 @@ export async function applyZoneVerdict(
   }
 
   try {
-    const created = await args.sandboxRouter.create({} as Parameters<SandboxRouter["create"]>[0]);
+    const created = await args.sandboxRouter.create(PREVIEW_PROFILE);
     if (!created.ok) {
       args.auditSink.record("zone-sandbox-failed", {
         ...metaFromVerdict(verdict),

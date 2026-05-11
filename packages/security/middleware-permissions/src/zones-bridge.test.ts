@@ -251,4 +251,65 @@ describe("applyZoneVerdict", () => {
     expect(failed).toBeDefined();
     expect((failed?.meta as { reason?: string })?.reason).toMatch(/^backend-mismatch:/);
   });
+
+  it("passes a deny-by-default SandboxProfile (no network, closed fs reads) to the router", async () => {
+    const ev = createZoneEvaluator({
+      zones: [
+        {
+          name: "cleanup",
+          match: { tools: ["bash"] },
+          action: "sandbox-then-auto",
+          maxRisk: "medium",
+          sandboxBackendId: "default",
+        },
+      ],
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    let capturedProfile: unknown;
+    const sandboxRouter = {
+      create: mock(async (profile: unknown) => {
+        capturedProfile = profile;
+        return {
+          ok: true as const,
+          value: {
+            instance: {
+              exec,
+              readFile: async () => new Uint8Array(),
+              writeFile: async () => {},
+              destroy,
+            },
+            decision: { selected: { name: "default" } },
+          },
+        };
+      }),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const { sink } = makeSink();
+    await applyZoneVerdict({
+      query: { ...baseQuery, action: "bash", context: { command: "ls /tmp" } },
+      evaluator: ev,
+      sandboxRouter: sandboxRouter as unknown as Parameters<
+        typeof applyZoneVerdict
+      >[0]["sandboxRouter"],
+      auditSink: sink,
+    });
+    const p = capturedProfile as {
+      readonly filesystem: { defaultReadAccess: string };
+      readonly network: { allow: boolean };
+      readonly resources: { timeoutMs?: number };
+    };
+    expect(p.filesystem.defaultReadAccess).toBe("closed");
+    expect(p.network.allow).toBe(false);
+    expect(p.resources.timeoutMs).toBeGreaterThan(0);
+  });
 });
