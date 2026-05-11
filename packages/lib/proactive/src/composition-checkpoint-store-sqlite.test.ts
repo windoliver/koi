@@ -315,6 +315,30 @@ describe("sqliteCompositionCheckpointStore", () => {
   });
 
   test(
+    "legacy row with seq=NULL migrates cleanly: versioned delete sets watermark, " +
+      "versioned save can advance it",
+    () => {
+      const db = new Database(":memory:");
+      const store = sqliteCompositionCheckpointStore(db);
+      // Simulate a legacy row written before the seq column existed —
+      // direct INSERT bypasses the store API.
+      db.prepare(
+        "INSERT INTO composition_checkpoint " +
+          "(execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone) " +
+          "VALUES ('legacy', 'h', 1, '[1]', 'in_progress', 100, NULL, 0)",
+      ).run();
+      // Versioned delete on the legacy row must set seq from NULL → 50,
+      // not leave it NULL (which would brick all future writes).
+      store.delete("legacy", 50);
+      // Versioned save with seq > 50 must succeed.
+      store.save(snapshot({ executionId: "legacy", stepResults: ["NEW"], seq: 60 }));
+      const loaded = loadSync(store, "legacy");
+      expect(loaded?.stepResults).toEqual(["NEW"]);
+      expect(loaded?.seq).toBe(60);
+    },
+  );
+
+  test(
     "seq-versioned delete UPSERTs a tombstone even when no row exists, " +
       "so a delayed save with older seq cannot resurrect",
     () => {

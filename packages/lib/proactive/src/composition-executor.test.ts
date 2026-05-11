@@ -2027,6 +2027,38 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     },
   );
 
+  test("preflight failure does not hang on a never-settling async load() — bounded by timeout", async () => {
+    const { scheduler } = schedulerStub();
+    const hangingStore: CompositionCheckpointStore = {
+      save: () => {},
+      delete: () => {},
+      load: () => new Promise(() => {}),
+      list: () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: hangingStore,
+      executionId: "exec-hang-load",
+      checkpointStoreTimeoutMs: 25,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-other", // preflight mismatch
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+    const start = Date.now();
+    const result = await executor.execute(trigger(), plan);
+    const elapsed = Date.now() - start;
+    expect(result.status).toBe("failed");
+    // Bounded load() probe lets execute() return well within margin of the 25ms cap.
+    expect(elapsed).toBeLessThan(500);
+  });
+
   test("zero-step preflight failure overwrites a prior in_progress snapshot (no phantom recovery)", async () => {
     const { scheduler } = schedulerStub();
     const saves: CheckpointSnapshot[] = [];

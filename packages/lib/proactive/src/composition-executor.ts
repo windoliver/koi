@@ -629,6 +629,27 @@ export function createCompositionExecutor(
     );
   }
 
+  // Bounded `load()` probe used by the zero-step preflight cleanup path.
+  // Returns `undefined` on hang, throw, or genuine absence — all three
+  // collapse into "treat as no prior snapshot" so a degraded async
+  // backend cannot strand execute().
+  async function loadProgressBounded(
+    store: CompositionCheckpointStore,
+    id: string,
+  ): Promise<CheckpointSnapshot | undefined> {
+    let resolved: CheckpointSnapshot | undefined;
+    await withTimeout(async () => {
+      try {
+        const loaded = store.load(id);
+        const value = loaded instanceof Promise ? await loaded : loaded;
+        resolved = value ?? undefined;
+      } catch {
+        resolved = undefined;
+      }
+    }, checkpointStoreTimeoutMs);
+    return resolved;
+  }
+
   async function deleteProgress(): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
     // Wall-clock-anchored seq so this delete's watermark is monotonic
@@ -1324,14 +1345,11 @@ export function createCompositionExecutor(
           //    execute steps → overwrite to phase=failed. Leaving it as
           //    in_progress would strand a phantom in-flight execution
           //    in `list()` recovery sweeps.
-          let prior: CheckpointSnapshot | undefined;
-          try {
-            const loaded = checkpointStore.load(executionId);
-            prior = loaded instanceof Promise ? await loaded : loaded;
-          } catch {
-            // load failures are observability-only; treat as no prior.
-            prior = undefined;
-          }
+          // Probe with the same observability-only timeout as save/delete.
+          // A degraded async backend on the preflight-failure path must
+          // not strand execute() — drop to "treat as no prior" on timeout
+          // or any throw.
+          const prior = await loadProgressBounded(checkpointStore, executionId);
           if (prior !== undefined) {
             await saveProgress(plan, executedPrefix, "failed");
           }
