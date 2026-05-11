@@ -59,4 +59,34 @@ describe("matchesZone", () => {
     const q: PermissionQuery = { ...baseQuery, context: { count: 5 } };
     expect(matchesZone(q, zone)).toBe(false);
   });
+
+  it("requires ALL extraPaths to match when paths is set (no single-path bypass)", () => {
+    const zone: ApprovalZone = {
+      name: "tmp-only",
+      match: { paths: ["/tmp/**"] },
+      action: "auto",
+    };
+    expect(
+      matchesZone(
+        { ...baseQuery, resource: "/tmp/ok", context: { extraPaths: ["/tmp/also"] } },
+        zone,
+      ),
+    ).toBe(true);
+    expect(
+      matchesZone(
+        { ...baseQuery, resource: "/tmp/ok", context: { extraPaths: ["/etc/passwd"] } },
+        zone,
+      ),
+    ).toBe(false);
+    expect(
+      matchesZone(
+        {
+          ...baseQuery,
+          resource: "/tmp/ok",
+          context: { extraPaths: ["/tmp/x", "/outside/root"] },
+        },
+        zone,
+      ),
+    ).toBe(false);
+  });
 });

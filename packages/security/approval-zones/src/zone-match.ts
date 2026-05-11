@@ -66,7 +66,21 @@ function matchesArgs(
 export function matchesZone(query: PermissionQuery, zone: ApprovalZone): boolean {
   const m: ZoneMatch = zone.match;
   if (m.tools !== undefined && !anyMatch(m.tools, query.action)) return false;
-  if (m.paths !== undefined && !anyMatch(m.paths, query.resource)) return false;
+  if (m.paths !== undefined) {
+    // If the query carries an `extraPaths` list (used for bash commands that
+    // touch multiple paths), ALL of those paths plus `resource` must satisfy
+    // the zone's path globs. Otherwise a bash command like
+    // `ls /tmp/ok /etc/passwd` could bypass a `/tmp/**` zone via only the
+    // first path. `resource` is still checked as the primary key.
+    if (!anyMatch(m.paths, query.resource)) return false;
+    const extra = query.context?.extraPaths;
+    if (Array.isArray(extra)) {
+      for (const p of extra) {
+        if (typeof p !== "string") return false;
+        if (!anyMatch(m.paths, p)) return false;
+      }
+    }
+  }
   if (m.args !== undefined && !matchesArgs(m.args, query.context)) return false;
   return true;
 }

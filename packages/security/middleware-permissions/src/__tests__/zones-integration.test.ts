@@ -206,6 +206,62 @@ describe("zones integration with createPermissionsMiddleware", () => {
     expect(unusedHandler).not.toHaveBeenCalled();
   });
 
+  test("SCRIPTED_CLEANUP rejects bash command that touches a non-/tmp path (no single-path bypass)", async () => {
+    const evaluator = createZoneEvaluator({
+      zones: SCRIPTED_CLEANUP_PROFILE,
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    const sandboxRouter = {
+      create: mock(async () => ({
+        ok: true as const,
+        value: {
+          instance: {
+            exec,
+            readFile: async () => new Uint8Array(),
+            writeFile: async () => {},
+            destroy,
+          },
+          decision: { selected: { name: "default" } },
+        },
+      })),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const approvalHandler = mock(async (): Promise<ApprovalDecision> => ({ kind: "allow" }));
+    const mw = createPermissionsMiddleware({
+      backend: askBackend(),
+      resolveToolPath,
+      zones: {
+        evaluator,
+        sandboxRouter: sandboxRouter as unknown as Parameters<
+          typeof createPermissionsMiddleware
+        >[0]["zones"] extends infer Z
+          ? Z extends { sandboxRouter?: infer R }
+            ? R
+            : never
+          : never,
+      },
+    });
+    const ctx = makeTurnContext(approvalHandler);
+    await mw.wrapToolCall?.(
+      ctx,
+      makeToolRequest("bash", { command: "rm -rf /tmp/ok /etc/passwd" }),
+      noopToolHandler,
+    );
+    // Sandbox should NOT have been entered; user must be prompted instead.
+    expect(exec).not.toHaveBeenCalled();
+    expect(approvalHandler).toHaveBeenCalled();
+  });
+
   test("omitting zones config leaves prompt path unchanged", async () => {
     const approvalHandler = mock(async (): Promise<ApprovalDecision> => ({ kind: "allow" }));
     const mw = createPermissionsMiddleware({ backend: askBackend() });

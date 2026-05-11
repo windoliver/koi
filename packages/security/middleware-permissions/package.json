@@ -30,5 +30,17 @@
   "devDependencies": {
     "@koi/approval-zones": "workspace:*",
     "@koi/sandbox-router": "workspace:*"
+  },
+  "peerDependencies": {
+    "@koi/approval-zones": "workspace:*",
+    "@koi/sandbox-router": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@koi/approval-zones": {
+      "optional": true
+    },
+    "@koi/sandbox-router": {
+      "optional": true
+    }
   }
 }

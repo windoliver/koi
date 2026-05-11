@@ -346,6 +346,10 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       // fallback is the toolId so the matcher can still fire on m.tools alone.
       const zoneResolvedPath = config.resolveToolPath?.(request.toolId, request.input ?? {});
       let zoneResource: string;
+      // extraPaths is populated for bash so the matcher can require that
+      // ALL path tokens (not just the first) satisfy the zone's path globs.
+      // Prevents bypass via `ls /tmp/ok /etc/passwd` against a `/tmp/**` zone.
+      let bashExtraPaths: readonly string[] | undefined;
       if (zoneResolvedPath !== undefined) {
         zoneResource = zoneResolvedPath;
       } else if (request.toolId === "bash") {
@@ -354,19 +358,29 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
             ? ((request.input as Record<string, unknown>).command as string)
             : "";
         const { extractBashPathTargets } = await import("./zones-bridge.js");
-        const firstPath = extractBashPathTargets(bashCommand)[0];
+        const allPaths = extractBashPathTargets(bashCommand);
+        const firstPath = allPaths[0];
         zoneResource = firstPath ?? (resource.startsWith("/") ? resource : request.toolId);
+        bashExtraPaths = allPaths.length > 1 ? allPaths.slice(1) : undefined;
       } else if (resource.startsWith("/")) {
         zoneResource = resource;
       } else {
         zoneResource = request.toolId;
       }
+      // Build query context. extraPaths is merged in for bash so the matcher
+      // can enforce "all paths must match" (prevents single-path bypass).
+      const baseContext: JsonObject =
+        request.input !== undefined ? (request.input as JsonObject) : ({} as JsonObject);
+      const zoneContext: JsonObject =
+        bashExtraPaths !== undefined
+          ? ({ ...baseContext, extraPaths: bashExtraPaths } as JsonObject)
+          : baseContext;
       const zoneResult = await applyZoneVerdict({
         query: {
           principal: ctx.session.userId ?? "__anonymous__",
           action: request.toolId,
           resource: zoneResource,
-          ...(request.input !== undefined ? { context: request.input as JsonObject } : {}),
+          context: zoneContext,
         },
         evaluator: config.zones.evaluator,
         sandboxRouter: config.zones.sandboxRouter,
