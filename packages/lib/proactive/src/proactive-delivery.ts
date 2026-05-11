@@ -95,6 +95,17 @@ async function sendOne(
   }
 }
 
+function validateRateLimit(prefs: DeliveryPreferences | undefined): void {
+  if (prefs === undefined) return;
+  const cap = prefs.maxNotificationsPerHour;
+  if (cap === undefined) return;
+  if (typeof cap !== "number" || !Number.isFinite(cap) || !Number.isInteger(cap) || cap < 0) {
+    throw new Error(
+      `maxNotificationsPerHour must be a finite non-negative integer (got ${String(cap)})`,
+    );
+  }
+}
+
 function validateQuietHours(prefs: DeliveryPreferences | undefined): void {
   if (prefs === undefined) return;
   const { quietHoursStart: s, quietHoursEnd: e, timezone } = prefs;
@@ -125,6 +136,7 @@ function validateQuietHours(prefs: DeliveryPreferences | undefined): void {
 }
 
 export function createProactiveDelivery(config: ProactiveDeliveryConfig): ProactiveDelivery {
+  validateRateLimit(config.preferences);
   validateQuietHours(config.preferences);
   const preferences = config.preferences;
   const now = config.now ?? Date.now;

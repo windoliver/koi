@@ -165,4 +165,86 @@ describe("createInMemoryCheckpointStore", () => {
 
     expect(await store.load("exec-1")).toEqual(original);
   });
+
+  test("save throws when stepResults contain a function (non-serializable)", () => {
+    const store = createInMemoryCheckpointStore();
+    expect(() =>
+      store.save({
+        executionId: "exec-1",
+        planHash: "h1",
+        nextStepIndex: 1,
+        stepResults: [(() => 42) as unknown as never],
+        phase: "in_progress",
+        savedAt: 1,
+      }),
+    ).toThrow(/not JSON-serializable/);
+  });
+
+  test("save throws when stepResults contain an Error instance", () => {
+    const store = createInMemoryCheckpointStore();
+    expect(() =>
+      store.save({
+        executionId: "exec-1",
+        planHash: "h1",
+        nextStepIndex: 1,
+        stepResults: [new Error("boom") as unknown as never],
+        phase: "in_progress",
+        savedAt: 1,
+      }),
+    ).toThrow(/not JSON-serializable/);
+  });
+
+  test("save throws when stepResults contain a cyclic object", () => {
+    const store = createInMemoryCheckpointStore();
+    const cyclic: Record<string, unknown> = { a: 1 };
+    cyclic["self"] = cyclic;
+    expect(() =>
+      store.save({
+        executionId: "exec-1",
+        planHash: "h1",
+        nextStepIndex: 1,
+        stepResults: [cyclic as unknown as never],
+        phase: "in_progress",
+        savedAt: 1,
+      }),
+    ).toThrow(/not JSON-serializable/);
+  });
+
+  test("save throws when stepResults contain NaN or Infinity", () => {
+    const store = createInMemoryCheckpointStore();
+    expect(() =>
+      store.save({
+        executionId: "exec-1",
+        planHash: "h1",
+        nextStepIndex: 1,
+        stepResults: [Number.NaN as unknown as never],
+        phase: "in_progress",
+        savedAt: 1,
+      }),
+    ).toThrow(/not JSON-serializable/);
+    expect(() =>
+      store.save({
+        executionId: "exec-2",
+        planHash: "h1",
+        nextStepIndex: 1,
+        stepResults: [Number.POSITIVE_INFINITY as unknown as never],
+        phase: "in_progress",
+        savedAt: 1,
+      }),
+    ).toThrow(/not JSON-serializable/);
+  });
+
+  test("save accepts plain JSON values (string, number, bool, null, array, object)", () => {
+    const store = createInMemoryCheckpointStore();
+    expect(() =>
+      store.save({
+        executionId: "exec-1",
+        planHash: "h1",
+        nextStepIndex: 1,
+        stepResults: [{ a: 1, b: "x", c: true, d: null, e: [1, 2, { nested: "ok" }] }],
+        phase: "in_progress",
+        savedAt: 1,
+      }),
+    ).not.toThrow();
+  });
 });
