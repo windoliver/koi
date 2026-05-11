@@ -566,6 +566,67 @@ describe("createKoiRuntime — tool inventory", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #1644: approval-zones wiring — KOI_ZONES_PROFILE smoke + behavioral
+// ---------------------------------------------------------------------------
+
+describe("createKoiRuntime — zonesProfile wiring (#1644)", () => {
+  test("read-only profile auto-allows fs_read without invoking approval handler", async () => {
+    const { createDefaultRiskScorer, createZoneEvaluator, READ_ONLY_PROFILE } = await import(
+      "@koi/approval-zones"
+    );
+    const { createPermissionsMiddleware } = await import("@koi/middleware-permissions");
+    const cwd = makeTestCwd();
+    const evaluator = createZoneEvaluator({
+      zones: READ_ONLY_PROFILE,
+      scorer: createDefaultRiskScorer({ projectRoot: cwd }),
+    });
+    const approvalHandler = mock(
+      async (): Promise<{ readonly kind: "allow" }> => ({ kind: "allow" }),
+    );
+    const IS_DEFAULT_ASK_TEST: symbol = Symbol.for("@koi/permissions/default-fallthrough-ask");
+    const backend = {
+      check: () =>
+        ({
+          effect: "ask",
+          reason: "needs approval",
+          [IS_DEFAULT_ASK_TEST]: true,
+        }) as unknown as import("@koi/core").PermissionDecision,
+    };
+    const mw = createPermissionsMiddleware({
+      backend,
+      description: "test",
+      resolveToolPath: (toolId, input) => {
+        if (toolId !== "fs_read") return undefined;
+        const raw = input.path;
+        return typeof raw === "string" ? `${cwd}/${raw}` : undefined;
+      },
+      zones: { evaluator },
+    });
+    const baseCtx = {
+      session: {
+        agentId: "agent:test",
+        sessionId: "s-1",
+        runId: "r-1",
+        userId: "u-1",
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "t-1",
+      messages: [],
+      metadata: {},
+      requestApproval: approvalHandler,
+    } as unknown as Parameters<NonNullable<typeof mw.wrapToolCall>>[0];
+    const result = await mw.wrapToolCall?.(
+      baseCtx,
+      { toolId: "fs_read", input: { path: "readme.md" } },
+      async () => ({ output: "ok" }),
+    );
+    expect(result?.output).toBe("ok");
+    expect(approvalHandler).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // T1-A: resetSessionState — full test suite
 // ---------------------------------------------------------------------------
 

@@ -16,8 +16,24 @@ const CRITICAL_PATH_PATTERNS: readonly RegExp[] = [
 
 const HIGH_PATH_PATTERNS: readonly RegExp[] = [/(?:^|\/)\.aws(?:\/|$)/, /(?:^|\/)\.config(?:\/|$)/];
 
-const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(["read", "glob", "grep", "ls"]);
-const MUTATING_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "multi-edit", "patch"]);
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  "read",
+  "fs_read",
+  "glob",
+  "Glob",
+  "grep",
+  "Grep",
+  "ls",
+  "ToolSearch",
+]);
+const MUTATING_TOOLS: ReadonlySet<string> = new Set([
+  "write",
+  "edit",
+  "multi-edit",
+  "patch",
+  "fs_write",
+  "fs_edit",
+]);
 
 const SEVERITY_TO_TIER: Readonly<Record<Severity, RiskTier>> = {
   low: "low",
