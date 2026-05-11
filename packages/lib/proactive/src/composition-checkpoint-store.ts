@@ -267,6 +267,16 @@ export function createInMemoryCheckpointStore(
 
   return {
     save: (snapshot) => {
+      // Validate seq mirrors the SQLite backend's guard. NaN / Infinity
+      // / negative / fractional values would corrupt the watermark map
+      // (e.g. NaN <= NaN is always false → stale-write protection
+      // silently disabled for this executionId). Reject loudly so a
+      // bad caller cannot turn `seqAware: true` into a lie.
+      if (snapshot.seq !== undefined) {
+        if (!Number.isInteger(snapshot.seq) || snapshot.seq < 0) {
+          throw new Error(`save: seq must be a non-negative integer (got ${String(snapshot.seq)})`);
+        }
+      }
       // Stale-write guard: drop if a strictly-newer write was already
       // observed for this executionId.
       if (snapshot.seq !== undefined) {
@@ -317,6 +327,12 @@ export function createInMemoryCheckpointStore(
       return stored === undefined ? undefined : structuredClone(stored);
     },
     delete: (id, seq) => {
+      // Validate seq — same rationale as save().
+      if (seq !== undefined) {
+        if (!Number.isInteger(seq) || seq < 0) {
+          throw new Error(`delete: seq must be a non-negative integer (got ${String(seq)})`);
+        }
+      }
       // Update the watermark before deleting the visible row so a late
       // save() with an older seq cannot resurrect the row by inserting
       // fresh. The watermark stays even after delete (tombstone). The

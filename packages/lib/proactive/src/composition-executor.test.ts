@@ -2224,6 +2224,61 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
   );
 
   test(
+    "fire-and-forget in_progress saves: execute() latency does NOT scale with " +
+      "step count on a degraded backend",
+    async () => {
+      const { scheduler } = schedulerStub();
+      let saveCalls = 0;
+      const store: CompositionCheckpointStore = {
+        save: () => {
+          saveCalls += 1;
+          // Every step-save hangs. Pre-fix, each step's `await
+          // saveProgress` waited for the per-call timeout (25ms) →
+          // 5 steps × 25ms = 125ms+ added per plan. Post-fix only
+          // the terminal delete blocks on its single timeout.
+          return new Promise<void>(() => {});
+        },
+        delete: () => {},
+        load: () => undefined,
+        list: () => [],
+        seqAware: true,
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-multi-step-hung",
+        checkpointStoreTimeoutMs: 30,
+      });
+      const FIVE_STEPS = 5;
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: Array.from({ length: FIVE_STEPS }, () => ({
+          kind: "notify_user" as const,
+          channel: "inbox",
+          message: "x",
+          priority: "normal" as const,
+        })),
+        estimatedCost: FIVE_STEPS,
+        requiresApproval: false,
+      };
+      const start = Date.now();
+      const result = await executor.execute(trigger(), plan);
+      const elapsed = Date.now() - start;
+      expect(result.status).toBe("executed");
+      expect(saveCalls).toBeGreaterThan(0);
+      // 5 steps × 30ms timeout would be ≥150ms; terminal delete adds
+      // another 30ms. With fire-and-forget step saves the only bounded
+      // wait is terminal cleanup. Allow generous headroom for test
+      // scheduler noise but well under the multiplicative bound.
+      expect(elapsed).toBeLessThan(120);
+    },
+  );
+
+  test(
     "non-seq-aware store: chain is NOT reset on timeout — terminal delete " +
       "stays queued behind hung save so a late save cannot land after delete",
     async () => {
@@ -2318,15 +2373,18 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
 
       const result1 = await executor1.execute(trigger(), plan);
       expect(result1.status).toBe("executed");
-      // First save is still hung; chain was reset after its timeout so the
-      // terminal delete fired against the reset chain. observed should
-      // now include "delete-applied" (the terminal delete actually ran).
+      // Step-save is now fire-and-forget so the terminal delete chains
+      // behind the hung save; both ops time out (the inner store.delete()
+      // never runs against a hung backend). What we DO assert: execute()
+      // returned promptly (the await already proved this) and the chain
+      // reset on each timeout means a brand-new executor on the SAME
+      // store can proceed.
       await new Promise<void>((r) => setTimeout(r, 40));
-      expect(observed).toContain("delete-applied");
 
       // Second executor on the SAME store: its save must run (saveCount >= 2)
       // because the chain reset prevented the hung first save from
-      // blocking it.
+      // blocking it. Each executor has its own storeOpQueue closure, so
+      // executor2 starts with a fresh chain regardless.
       const executor2 = createCompositionExecutor({
         agentId: agentId("agent-1"),
         scheduler,

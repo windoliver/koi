@@ -686,6 +686,7 @@ export function createCompositionExecutor(
     plan: CompositionPlan,
     stepResults: readonly ExecutedStepResult[],
     phase: "in_progress" | "failed",
+    wait: boolean = true,
   ): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
     // Build the snapshot synchronously so hashPlan / output mapping
@@ -693,7 +694,7 @@ export function createCompositionExecutor(
     // turning into an uncaught rejection.
     await ensureSeqSeeded();
     const seq = nextSeq();
-    await withTimeout(
+    const op = withTimeout(
       () =>
         checkpointStore.save({
           executionId,
@@ -706,6 +707,17 @@ export function createCompositionExecutor(
         }),
       checkpointStoreTimeoutMs,
     );
+    if (wait) {
+      await op;
+      return;
+    }
+    // Fire-and-forget: in-progress saves during the step loop must NOT
+    // stretch a successful plan's wall time by `timeout * stepCount`
+    // on a degraded backend. The op is still chained behind any prior
+    // store op via storeOpQueue, so ordering is preserved at the
+    // backend. Swallow the orphan promise's rejection so the runtime
+    // doesn't emit an unhandledRejection event.
+    op.catch(() => {});
   }
 
   // Re-save a previously loaded snapshot with phase=failed, preserving
@@ -1371,8 +1383,13 @@ export function createCompositionExecutor(
       }
       // Step pushed successfully (failures return early above) — snapshot
       // progress so a host watching the checkpoint store sees the plan
-      // advancing step-by-step.
-      await saveProgress(plan, stepResults, "in_progress");
+      // advancing step-by-step. Fire-and-forget: the save is observability
+      // only and must not add `timeoutMs * stepCount` of latency to a
+      // successful plan when the backend is degraded. storeOpQueue still
+      // serializes the write behind any prior op so backend ordering is
+      // preserved. ensureSeqSeeded still runs synchronously here so the
+      // first save's seq is durably anchored before the loop proceeds.
+      await saveProgress(plan, stepResults, "in_progress", false);
     }
 
     return {
