@@ -491,7 +491,11 @@ describe("createProactiveDelivery", () => {
     });
 
     const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
-    expect(r).toEqual({ ok: true, delivered: ["slack"] });
+    expect(r).toEqual({
+      ok: true,
+      delivered: ["slack"],
+      partialFailures: [{ channel: "email", error: "smtp down" }],
+    });
     expect(calls).toEqual(["email", "slack"]);
   });
 
@@ -538,7 +542,11 @@ describe("createProactiveDelivery", () => {
     });
 
     const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
-    expect(r).toEqual({ ok: true, delivered: ["email"] });
+    expect(r).toEqual({
+      ok: true,
+      delivered: ["email"],
+      partialFailures: [{ channel: "slack", error: "net" }],
+    });
     expect(calls).toEqual(["slack", "email"]);
   });
 
@@ -596,7 +604,11 @@ describe("createProactiveDelivery", () => {
 
     // First high send walks slack→email; should consume 1 slot, not 2.
     const r1 = await delivery.send({ priority: "high", content: [{ kind: "text", text: "1" }] });
-    expect(r1).toEqual({ ok: true, delivered: ["email"] });
+    expect(r1).toEqual({
+      ok: true,
+      delivered: ["email"],
+      partialFailures: [{ channel: "slack", error: "net" }],
+    });
 
     // Bucket is now full at 1/1; next non-urgent must be rate-limited.
     const r2 = await delivery.send({ priority: "high", content: [{ kind: "text", text: "2" }] });
@@ -1011,8 +1023,25 @@ describe("createProactiveDelivery", () => {
       sendTimeoutMs: 50,
     });
     const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
-    expect(r).toEqual({ ok: true, delivered: ["email"] });
+    expect(r).toEqual({
+      ok: true,
+      delivered: ["email"],
+      partialFailures: [{ channel: "slack", error: "network" }],
+    });
     expect(calls).toEqual(["slack", "email"]);
+  });
+
+  test("high: partialFailures field is OMITTED (not []) when no fallback was needed", async () => {
+    // Preferred succeeds on first attempt → no partialFailures key at all.
+    // ok-arm consumers that don't read partialFailures keep working.
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { preferredChannel: "slack" },
+    });
+    const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(r).toEqual({ ok: true, delivered: ["slack"] });
+    expect("partialFailures" in r).toBe(false);
   });
 
   test("normal: hung adapter → timed_out (slot NOT refunded — may have delivered)", async () => {

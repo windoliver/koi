@@ -553,14 +553,37 @@ export function createCompositionExecutor(
   //
   // CRITICAL: seq must remain monotonic across executor recreations for
   // the same `executionId`, otherwise a restart/retry would start at 0
-  // and have its writes rejected by the stored higher watermark. Anchor
-  // the seq to wall-clock time (ms) so two executors created in
-  // different processes never collide unless they tick at the exact
-  // same millisecond. Within an executor, an in-process counter
-  // disambiguates same-ms writes. Wall-clock-anchored seq survives
-  // process restart on real systems and only degrades if the system
-  // clock moves backwards — a documented host responsibility.
+  // and have its writes rejected by the stored higher watermark.
+  //
+  // Strategy: wall-clock seed (covers cross-process collisions) PLUS a
+  // durable bump from the stored prior snapshot's `seq` on first use.
+  // The store-side watermark is the authoritative monotonic anchor —
+  // wall-clock alone is unsafe across NTP rollbacks / VM time-warp
+  // events / clock-skewed hosts. Probing `load(executionId)` once at
+  // first save/delete and lifting storeOpSeq above the stored value
+  // means a backwards clock jump cannot brick checkpoint progress.
   let storeOpSeq = now();
+  let seqSeeded = false;
+  async function ensureSeqSeeded(): Promise<void> {
+    if (seqSeeded) return;
+    seqSeeded = true; // set first to avoid concurrent reseeds
+    if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    try {
+      const loaded = checkpointStore.load(executionId);
+      const value = loaded instanceof Promise ? await loaded : loaded;
+      if (value?.seq !== undefined && value.seq >= storeOpSeq) {
+        // Lift above the durable watermark so the next stamp wins.
+        // The +1 disambiguates same-ms clocks; nextSeq()'s monotonic
+        // step will continue from here regardless of wall clock.
+        storeOpSeq = value.seq + 1;
+      }
+    } catch {
+      // Probe failures must not block emission. The seq guard at the
+      // backend still drops late writes; worst case here is the first
+      // save lands with an older seq and is silently dropped — visible
+      // as a missing checkpoint but never as corrupted state.
+    }
+  }
   function nextSeq(): number {
     const t = now();
     storeOpSeq = t > storeOpSeq ? t : storeOpSeq + 1;
@@ -630,6 +653,7 @@ export function createCompositionExecutor(
     // Build the snapshot synchronously so hashPlan / output mapping
     // failures are caught by withTimeout's sync-throw handler instead of
     // turning into an uncaught rejection.
+    await ensureSeqSeeded();
     const seq = nextSeq();
     await withTimeout(
       () =>
@@ -652,6 +676,7 @@ export function createCompositionExecutor(
   // stale-plan retry. A fresh seq is stamped so the watermark advances.
   async function savePriorAsFailed(prior: CheckpointSnapshot): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    await ensureSeqSeeded();
     const seq = nextSeq();
     await withTimeout(
       () =>
@@ -691,9 +716,10 @@ export function createCompositionExecutor(
 
   async function deleteProgress(): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
-    // Wall-clock-anchored seq so this delete's watermark is monotonic
-    // even relative to a prior executor instance's writes for the same
-    // executionId. Backend stamps the tombstone at this seq.
+    // Seq is monotonic across restarts: ensureSeqSeeded lifts the
+    // counter above any prior watermark before stamping. Backend
+    // records the tombstone at this seq.
+    await ensureSeqSeeded();
     const seq = nextSeq();
     await withTimeout(() => checkpointStore.delete(executionId, seq), checkpointStoreTimeoutMs);
   }

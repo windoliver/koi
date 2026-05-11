@@ -2400,4 +2400,63 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     expect(deletes).toHaveLength(0);
     void store;
   });
+
+  test(
+    "seq survives wall-clock rollback: new executor seeds from stored watermark, " +
+      "not from now()",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const saves: CheckpointSnapshot[] = [];
+      // Prior executor instance left a snapshot at a high seq (e.g. it
+      // ran when the system clock was ahead, or seeded from durable
+      // counter). Simulate clock rollback by giving the new executor a
+      // `now()` that returns a value LOWER than the stored seq.
+      const HIGH_PRIOR_SEQ = 9_000_000_000_000; // very high
+      const stored: CheckpointSnapshot = {
+        executionId: "exec-rollback",
+        planHash: "old-h",
+        nextStepIndex: 1,
+        stepResults: ["a"],
+        phase: "in_progress",
+        savedAt: HIGH_PRIOR_SEQ,
+        seq: HIGH_PRIOR_SEQ,
+      };
+      const store: CompositionCheckpointStore = {
+        save: (snap) => {
+          saves.push(snap);
+        },
+        load: () => stored,
+        delete: () => {},
+        list: () => [stored],
+        seqAware: true,
+      };
+      // Wall clock is BEHIND the durable watermark by years.
+      const wallClockBehind = 1_000;
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-rollback",
+        now: () => wallClockBehind,
+      });
+      await executor.execute(trigger(), {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      });
+      // Every emitted seq must be > the prior watermark; otherwise the
+      // store guard would silently drop the save and recovery state
+      // would freeze. Pre-fix, seq was seeded from now()=1000 and got
+      // dropped by the seq guard.
+      expect(saves.length).toBeGreaterThan(0);
+      for (const s of saves) {
+        expect(s.seq).toBeDefined();
+        expect((s.seq ?? 0) > HIGH_PRIOR_SEQ).toBe(true);
+      }
+    },
+  );
 });

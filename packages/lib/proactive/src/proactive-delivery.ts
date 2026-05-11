@@ -475,6 +475,13 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           }
           const outcome = await sendOne(target, built.msg, sendTimeoutMs);
           if (outcome.kind === "ok") {
+            // Surface accumulated failures from earlier fallback attempts
+            // as partialFailures so operators can see preferred-channel
+            // degradation even when a secondary delivered. Matches the
+            // urgent-path partial-success contract.
+            if (failures.length > 0) {
+              return { ok: true, delivered: [target.name], partialFailures: failures };
+            }
             return { ok: true, delivered: [target.name] };
           }
           failures.push(outcome.failure);
