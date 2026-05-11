@@ -527,11 +527,29 @@ export function createCompositionExecutor(
   // the property.
   const checkpointStoreSeqAware =
     context.checkpointStoreSeqAware ?? checkpointStore?.seqAware === true;
-  // Validate at executor construction: wiring a store without an id is a
-  // host configuration bug. Defer the surfaced error until execute() runs
-  // so the contract (every call resolves to a structured result) holds.
-  const missingExecutionId =
-    checkpointStore !== undefined && (executionId === undefined || executionId === "");
+  // A host wiring `checkpointStore` without `executionId` is a
+  // misconfiguration. Checkpointing is observability-only — the
+  // executionLog is the correctness source of truth — so we DEGRADE
+  // here instead of failing the plan: every checkpoint-touching
+  // helper short-circuits on `executionId === undefined || ""`, so
+  // saves/deletes silently become no-ops. We emit a one-shot warning
+  // through the gap recorder (best-effort observability) when this
+  // condition holds so operators can spot the wiring bug without
+  // taking down composition execution entirely.
+  if (checkpointStore !== undefined && (executionId === undefined || executionId === "")) {
+    // Best-effort warning, never throws — recorder may be absent or fail.
+    try {
+      recorder?.recordGap?.({
+        triggerId: "",
+        agentId: context.agentId,
+        kind: "configuration_warning",
+        detail: "checkpointStore wired without executionId — checkpoint writes disabled",
+        occurredAt: now(),
+      } as never);
+    } catch {
+      /* observability-only */
+    }
+  }
 
   // Serialize all store ops per executor instance. Necessary because
   // withTimeout abandons the executor's view of a stalled op via
@@ -1464,13 +1482,18 @@ export function createCompositionExecutor(
       }
       // Step pushed successfully (failures return early above) — snapshot
       // progress so a host watching the checkpoint store sees the plan
-      // advancing step-by-step. Fire-and-forget: the save is observability
-      // only and must not add `timeoutMs * stepCount` of latency to a
-      // successful plan when the backend is degraded. storeOpQueue still
-      // serializes the write behind any prior op so backend ordering is
-      // preserved. ensureSeqSeeded still runs synchronously here so the
-      // first save's seq is durably anchored before the loop proceeds.
-      await saveProgress(plan, stepResults, "in_progress", false);
+      // advancing step-by-step.
+      //
+      // Fire-and-forget ONLY for seq-aware stores: a hung step save can
+      // be safely abandoned because the backend's seq guard rejects any
+      // late commit that lands after a terminal delete. For non-seq-aware
+      // stores, fire-and-forget would let the terminal delete queue
+      // behind a hung save and never reach the backend — a completed
+      // execution would be left looking in_progress forever, breaking
+      // restart sweepers. Block on those stores to ensure terminal
+      // cleanup is reachable, accepting the N×timeout latency cost on
+      // a degraded backend (better than incorrect recovery state).
+      await saveProgress(plan, stepResults, "in_progress", !checkpointStoreSeqAware);
     }
 
     return {
@@ -1486,20 +1509,9 @@ export function createCompositionExecutor(
       trigger: CompositionTrigger,
       plan: CompositionPlan,
     ): Promise<CompositionExecutionResult> {
-      // Fail fast on host-misconfigured snapshot wiring (store without id).
-      // Surface as a structured INVALID_PLAN so the contract still holds.
-      if (missingExecutionId) {
-        return {
-          triggerId: trigger.id,
-          status: "failed",
-          stepResults: [],
-          executedCount: 0,
-          error: {
-            code: "INVALID_PLAN",
-            message: "checkpointStore is configured but executionId is missing or empty",
-          },
-        };
-      }
+      // checkpointStore wired without executionId degrades silently
+      // (warning emitted at construction; all checkpoint helpers short-
+      // circuit). executionLog remains the correctness source of truth.
       const state = { committedNewWork: false, acquiredSessionSlot: false };
       const result = await runPlan(trigger, plan, state);
       // Terminal snapshot housekeeping. Pure success deletes the snapshot

@@ -34,15 +34,35 @@ export interface ProactiveDeliveryConfig {
   readonly now?: () => number;
   readonly inbox?: InboxSink;
   /**
-   * Per-attempt timeout in milliseconds. When set, each adapter `send()`
-   * (and each `inbox.enqueue()`) is wrapped in a timeout — a hung
-   * dependency cannot block urgent fan-out from returning after siblings
-   * settle, cannot wedge high-priority fallback past the failed attempt,
+   * Per-attempt timeout in milliseconds for `normal`, `low`, and
+   * `urgent` priorities. When set, each adapter `send()` (and each
+   * `inbox.enqueue()`) is wrapped in a timeout — a hung dependency
+   * cannot block urgent fan-out from returning after siblings settle
    * and cannot strand a reserved rate-limit slot. Default: no timeout
    * (preserves Phase 3 behavior). Recommended in production where
    * adapters do remote I/O.
+   *
+   * **Does NOT apply to `high` priority by default.** Because adapters
+   * have no abort signal, a timed-out high-priority send may still
+   * deliver in the background — falling back to a different transport
+   * would risk double-delivery. Enabling this knob alone therefore
+   * leaves high-priority fallback fully intact: high walks every
+   * channel and only stops on a real failure or success. Set
+   * `highSendTimeoutMs` explicitly to opt high into timeout-bounded
+   * behavior; that comes with the documented terminal-on-timeout
+   * trade-off (a stuck preferred channel short-circuits fallback).
    */
   readonly sendTimeoutMs?: number;
+  /**
+   * Per-attempt timeout for `high` priority specifically. Opt-in:
+   * unset means high never times out (fallback walks every channel
+   * regardless of `sendTimeoutMs`). When set, the first timed-out
+   * attempt becomes terminal — `idempotencyKey` is metadata-only and
+   * does not dedupe across transports, so falling back after timeout
+   * risks double-delivery. Most hosts should leave this unset until
+   * `ChannelAdapter` grows abort support.
+   */
+  readonly highSendTimeoutMs?: number;
 }
 
 export type DeliveryFailure = { readonly channel: string; readonly error: string };
@@ -246,17 +266,18 @@ function validateQuietHours(prefs: DeliveryPreferences | undefined): void {
 export function createProactiveDelivery(config: ProactiveDeliveryConfig): ProactiveDelivery {
   validateRateLimit(config.preferences);
   validateQuietHours(config.preferences);
-  if (
-    config.sendTimeoutMs !== undefined &&
-    (!Number.isFinite(config.sendTimeoutMs) ||
-      !Number.isInteger(config.sendTimeoutMs) ||
-      config.sendTimeoutMs <= 0)
-  ) {
-    throw new Error(
-      `sendTimeoutMs must be a finite positive integer (got ${String(config.sendTimeoutMs)})`,
-    );
-  }
+  const validateTimeoutMs = (name: string, v: number | undefined): void => {
+    if (v === undefined) return;
+    if (!Number.isFinite(v) || !Number.isInteger(v) || v <= 0) {
+      throw new Error(`${name} must be a finite positive integer (got ${String(v)})`);
+    }
+  };
+  validateTimeoutMs("sendTimeoutMs", config.sendTimeoutMs);
+  validateTimeoutMs("highSendTimeoutMs", config.highSendTimeoutMs);
   const sendTimeoutMs = config.sendTimeoutMs;
+  // High priority opts in separately: unset means unbounded so a
+  // timeout config doesn't accidentally disable high fallback.
+  const highSendTimeoutMs = config.highSendTimeoutMs;
   const preferences = config.preferences;
   const now = config.now ?? Date.now;
   const cap = preferences?.maxNotificationsPerHour;
@@ -473,7 +494,7 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
             failures.push({ channel: target.name, error: built.error });
             continue;
           }
-          const outcome = await sendOne(target, built.msg, sendTimeoutMs);
+          const outcome = await sendOne(target, built.msg, highSendTimeoutMs);
           if (outcome.kind === "ok") {
             // Surface accumulated failures from earlier fallback attempts
             // as partialFailures so operators can see preferred-channel
