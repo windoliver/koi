@@ -2402,6 +2402,48 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
   });
 
   test(
+    "hung checkpointStore.load() during seq seeding does NOT strand execute() — " +
+      "bounded by checkpointStoreTimeoutMs",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const saves: CheckpointSnapshot[] = [];
+      // load() hangs forever. Pre-fix, ensureSeqSeeded awaited it
+      // unbounded, so the first post-step saveProgress never reached
+      // the timeout-protected withTimeout path and execute() hung.
+      const store: CompositionCheckpointStore = {
+        save: (snap) => {
+          saves.push(snap);
+        },
+        load: () => new Promise(() => {}),
+        delete: () => {},
+        list: () => [],
+        seqAware: true,
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-hang-seed",
+        checkpointStoreTimeoutMs: 30,
+      });
+      const start = Date.now();
+      const result = await executor.execute(trigger(), {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      });
+      const elapsed = Date.now() - start;
+      expect(result.status).toBe("executed");
+      // Bounded by ~timeout + per-step work; well under 500ms.
+      expect(elapsed).toBeLessThan(500);
+    },
+  );
+
+  test(
     "seq survives wall-clock rollback: new executor seeds from stored watermark, " +
       "not from now()",
     async () => {
