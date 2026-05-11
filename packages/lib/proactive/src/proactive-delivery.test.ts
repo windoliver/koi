@@ -919,6 +919,79 @@ describe("createProactiveDelivery", () => {
     expect(r.failures?.[0]?.channel).toBe("inbox");
   });
 
+  test("urgent fan-out: hung adapter times out, sibling success returns", async () => {
+    const slack = stubAdapter("slack", async () => {});
+    const email = stubAdapter("email", () => new Promise<void>(() => {})); // never resolves
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      sendTimeoutMs: 50,
+    });
+    const r = await delivery.send({
+      priority: "urgent",
+      content: [{ kind: "text", text: "alert" }],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.delivered).toContain("slack");
+  });
+
+  test("high fallback: hung preferred → times out, fallback to next channel succeeds", async () => {
+    const slack = stubAdapter("slack", () => new Promise<void>(() => {})); // hangs
+    const email = stubAdapter("email", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { preferredChannel: "slack" },
+      sendTimeoutMs: 50,
+    });
+    const r = await delivery.send({
+      priority: "high",
+      content: [{ kind: "text", text: "h" }],
+    });
+    expect(r).toEqual({ ok: true, delivered: ["email"] });
+  });
+
+  test("high fallback: hung attempt refunds rate-limit slot when full failure", async () => {
+    const t = 1_700_000_000_000;
+    const slack = stubAdapter("slack", () => new Promise<void>(() => {})); // hangs
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      preferences: { maxNotificationsPerHour: 1 },
+      sendTimeoutMs: 30,
+      now: () => t,
+    });
+    const r1 = await delivery.send({ priority: "high", content: [{ kind: "text", text: "1" }] });
+    expect(r1.ok).toBe(false);
+    // Slot must be refunded — next normal send still allowed at cap=1.
+    const ok = stubAdapter("ok", async () => {});
+    const delivery2 = createProactiveDelivery({
+      channels: new Map([["ok", ok]]),
+      preferences: { maxNotificationsPerHour: 1 },
+      sendTimeoutMs: 30,
+      now: () => t,
+    });
+    const r2 = await delivery2.send({ priority: "normal", content: [{ kind: "text", text: "2" }] });
+    expect(r2.ok).toBe(true);
+  });
+
+  test("throws when sendTimeoutMs is non-positive", () => {
+    const slack = stubAdapter("slack", async () => {});
+    expect(() =>
+      createProactiveDelivery({ channels: new Map([["slack", slack]]), sendTimeoutMs: 0 }),
+    ).toThrow(/sendTimeoutMs must be a finite positive integer/);
+    expect(() =>
+      createProactiveDelivery({ channels: new Map([["slack", slack]]), sendTimeoutMs: -1 }),
+    ).toThrow(/sendTimeoutMs must be a finite positive integer/);
+    expect(() =>
+      createProactiveDelivery({ channels: new Map([["slack", slack]]), sendTimeoutMs: Number.NaN }),
+    ).toThrow(/sendTimeoutMs must be a finite positive integer/);
+  });
+
   test("preferences.timezone alone (no quiet hours) does not throw", () => {
     const slack = stubAdapter("slack", async () => {});
     expect(() =>
