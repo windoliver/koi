@@ -544,6 +544,56 @@ describe("createInMemoryCheckpointStore", () => {
     expect(loaded?.stepResults).toEqual(["first", "second"]);
   });
 
+  test("save throws on invalid seq (NaN, Infinity, negative, fractional)", () => {
+    const store = createInMemoryCheckpointStore();
+    const base = {
+      executionId: "exec-1",
+      planHash: "h1",
+      nextStepIndex: 0,
+      stepResults: [] as const,
+      phase: "in_progress" as const,
+      savedAt: 1,
+    };
+    expect(() => store.save({ ...base, seq: Number.NaN })).toThrow(
+      /seq must be a non-negative integer/,
+    );
+    expect(() => store.save({ ...base, seq: Number.POSITIVE_INFINITY })).toThrow(
+      /seq must be a non-negative integer/,
+    );
+    expect(() => store.save({ ...base, seq: -1 })).toThrow(/seq must be a non-negative integer/);
+    expect(() => store.save({ ...base, seq: 1.5 })).toThrow(/seq must be a non-negative integer/);
+  });
+
+  test("delete throws on invalid seq", () => {
+    const store = createInMemoryCheckpointStore();
+    expect(() => store.delete("exec-1", Number.NaN)).toThrow(/seq must be a non-negative integer/);
+    expect(() => store.delete("exec-1", -1)).toThrow(/seq must be a non-negative integer/);
+    expect(() => store.delete("exec-1", 1.5)).toThrow(/seq must be a non-negative integer/);
+  });
+
+  test("save with invalid seq does NOT poison the watermark — later valid saves succeed", async () => {
+    const store = createInMemoryCheckpointStore();
+    const base = {
+      executionId: "exec-1",
+      planHash: "h1",
+      nextStepIndex: 1,
+      stepResults: [{ ok: true }],
+      phase: "in_progress" as const,
+      savedAt: 1,
+    };
+    // Rejected. Pre-fix this stored NaN as watermark; NaN <= anything
+    // is false, so the next valid save would have been "newer" and
+    // succeeded — but with arithmetic on NaN tainting future comparisons.
+    expect(() => store.save({ ...base, seq: Number.NaN })).toThrow();
+    // Valid follow-up: must persist normally with a clean watermark.
+    await store.save({ ...base, seq: 5 });
+    const loaded = await store.load("exec-1");
+    expect(loaded?.seq).toBe(5);
+    // Stale write at seq <= 5 is correctly rejected.
+    await store.save({ ...base, seq: 4, stepResults: [{ stale: true }] });
+    expect((await store.load("exec-1"))?.stepResults).toEqual([{ ok: true }]);
+  });
+
   test(
     "failed save (encode throws) does NOT advance the seq watermark — " +
       "retry with same seq still succeeds",
