@@ -7,6 +7,18 @@ export type CheckpointPhase = "in_progress" | "completed" | "failed";
  * accept functions, Error instances, class instances, and cyclic
  * structures that the in-memory store can hold but a wire format
  * cannot.
+ *
+ * NOTE on executor compatibility: `CompositionStepResult.output` and
+ * the various handler return types in `composition-executor.ts` are
+ * declared `unknown` — broader than `CheckpointValue`. The executor
+ * wiring slice (tracked separately) MUST encode each step output into
+ * a `CheckpointValue` before passing it here (e.g. via a configurable
+ * codec defaulting to `JSON.parse(JSON.stringify(...))` with explicit
+ * rejection of NaN/Infinity, or a host-supplied encoder). Hosts that
+ * return non-encodable outputs from handlers must either fix the
+ * handler or supply a codec — `save` is intentionally strict so this
+ * mismatch surfaces at the executor boundary, never silently in the
+ * durable backend.
  */
 export type CheckpointValue =
   | string

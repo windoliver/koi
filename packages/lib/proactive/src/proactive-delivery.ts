@@ -39,19 +39,36 @@ export interface ProactiveDelivery {
   readonly send: (notification: ProactiveNotification) => Promise<DeliveryResult>;
 }
 
-function buildOutbound(notification: ProactiveNotification): OutboundMessage {
-  // Deep-clone content + metadata so a misbehaving adapter that mutates its
-  // input cannot poison the caller's notification, sibling parallel sends
-  // (urgent fan-out), or subsequent fallback attempts (high priority).
-  // structuredClone preserves structural type; covariance allows assigning a
-  // mutable clone to the readonly field.
-  return {
-    content: structuredClone(notification.content),
-    ...(notification.threadId !== undefined ? { threadId: notification.threadId } : {}),
-    ...(notification.metadata !== undefined
-      ? { metadata: structuredClone(notification.metadata) }
-      : {}),
-  };
+/**
+ * Result of attempting to clone an outbound message. Cloning can fail because
+ * `ContentBlock.button.payload` and `ContentBlock.custom.data` are typed as
+ * `unknown` and `OutboundMessage.metadata` is `JsonObject` (also `unknown`
+ * values), so callers can legally pass values structuredClone rejects
+ * (functions, class instances, Errors, etc.). We surface that failure as a
+ * `DeliveryFailure` rather than throwing — the caller's send must complete
+ * with a wrapped result so reserved rate-limit slots can be refunded.
+ */
+type BuildOutboundResult =
+  | { readonly ok: true; readonly msg: OutboundMessage }
+  | { readonly ok: false; readonly error: string };
+
+function buildOutbound(notification: ProactiveNotification): BuildOutboundResult {
+  try {
+    const content = structuredClone(notification.content);
+    const metadata =
+      notification.metadata !== undefined ? structuredClone(notification.metadata) : undefined;
+    const msg: OutboundMessage = {
+      content,
+      ...(notification.threadId !== undefined ? { threadId: notification.threadId } : {}),
+      ...(metadata !== undefined ? { metadata } : {}),
+    };
+    return { ok: true, msg };
+  } catch (e: unknown) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "notification content not cloneable",
+    };
+  }
 }
 
 function selectPreferred(
@@ -243,8 +260,14 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
         }));
         // Per-adapter cloned message so a misbehaving adapter that mutates
         // its input cannot race against parallel sends to other channels.
+        // If cloning fails for any adapter, that adapter gets an all_failed
+        // entry — a single bad payload does not crash the whole send.
         const results = await Promise.all(
-          entries.map((c) => sendOne(c, buildOutbound(notification))),
+          entries.map(async (c) => {
+            const built = buildOutbound(notification);
+            if (!built.ok) return { channel: c.name, error: built.error };
+            return sendOne(c, built.msg);
+          }),
         );
         const delivered: string[] = [];
         const failures: DeliveryFailure[] = [];
@@ -278,8 +301,15 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
         const failures: DeliveryFailure[] = [];
         for (const target of order) {
           // Per-attempt cloned message so an adapter that mutates its input
-          // cannot poison subsequent fallback attempts.
-          const failure = await sendOne(target, buildOutbound(notification));
+          // cannot poison subsequent fallback attempts. Clone failure on a
+          // given attempt is recorded as a per-channel failure; we still try
+          // remaining channels in case one of them mutates differently.
+          const built = buildOutbound(notification);
+          if (!built.ok) {
+            failures.push({ channel: target.name, error: built.error });
+            continue;
+          }
+          const failure = await sendOne(target, built.msg);
           if (failure === undefined) {
             return { ok: true, delivered: [target.name] };
           }
@@ -296,8 +326,16 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
         refundSlot(t, notification.priority);
         return { ok: false, reason: "no_channels" };
       }
-      const msg = buildOutbound(notification);
-      const failure = await sendOne(target, msg);
+      const built = buildOutbound(notification);
+      if (!built.ok) {
+        refundSlot(t, notification.priority);
+        return {
+          ok: false,
+          reason: "all_failed",
+          failures: [{ channel: target.name, error: built.error }],
+        };
+      }
+      const failure = await sendOne(target, built.msg);
       if (failure !== undefined) {
         refundSlot(t, notification.priority);
         return { ok: false, reason: "all_failed", failures: [failure] };
