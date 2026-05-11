@@ -23,6 +23,16 @@ export interface ProactiveDeliveryConfig {
   readonly preferences?: DeliveryPreferences;
   readonly now?: () => number;
   readonly inbox?: InboxSink;
+  /**
+   * Per-attempt timeout in milliseconds. When set, each adapter `send()`
+   * (and each `inbox.enqueue()`) is wrapped in a timeout — a hung
+   * dependency cannot block urgent fan-out from returning after siblings
+   * settle, cannot wedge high-priority fallback past the failed attempt,
+   * and cannot strand a reserved rate-limit slot. Default: no timeout
+   * (preserves Phase 3 behavior). Recommended in production where
+   * adapters do remote I/O.
+   */
+  readonly sendTimeoutMs?: number;
 }
 
 export type DeliveryFailure = { readonly channel: string; readonly error: string };
@@ -104,12 +114,27 @@ function selectHighOrder(
   return out;
 }
 
+async function withTimeout<T>(
+  p: Promise<T>,
+  timeoutMs: number | undefined,
+  label: string,
+): Promise<T> {
+  if (timeoutMs === undefined) return p;
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
+}
+
 async function sendOne(
   channel: { name: string; adapter: ChannelAdapter },
   msg: OutboundMessage,
+  timeoutMs: number | undefined,
 ): Promise<DeliveryFailure | undefined> {
   try {
-    await channel.adapter.send(msg);
+    await withTimeout(Promise.resolve(channel.adapter.send(msg)), timeoutMs, "channel.send");
     return undefined;
   } catch (e: unknown) {
     return {
@@ -166,6 +191,17 @@ function validateQuietHours(prefs: DeliveryPreferences | undefined): void {
 export function createProactiveDelivery(config: ProactiveDeliveryConfig): ProactiveDelivery {
   validateRateLimit(config.preferences);
   validateQuietHours(config.preferences);
+  if (
+    config.sendTimeoutMs !== undefined &&
+    (!Number.isFinite(config.sendTimeoutMs) ||
+      !Number.isInteger(config.sendTimeoutMs) ||
+      config.sendTimeoutMs <= 0)
+  ) {
+    throw new Error(
+      `sendTimeoutMs must be a finite positive integer (got ${String(config.sendTimeoutMs)})`,
+    );
+  }
+  const sendTimeoutMs = config.sendTimeoutMs;
   const preferences = config.preferences;
   const now = config.now ?? Date.now;
   const cap = preferences?.maxNotificationsPerHour;
@@ -257,7 +293,11 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           };
         }
         try {
-          await inbox.enqueue(envelope);
+          await withTimeout(
+            Promise.resolve(inbox.enqueue(envelope)),
+            sendTimeoutMs,
+            "inbox.enqueue",
+          );
           return { ok: true, delivered: ["inbox"] };
         } catch (e: unknown) {
           return {
@@ -290,7 +330,7 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           entries.map(async (c) => {
             const built = buildOutbound(notification);
             if (!built.ok) return { channel: c.name, error: built.error };
-            return sendOne(c, built.msg);
+            return sendOne(c, built.msg, sendTimeoutMs);
           }),
         );
         const delivered: string[] = [];
@@ -333,7 +373,7 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
             failures.push({ channel: target.name, error: built.error });
             continue;
           }
-          const failure = await sendOne(target, built.msg);
+          const failure = await sendOne(target, built.msg, sendTimeoutMs);
           if (failure === undefined) {
             return { ok: true, delivered: [target.name] };
           }
@@ -359,7 +399,7 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           failures: [{ channel: target.name, error: built.error }],
         };
       }
-      const failure = await sendOne(target, built.msg);
+      const failure = await sendOne(target, built.msg, sendTimeoutMs);
       if (failure !== undefined) {
         refundSlot(t, notification.priority);
         return { ok: false, reason: "all_failed", failures: [failure] };
