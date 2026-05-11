@@ -361,6 +361,82 @@ describe("createInMemoryCheckpointStore", () => {
     expect(remaining.map((s) => s.executionId)).toEqual(["b"]);
   });
 
+  test("seq guard: a save with seq <= stored seq is dropped (stale writer protection)", async () => {
+    const store = createInMemoryCheckpointStore();
+    await store.save({
+      executionId: "a",
+      planHash: "h",
+      nextStepIndex: 1,
+      stepResults: [1],
+      phase: "in_progress",
+      savedAt: 1,
+      seq: 5,
+    });
+    // Stale write — should be silently dropped.
+    await store.save({
+      executionId: "a",
+      planHash: "h",
+      nextStepIndex: 0,
+      stepResults: [],
+      phase: "failed",
+      savedAt: 2,
+      seq: 3,
+    });
+    const reloaded = await store.load("a");
+    expect(reloaded?.phase).toBe("in_progress");
+    expect(reloaded?.seq).toBe(5);
+  });
+
+  test("seq guard: delete tombstones the watermark so late save with older seq cannot resurrect", async () => {
+    const store = createInMemoryCheckpointStore();
+    await store.save({
+      executionId: "a",
+      planHash: "h",
+      nextStepIndex: 1,
+      stepResults: [1],
+      phase: "in_progress",
+      savedAt: 1,
+      seq: 5,
+    });
+    await store.delete("a");
+    // Late write with seq < watermark — must NOT recreate the execution.
+    await store.save({
+      executionId: "a",
+      planHash: "h",
+      nextStepIndex: 1,
+      stepResults: ["LATE"],
+      phase: "in_progress",
+      savedAt: 999,
+      seq: 4,
+    });
+    expect(await store.load("a")).toBeUndefined();
+  });
+
+  test("seq guard: a strictly-newer save overwrites the previous", async () => {
+    const store = createInMemoryCheckpointStore();
+    await store.save({
+      executionId: "a",
+      planHash: "h",
+      nextStepIndex: 1,
+      stepResults: [1],
+      phase: "in_progress",
+      savedAt: 1,
+      seq: 5,
+    });
+    await store.save({
+      executionId: "a",
+      planHash: "h",
+      nextStepIndex: 2,
+      stepResults: [1, 2],
+      phase: "in_progress",
+      savedAt: 2,
+      seq: 6,
+    });
+    const reloaded = await store.load("a");
+    expect(reloaded?.nextStepIndex).toBe(2);
+    expect(reloaded?.seq).toBe(6);
+  });
+
   test("list returns deep clones — mutating result does not affect stored state", async () => {
     const store = createInMemoryCheckpointStore();
     const snap: CheckpointSnapshot = {

@@ -114,29 +114,72 @@ export function sqliteCompositionCheckpointStore(
       `next_step_index INTEGER NOT NULL, ` +
       `step_results TEXT NOT NULL, ` +
       `phase TEXT NOT NULL CHECK (phase IN ('in_progress', 'completed', 'failed')), ` +
-      `saved_at INTEGER NOT NULL` +
+      `saved_at INTEGER NOT NULL, ` +
+      // Monotonic watermark per executionId. Used to reject stale writes
+      // that arrive after a newer save or delete. NULL allowed for
+      // backward compatibility when callers omit `seq`. Nullable column
+      // also retained as a tombstone row after delete (see delete handler).
+      `seq INTEGER, ` +
+      `tombstone INTEGER NOT NULL DEFAULT 0` +
       `)`,
   );
+  // Schema-additive ALTER for existing databases that pre-date the seq /
+  // tombstone columns. SQLite ALTER TABLE ADD COLUMN is idempotent only
+  // when the column doesn't already exist, so wrap in try/catch.
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN seq INTEGER`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN tombstone INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    /* column already exists */
+  }
 
-  const upsert: SqliteStatementLike = db.prepare(
-    `INSERT INTO ${table} (execution_id, plan_hash, next_step_index, step_results, phase, saved_at) ` +
-      `VALUES (?, ?, ?, ?, ?, ?) ` +
+  // UPSERT with monotonic seq guard via `WHERE excluded.seq > ${table}.seq`.
+  // - First write: INSERT path applies (no prior row).
+  // - Newer write (excluded.seq > stored.seq): UPDATE applies.
+  // - Stale write (excluded.seq <= stored.seq): WHERE clause filters; row unchanged.
+  // - Either side NULL (legacy callers without seq): WHERE comparison
+  //   yields NULL → UPDATE skipped. Falls back to the always-update form
+  //   prepared below for backward-compatible last-writer-wins behavior.
+  const upsertGuarded: SqliteStatementLike = db.prepare(
+    `INSERT INTO ${table} (execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone) ` +
+      `VALUES (?, ?, ?, ?, ?, ?, ?, 0) ` +
       `ON CONFLICT(execution_id) DO UPDATE SET ` +
       `plan_hash = excluded.plan_hash, ` +
       `next_step_index = excluded.next_step_index, ` +
       `step_results = excluded.step_results, ` +
       `phase = excluded.phase, ` +
-      `saved_at = excluded.saved_at`,
+      `saved_at = excluded.saved_at, ` +
+      `seq = excluded.seq, ` +
+      `tombstone = 0 ` +
+      `WHERE excluded.seq > ${table}.seq`,
+  );
+  const upsertUnguarded: SqliteStatementLike = db.prepare(
+    `INSERT INTO ${table} (execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone) ` +
+      `VALUES (?, ?, ?, ?, ?, ?, NULL, 0) ` +
+      `ON CONFLICT(execution_id) DO UPDATE SET ` +
+      `plan_hash = excluded.plan_hash, ` +
+      `next_step_index = excluded.next_step_index, ` +
+      `step_results = excluded.step_results, ` +
+      `phase = excluded.phase, ` +
+      `saved_at = excluded.saved_at, ` +
+      `tombstone = 0`,
   );
   const selectByKey: SqliteStatementLike = db.prepare(
-    `SELECT plan_hash, next_step_index, step_results, phase, saved_at ` +
+    `SELECT plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone ` +
       `FROM ${table} WHERE execution_id = ?`,
   );
-  const deleteByKey: SqliteStatementLike = db.prepare(
-    `DELETE FROM ${table} WHERE execution_id = ?`,
+  // Delete leaves a tombstone row with the existing seq watermark so a
+  // late save() with an older seq cannot resurrect the execution. The
+  // tombstone row is invisible to load() and list() (filtered).
+  const deleteTombstone: SqliteStatementLike = db.prepare(
+    `UPDATE ${table} SET tombstone = 1 WHERE execution_id = ?`,
   );
   const selectAllStmt = db.prepare(
-    `SELECT execution_id, plan_hash, next_step_index, step_results, phase, saved_at ` +
+    `SELECT execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone ` +
       `FROM ${table}`,
   );
   // Feature-detect `.all(...)` — both bun:sqlite and node:sqlite provide it,
@@ -186,6 +229,11 @@ export function sqliteCompositionCheckpointStore(
   return {
     save: (snapshot) => {
       validate(snapshot);
+      if (snapshot.seq !== undefined) {
+        if (!Number.isInteger(snapshot.seq) || snapshot.seq < 0) {
+          throw new Error(`seq must be a non-negative integer (got ${String(snapshot.seq)})`);
+        }
+      }
       const encoded = encodeStepResults(snapshot.stepResults);
       // JSON-serialize the encoded array. Encoder already proved every
       // element is CheckpointValue (or caller opted out and accepted the
@@ -196,14 +244,26 @@ export function sqliteCompositionCheckpointStore(
       // parameters. Coerce numerics to string for portability; the column
       // affinity (INTEGER) converts back on read. SQLite's loose typing
       // accepts this without precision loss for our integer values.
-      upsert.run(
-        snapshot.executionId,
-        snapshot.planHash,
-        String(snapshot.nextStepIndex),
-        json,
-        snapshot.phase,
-        String(snapshot.savedAt),
-      );
+      if (snapshot.seq !== undefined) {
+        upsertGuarded.run(
+          snapshot.executionId,
+          snapshot.planHash,
+          String(snapshot.nextStepIndex),
+          json,
+          snapshot.phase,
+          String(snapshot.savedAt),
+          String(snapshot.seq),
+        );
+      } else {
+        upsertUnguarded.run(
+          snapshot.executionId,
+          snapshot.planHash,
+          String(snapshot.nextStepIndex),
+          json,
+          snapshot.phase,
+          String(snapshot.savedAt),
+        );
+      }
     },
     load: (id) => {
       // bun:sqlite returns `null` for missing rows; node:sqlite returns
@@ -211,14 +271,19 @@ export function sqliteCompositionCheckpointStore(
       // aligned with the L0 contract (`T | undefined`).
       const raw = selectByKey.get(id);
       if (raw === undefined || raw === null) return undefined;
-      const decoded = decodeRow(id, raw);
-      if (decoded === undefined) {
+      const outcome = decodeRow(id, raw);
+      if (outcome.kind === "tombstone") return undefined;
+      if (outcome.kind === "corrupt") {
         reportCorrupt(id, "row failed to decode (load)");
+        return undefined;
       }
-      return decoded;
+      return outcome.snapshot;
     },
     delete: (id) => {
-      deleteByKey.run(id);
+      // Tombstone instead of DELETE so a late save() with an older seq
+      // cannot resurrect the execution. Tombstone rows are filtered from
+      // load() and list() output.
+      deleteTombstone.run(id);
     },
     list: () => {
       const rows = selectAll.all();
@@ -233,12 +298,13 @@ export function sqliteCompositionCheckpointStore(
           reportCorrupt(undefined, "row missing or empty execution_id (list)");
           continue;
         }
-        const decoded = decodeRow(executionIdField, raw);
-        if (decoded === undefined) {
+        const outcome = decodeRow(executionIdField, raw);
+        if (outcome.kind === "tombstone") continue;
+        if (outcome.kind === "corrupt") {
           reportCorrupt(executionIdField, "row failed to decode (list)");
           continue;
         }
-        out.push(decoded);
+        out.push(outcome.snapshot);
       }
       return out;
     },
@@ -252,43 +318,65 @@ export function sqliteCompositionCheckpointStore(
 // malformed input so the caller starts fresh rather than acting on
 // garbage. Validates the same invariants the in-memory store enforces
 // on save: matching length/index, non-empty ids, integer index.
-function decodeRow(executionId: string, raw: unknown): CheckpointSnapshot | undefined {
-  if (raw === null || typeof raw !== "object") return undefined;
+type DecodeOutcome =
+  | { readonly kind: "ok"; readonly snapshot: CheckpointSnapshot }
+  | { readonly kind: "tombstone" }
+  | { readonly kind: "corrupt" };
+
+function decodeRow(executionId: string, raw: unknown): DecodeOutcome {
+  if (raw === null || typeof raw !== "object") return { kind: "corrupt" };
   const row = raw as {
     readonly plan_hash?: unknown;
     readonly next_step_index?: unknown;
     readonly step_results?: unknown;
     readonly phase?: unknown;
     readonly saved_at?: unknown;
+    readonly seq?: unknown;
+    readonly tombstone?: unknown;
   };
+  // Tombstones (post-delete rows that retain the seq watermark) are
+  // intentionally NOT visible to load/list — only used to reject stale
+  // saves at the SQL level. A late save with a strictly-newer seq lifts
+  // the tombstone via UPSERT.
+  if (row.tombstone === 1 || row.tombstone === true) {
+    return { kind: "tombstone" };
+  }
   const planHash = row.plan_hash;
   const nextStepIndexField = row.next_step_index;
   const stepResultsJson = row.step_results;
   const phaseField = row.phase;
   const savedAtField = row.saved_at;
-  if (typeof planHash !== "string" || planHash === "") return undefined;
+  if (typeof planHash !== "string" || planHash === "") return { kind: "corrupt" };
   if (typeof nextStepIndexField !== "number" || !Number.isInteger(nextStepIndexField)) {
-    return undefined;
+    return { kind: "corrupt" };
   }
-  if (nextStepIndexField < 0) return undefined;
-  if (typeof phaseField !== "string") return undefined;
-  if (!VALID_PHASES.has(phaseField as CheckpointPhase)) return undefined;
-  if (typeof savedAtField !== "number" || !Number.isFinite(savedAtField)) return undefined;
-  if (typeof stepResultsJson !== "string") return undefined;
+  if (nextStepIndexField < 0) return { kind: "corrupt" };
+  if (typeof phaseField !== "string") return { kind: "corrupt" };
+  if (!VALID_PHASES.has(phaseField as CheckpointPhase)) return { kind: "corrupt" };
+  if (typeof savedAtField !== "number" || !Number.isFinite(savedAtField)) {
+    return { kind: "corrupt" };
+  }
+  if (typeof stepResultsJson !== "string") return { kind: "corrupt" };
   let parsed: unknown;
   try {
     parsed = JSON.parse(stepResultsJson);
   } catch {
-    return undefined;
+    return { kind: "corrupt" };
   }
-  if (!Array.isArray(parsed)) return undefined;
-  if (parsed.length !== nextStepIndexField) return undefined;
+  if (!Array.isArray(parsed)) return { kind: "corrupt" };
+  if (parsed.length !== nextStepIndexField) return { kind: "corrupt" };
+  const seqField = row.seq;
+  const seq = typeof seqField === "number" && Number.isInteger(seqField) ? seqField : undefined;
   return {
-    executionId,
-    planHash,
-    nextStepIndex: nextStepIndexField,
-    stepResults: parsed as readonly CheckpointValue[],
-    phase: phaseField as CheckpointPhase,
-    savedAt: savedAtField,
+    kind: "ok",
+    snapshot: {
+      executionId,
+      planHash,
+      nextStepIndex: nextStepIndexField,
+      stepResults: parsed as readonly CheckpointValue[],
+      phase: phaseField as CheckpointPhase,
+      savedAt: savedAtField,
+      ...(seq === undefined ? {} : { seq }),
+    },
   };
 }

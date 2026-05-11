@@ -89,6 +89,18 @@ export interface CheckpointSnapshot {
    * stale-snapshot detection by callers (executor decides policy).
    */
   readonly savedAt: number;
+  /**
+   * Monotonic version stamped by the producer. Backends MUST refuse to
+   * commit a `save` whose `seq` is less than or equal to the stored row's
+   * `seq` for the same `executionId` — guards against a slow/abandoned
+   * write completing after a newer save or `delete()` and resurrecting
+   * stale state. Optional for backward compatibility; when omitted on
+   * save, backends treat the write as last-writer-wins (legacy behavior).
+   * The executor stamps each emitted snapshot with a strictly increasing
+   * counter so its serialized writes are always ordered at the backend
+   * even when the in-process chain has been reset after a timeout.
+   */
+  readonly seq?: number;
 }
 
 export interface CompositionCheckpointStore {
@@ -203,8 +215,26 @@ export function createInMemoryCheckpointStore(
     return out;
   }
 
+  // Per-id high-watermark of the `seq` ever observed on save() or delete().
+  // Guards against a slow/abandoned save committing AFTER a newer save or a
+  // delete on the same execution, which would otherwise resurrect stale
+  // state. Tombstones (deleted executions) keep their watermark so a late
+  // save with an older seq is rejected.
+  const seqWatermarks = new Map<string, number>();
+
   return {
     save: (snapshot) => {
+      // Stale-write guard: drop if a strictly-newer write was already
+      // observed for this executionId. Snapshots without `seq` are
+      // accepted as last-writer-wins (legacy behavior preserved).
+      if (snapshot.seq !== undefined) {
+        const hw = seqWatermarks.get(snapshot.executionId);
+        if (hw !== undefined && snapshot.seq <= hw) {
+          // Late write — silently drop to preserve recovery correctness.
+          return;
+        }
+        seqWatermarks.set(snapshot.executionId, snapshot.seq);
+      }
       // Encode first so executor `unknown` outputs are sanitized before
       // structural validation. validateSnapshot still enforces invariants
       // (length match, non-empty ids, valid index, no cycles in encoded
@@ -226,6 +256,14 @@ export function createInMemoryCheckpointStore(
       return stored === undefined ? undefined : structuredClone(stored);
     },
     delete: (id) => {
+      // Update the watermark before deleting the visible row so a late
+      // save() with an older seq cannot resurrect the row by inserting
+      // fresh. The watermark stays even after delete (tombstone).
+      const stored = snapshots.get(id);
+      if (stored?.seq !== undefined) {
+        const prev = seqWatermarks.get(id) ?? 0;
+        seqWatermarks.set(id, Math.max(prev, stored.seq));
+      }
       snapshots.delete(id);
     },
     list: () => {
