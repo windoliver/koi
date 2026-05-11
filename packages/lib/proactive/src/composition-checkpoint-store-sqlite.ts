@@ -354,6 +354,7 @@ export function sqliteCompositionCheckpointStore(
       }
       return out;
     },
+    seqAware: true,
   };
 }
 

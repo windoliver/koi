@@ -639,12 +639,19 @@ partial-degradation should check `partialFailures !== undefined`.
 
 ### Idempotency key (Phase 4)
 
-`ProactiveNotification.idempotencyKey?: string` is forwarded to
-adapters that accept it (channel adapters opt in via the existing
-`SendOptions.idempotencyKey` field). Adapters that do not propagate it
-treat the send as a normal best-effort dispatch — the caller-side
-guarantee is "if your channel honors idempotency keys, this is the
-key it will see," not "the delivery layer dedupes on your behalf."
+`ProactiveNotification.idempotencyKey?: string` is forwarded into the
+outbound message metadata (`OutboundMessage.metadata.idempotencyKey`)
+and onto the `InboxEnvelope.metadata` for inbox routing. This is a
+**metadata pass-through only** — the current `ChannelAdapter` contract
+has no idempotency field, so an adapter receives the key only if it
+chooses to inspect `metadata` and honor it independently.
+
+The delivery layer does NOT dedupe on the caller's behalf. Treat the
+key as observability/integration-grade plumbing for adapters that
+already have transport-side dedupe (e.g. Slack `client_msg_id`), not
+as a contract guarantee for retry safety. Until `ChannelAdapter`
+grows an explicit idempotency field, retrying after a `timed_out`
+delivery is **not** dedupe-safe even if you pass an `idempotencyKey`.
 
 ### Migration notes
 

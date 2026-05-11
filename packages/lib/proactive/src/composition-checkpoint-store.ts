@@ -138,6 +138,21 @@ export interface CompositionCheckpointStore {
    * `sqliteCompositionCheckpointStore`) implement it.
    */
   readonly list?: () => readonly CheckpointSnapshot[] | Promise<readonly CheckpointSnapshot[]>;
+  /**
+   * Capability flag declaring that this store rejects stale writes via
+   * the `seq` watermark — versioned saves drop when `seq <= stored.seq`,
+   * versioned deletes leave a tombstone that blocks late saves at
+   * `seq <= tombstone.seq`. Both built-in backends set this `true`.
+   *
+   * The executor uses this to decide whether it is safe to reset its
+   * internal store-op chain after a `withTimeout` stall: a chain reset
+   * lets the abandoned op race ahead of subsequent writes, which is
+   * only safe when the store rejects out-of-order commits. Custom
+   * stores that don't honor `seq` must leave this `undefined` / `false`
+   * — the executor then keeps the chain serialized so a late save
+   * cannot resurrect terminal state.
+   */
+  readonly seqAware?: boolean;
 }
 
 function isCheckpointValue(value: unknown, ancestors: Set<unknown>): boolean {
@@ -306,5 +321,6 @@ export function createInMemoryCheckpointStore(
       }
       return out;
     },
+    seqAware: true,
   };
 }
