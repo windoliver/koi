@@ -340,10 +340,10 @@ describe("mapMessages", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Non-text block rejection
+  // Multimodal / rich content mapping
   // ---------------------------------------------------------------------------
 
-  test("throws when image content is present", () => {
+  test("maps image content to OpenAI image_url parts", () => {
     const messages: readonly InboundMessage[] = [
       {
         content: [
@@ -354,10 +354,16 @@ describe("mapMessages", () => {
         timestamp: Date.now(),
       },
     ];
-    expect(() => mapMessages(messages, DEFAULT_COMPAT, true)).toThrow('"image"');
+    const result = mapMessages(messages, DEFAULT_COMPAT, true);
+    expect(result[0]?.role).toBe("user");
+    expect(result[0]?.content).toEqual([
+      { type: "text", text: "Look: " },
+      { type: "text", text: "[image: a cat]" },
+      { type: "image_url", image_url: { url: "https://img.png" } },
+    ]);
   });
 
-  test("throws when file content is present", () => {
+  test("degrades file content to text instead of dropping it", () => {
     const messages: readonly InboundMessage[] = [
       {
         content: [
@@ -367,10 +373,11 @@ describe("mapMessages", () => {
         timestamp: Date.now(),
       },
     ];
-    expect(() => mapMessages(messages, DEFAULT_COMPAT, true)).toThrow('"file"');
+    const result = mapMessages(messages, DEFAULT_COMPAT, true);
+    expect(result[0]?.content).toBe("[file: doc.pdf (application/pdf) https://f.pdf]");
   });
 
-  test("throws when button content is present", () => {
+  test("degrades button content to text instead of dropping it", () => {
     const messages: readonly InboundMessage[] = [
       {
         content: [{ kind: "button", label: "Click", action: "submit" }],
@@ -378,10 +385,11 @@ describe("mapMessages", () => {
         timestamp: Date.now(),
       },
     ];
-    expect(() => mapMessages(messages, DEFAULT_COMPAT, true)).toThrow('"button"');
+    const result = mapMessages(messages, DEFAULT_COMPAT, true);
+    expect(result[0]?.content).toBe("[button: Click]");
   });
 
-  test("throws when custom content is present", () => {
+  test("degrades custom content to text instead of dropping it", () => {
     const messages: readonly InboundMessage[] = [
       {
         content: [{ kind: "custom", type: "chart", data: { x: 1 } }],
@@ -389,7 +397,27 @@ describe("mapMessages", () => {
         timestamp: Date.now(),
       },
     ];
-    expect(() => mapMessages(messages, DEFAULT_COMPAT, true)).toThrow('"custom"');
+    const result = mapMessages(messages, DEFAULT_COMPAT, true);
+    expect(result[0]?.content).toBe('[custom: chart {"x":1}]');
+  });
+
+  test("buildRequestBody rejects image input unless vision capability is enabled", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "image", url: "https://img.png" }],
+          senderId: "user-1",
+          timestamp: Date.now(),
+        },
+      ],
+    };
+    expect(() => buildRequestBody(request, CONFIG)).toThrow("vision");
+    expect(() =>
+      buildRequestBody(request, {
+        ...CONFIG,
+        capabilities: { ...CONFIG.capabilities, vision: true },
+      }),
+    ).not.toThrow();
   });
 
   // ---------------------------------------------------------------------------

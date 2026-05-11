@@ -24,6 +24,7 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -100,6 +101,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   // through as if the selector never ran (#review-round48-F1). Bounded
   // by its own cap to avoid unbounded growth.
   const evictedTurns = new Set<TurnId>();
+  const turnSessions = new Map<TurnId, string>();
   // Hard cap on the number of distinct turns retained at once.
   // onAfterTurn is the primary cleanup but the engine does not fire
   // it reliably on every successful terminal turn, so without a
@@ -116,6 +118,13 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   // in place (#review-round49-F2).
   const MAX_SNAPSHOTS_PER_TURN = 256;
   const MAX_CALL_BINDINGS_PER_TURN = 1024;
+
+  function forgetTurn(turnId: TurnId): void {
+    turnSnapshots.delete(turnId);
+    callAllowlists.delete(turnId);
+    evictedTurns.delete(turnId);
+    turnSessions.delete(turnId);
+  }
 
   function evictOldTurns(currentTurnId: TurnId): void {
     while (turnSnapshots.size > MAX_RETAINED_TURNS) {
@@ -141,6 +150,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       const oldest = evictedTurns.values().next().value;
       if (oldest === undefined) break;
       evictedTurns.delete(oldest);
+      turnSessions.delete(oldest);
     }
   }
 
@@ -163,7 +173,9 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     m.set(callId, snapshot);
   }
 
-  function recordSnapshot(turnId: TurnId, allowed: ReadonlySet<string>): void {
+  function recordSnapshot(turnId: TurnId, sessionId: string, allowed: ReadonlySet<string>): void {
+    turnSessions.set(turnId, sessionId);
+    evictedTurns.delete(turnId);
     const list = turnSnapshots.get(turnId);
     if (list === undefined) {
       turnSnapshots.set(turnId, [allowed]);
@@ -206,11 +218,11 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   }
 
   function captureSnapshot(
-    turnId: TurnId,
+    ctx: TurnContext,
     allowed: ReadonlySet<string>,
   ): ReadonlySet<string> | undefined {
     if (!enforceFiltering) return undefined;
-    recordSnapshot(turnId, allowed);
+    recordSnapshot(ctx.turnId, ctx.session.sessionId, allowed);
     return allowed;
   }
 
@@ -220,7 +232,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     // fails closed on the deny-all case (#review-round11-F1,
     // #review-round16-F1).
     if (tools === undefined) {
-      const snapshot = captureSnapshot(ctx.turnId, new Set<string>());
+      const snapshot = captureSnapshot(ctx, new Set<string>());
       return { request, snapshot };
     }
 
@@ -259,15 +271,12 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
         // Caller explicitly opted into the round-31 multimodal pass-
         // through. Bind to the full advertised set under enforceFiltering
         // so tool_call_start callIds get an explicit snapshot.
-        const snapshot = captureSnapshot(ctx.turnId, new Set<string>(tools.map((t) => t.name)));
+        const snapshot = captureSnapshot(ctx, new Set<string>(tools.map((t) => t.name)));
         return { request, snapshot };
       }
       if (enforceFiltering) {
         const fallbackTools = tools.filter((t) => alwaysInclude.includes(t.name));
-        const snapshot = captureSnapshot(
-          ctx.turnId,
-          new Set<string>(fallbackTools.map((t) => t.name)),
-        );
+        const snapshot = captureSnapshot(ctx, new Set<string>(fallbackTools.map((t) => t.name)));
         return { request: { ...request, tools: fallbackTools }, snapshot };
       }
       return { request, snapshot: undefined };
@@ -288,10 +297,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
         // tool_call_* invoke a tool that was intentionally omitted
         // from this turn's advertised set (#review-round22-F2).
         const fallbackTools = tools.filter((t) => alwaysInclude.includes(t.name));
-        const snapshot = captureSnapshot(
-          ctx.turnId,
-          new Set<string>(fallbackTools.map((t) => t.name)),
-        );
+        const snapshot = captureSnapshot(ctx, new Set<string>(fallbackTools.map((t) => t.name)));
         return { request: { ...request, tools: fallbackTools }, snapshot };
       }
       return { request, snapshot: undefined };
@@ -300,7 +306,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     const nameSet = new Set<string>([...selectedNames.slice(0, maxTools), ...alwaysInclude]);
     const filteredTools = tools.filter((t) => nameSet.has(t.name));
 
-    const snapshot = captureSnapshot(ctx.turnId, new Set<string>(filteredTools.map((t) => t.name)));
+    const snapshot = captureSnapshot(ctx, new Set<string>(filteredTools.map((t) => t.name)));
 
     const metadata: JsonObject = {
       ...request.metadata,
@@ -420,8 +426,14 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       );
     },
     async onAfterTurn(ctx: TurnContext): Promise<void> {
-      turnSnapshots.delete(ctx.turnId);
-      callAllowlists.delete(ctx.turnId);
+      forgetTurn(ctx.turnId);
+    },
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      for (const [turnId, sessionId] of turnSessions) {
+        if (sessionId === ctx.sessionId) {
+          forgetTurn(turnId);
+        }
+      }
     },
   };
 }

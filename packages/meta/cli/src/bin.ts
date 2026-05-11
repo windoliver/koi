@@ -26,15 +26,15 @@ Usage:
 Commands:
   init [directory]       Create a new agent (planned; exits 2)
   start [manifest]       Start an agent interactively
-  serve [manifest]       Run agent headless HTTP service (planned; exits 2)
+  serve [manifest]       Run agent headless HTTP service
   tui                    Interactive terminal console
   sessions [list]        List chat sessions
-  logs [manifest]        View service logs (planned; exits 2)
-  status [manifest]      Check service status (planned; exits 2)
+  logs [manifest]        View service logs
+  status [manifest]      Check service status
   doctor [manifest]      Diagnose service health
   dream                  Run memory consolidation
-  stop [manifest]        Stop the service (planned; exits 2)
-  deploy [manifest]      Install/uninstall OS service (planned; exits 2)
+  stop [manifest]        Stop the service
+  deploy [manifest]      Install/uninstall OS service
   mcp <subcommand>       Manage MCP servers (list, auth, logout, debug)
   plugin <subcommand>    Manage plugins (install, remove, enable, disable, update, list)
   bg <subcommand>        Manage background agent sessions (ps, logs, kill, attach, detach)

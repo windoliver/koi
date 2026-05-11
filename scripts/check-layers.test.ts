@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  classifyPackageLayer,
   extractImportSpecifiers,
   hasSessionMapWithoutCleanup,
   isClassDeclaration,
@@ -16,6 +17,16 @@ import {
   scanFilesForViolations,
   scanMiddlewareForSessionLeaks,
 } from "./check-layers.js";
+
+describe("classifyPackageLayer", () => {
+  test("classifies explicitly listed L2 packages as L2", () => {
+    expect(classifyPackageLayer("@koi/daemon")).toBe("L2");
+  });
+
+  test("does not silently classify unknown packages as L2", () => {
+    expect(classifyPackageLayer("@koi/not-a-real-package")).toBe("unknown");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // isL0Violation — L0 source import predicate

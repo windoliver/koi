@@ -12,11 +12,18 @@ import { KoiRuntimeError } from "@koi/errors";
 import { createTagSelectTools } from "./select-strategy.js";
 import { createToolSelectorMiddleware } from "./tool-selector.js";
 
-function turnCtx(opts: { readonly turnIndex?: number } = {}): TurnContext {
+function turnCtx(
+  opts: { readonly turnIndex?: number; readonly session?: string } = {},
+): TurnContext {
   const rid = runId("run-1");
   const idx = opts.turnIndex ?? 0;
   return {
-    session: { agentId: "a", sessionId: sessionId("s-1"), runId: rid, metadata: {} },
+    session: {
+      agentId: "a",
+      sessionId: sessionId(opts.session ?? "s-1"),
+      runId: rid,
+      metadata: {},
+    },
     turnIndex: idx,
     turnId: turnId(rid, idx),
     messages: [],
@@ -957,6 +964,33 @@ describe("createToolSelectorMiddleware — execution-time enforcement", () => {
     await expect(
       wrapTool(ctx, { toolId: "anything", input: {} }, toolNext as never),
     ).resolves.toEqual({ output: "passed-through" });
+  });
+
+  test("onSessionEnd cleans only snapshots for the ended session", async () => {
+    const tools = [tool("safe")];
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => ["safe"],
+      minTools: 0,
+    });
+    const wrap = getWrap(mw);
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+
+    const endedCtx = turnCtx({ session: "ended", turnIndex: 1 });
+    const liveCtx = turnCtx({ session: "live", turnIndex: 2 });
+    await wrap(endedCtx, { messages: [userMsg("go")], tools }, async () => modelResponse());
+    await wrap(liveCtx, { messages: [userMsg("go")], tools }, async () => modelResponse());
+
+    await mw.onSessionEnd?.(endedCtx.session);
+
+    const toolNext = mock(async () => ({ output: "ok" }));
+    await expect(
+      wrapTool(endedCtx, { toolId: "safe", input: {} }, toolNext as never),
+    ).resolves.toEqual({ output: "ok" });
+
+    await expect(
+      wrapTool(liveCtx, { toolId: "safe", input: {} }, toolNext as never),
+    ).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 });
 

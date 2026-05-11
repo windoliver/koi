@@ -44,6 +44,44 @@ interface SubprocState {
 // IIFE (which runs on the microtask after spawn resolves) always attaches
 // in time.
 const PRUNE_GRACE_MS = 30_000;
+const SAFE_ENV_KEYS: readonly string[] = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "NODE_ENV",
+  "BUN_INSTALL",
+  "LANG",
+  "LC_ALL",
+];
+const FALLBACK_PATH = "/usr/local/bin:/usr/bin:/bin";
+
+function buildWorkerEnv(
+  overrides: Readonly<Record<string, string | null>> | undefined,
+): Record<string, string> {
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? FALLBACK_PATH,
+    HOME: process.env.HOME ?? "/tmp",
+    LANG: process.env.LANG ?? "en_US.UTF-8",
+    LC_ALL: process.env.LC_ALL ?? "en_US.UTF-8",
+  };
+
+  for (const key of SAFE_ENV_KEYS) {
+    const value = process.env[key];
+    if (typeof value === "string") env[key] = value;
+  }
+
+  if (overrides !== undefined) {
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v === null) {
+        delete env[k];
+      } else {
+        env[k] = v;
+      }
+    }
+  }
+
+  return env;
+}
 
 export function createSubprocessBackend(): WorkerBackend {
   const workers = new Map<WorkerId, SubprocState>();
@@ -79,20 +117,7 @@ export function createSubprocessBackend(): WorkerBackend {
       };
     }
 
-    // Build env using filter form — no `as` cast, strict-safe.
-    const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (typeof v === "string") env[k] = v;
-    }
-    if (request.env !== undefined) {
-      for (const [k, v] of Object.entries(request.env)) {
-        if (v === null) {
-          delete env[k];
-        } else {
-          env[k] = v;
-        }
-      }
-    }
+    const env = buildWorkerEnv(request.env);
 
     // Stdio defaults are security- and correctness-conservative:
     //   stdin: "ignore"  — workers do NOT inherit the supervisor's TTY.

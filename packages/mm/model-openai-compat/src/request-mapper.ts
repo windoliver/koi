@@ -7,8 +7,9 @@
  * - Tool call linkage uses metadata.callId (session-repair convention)
  */
 
-import type { InboundMessage, JsonObject, ModelRequest } from "@koi/core";
+import type { ContentBlock, InboundMessage, JsonObject, ModelRequest } from "@koi/core";
 import type {
+  ChatCompletionContentPart,
   ChatCompletionMessage,
   ChatCompletionTool,
   ChatCompletionToolCall,
@@ -76,22 +77,85 @@ function createIdNormalizer(): (id: string) => string {
 // Content extraction
 // ---------------------------------------------------------------------------
 
-/** Find the first non-text block kind in messages, or undefined if all text. */
-function findNonTextBlockKind(messages: readonly InboundMessage[]): string | undefined {
+/** Returns true if any message contains image content. */
+function containsImageContent(messages: readonly InboundMessage[]): boolean {
   for (const msg of messages) {
     for (const block of msg.content) {
-      if (block.kind !== "text") return block.kind;
+      if (block.kind === "image") return true;
     }
   }
-  return undefined;
+  return false;
 }
 
-/** Extract text content from a message's content blocks. */
-function extractText(msg: InboundMessage): string {
-  return msg.content
-    .filter((b): b is import("@koi/core").TextBlock => b.kind === "text")
-    .map((b) => b.text)
-    .join("");
+function stringifyCustomData(data: unknown): string {
+  try {
+    const json = JSON.stringify(data);
+    return json === undefined ? String(data) : json;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+/** Render a block as plain text when the target role cannot carry rich parts. */
+function renderBlockAsText(block: ContentBlock): string {
+  switch (block.kind) {
+    case "text":
+      return block.text;
+    case "image":
+      return block.alt !== undefined
+        ? `[image: ${block.alt} ${block.url}]`
+        : `[image: ${block.url}]`;
+    case "file": {
+      const name = block.name ?? "file";
+      return `[file: ${name} (${block.mimeType}) ${block.url}]`;
+    }
+    case "button":
+      return `[button: ${block.label}]`;
+    case "custom":
+      return `[custom: ${block.type} ${stringifyCustomData(block.data)}]`;
+    default: {
+      const _exhaustive: never = block;
+      return _exhaustive;
+    }
+  }
+}
+
+/** Extract text content from content blocks, preserving non-text as placeholders. */
+function renderContentAsText(content: readonly ContentBlock[]): string {
+  return content.map((block) => renderBlockAsText(block)).join("");
+}
+
+/**
+ * Map user content to Chat Completions content.
+ * Text-only messages retain the legacy string shape; rich messages use parts.
+ */
+function mapUserContent(
+  content: readonly ContentBlock[],
+): string | readonly ChatCompletionContentPart[] {
+  let hasImageContent = false;
+  const parts: ChatCompletionContentPart[] = [];
+
+  for (const block of content) {
+    if (block.kind === "text") {
+      if (block.text.length > 0) parts.push({ type: "text", text: block.text });
+      continue;
+    }
+
+    if (block.kind === "image") {
+      hasImageContent = true;
+      if (block.alt !== undefined && block.alt.length > 0) {
+        parts.push({ type: "text", text: `[image: ${block.alt}]` });
+      }
+      parts.push({ type: "image_url", image_url: { url: block.url } });
+      continue;
+    }
+
+    const text = renderBlockAsText(block);
+    if (text.length > 0) parts.push({ type: "text", text });
+  }
+
+  if (!hasImageContent) return renderContentAsText(content);
+  return parts;
 }
 
 /** Read a string from metadata, or undefined. */
@@ -167,7 +231,7 @@ function mapOneMessage(
   opts: MapOptions,
   normalizeId: (id: string) => string,
 ): ChatCompletionMessage {
-  const text = extractText(msg);
+  const text = renderContentAsText(msg.content);
   const role = resolveRole(msg, opts.trusted);
 
   if (role === "assistant") {
@@ -237,7 +301,7 @@ function mapOneMessage(
     return { role: "system", content: text };
   }
 
-  return { role: "user", content: text };
+  return { role: "user", content: mapUserContent(msg.content) };
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +382,19 @@ function maybeAddPromptCacheControl(
     const msg = messages[i];
     if (msg === undefined) continue;
     if (msg.role !== "user" && msg.role !== "assistant") continue;
-    if (typeof msg.content !== "string" || msg.content.length === 0) continue;
+    if (typeof msg.content !== "string") {
+      if (Array.isArray(msg.content)) {
+        const lastTextPart = [...msg.content]
+          .reverse()
+          .find((part) => part.type === "text" && part.text.length > 0);
+        if (lastTextPart !== undefined) {
+          Object.assign(lastTextPart, { cache_control: { type: "ephemeral" } });
+          return;
+        }
+      }
+      continue;
+    }
+    if (msg.content.length === 0) continue;
 
     // Convert string content to array format with cache_control.
     // We mutate via Object.assign to work around readonly types — this is
@@ -337,21 +413,12 @@ function maybeAddPromptCacheControl(
 /**
  * Convert Koi InboundMessage[] to OpenAI Chat Completions message array.
  * Preserves message roles, normalizes tool call IDs, fixes transcript ordering.
- * Throws if messages contain non-text content blocks.
  */
 export function mapMessages(
   messages: readonly InboundMessage[],
   compat: ResolvedCompat,
   trusted = false,
 ): readonly ChatCompletionMessage[] {
-  const unsupported = findNonTextBlockKind(messages);
-  if (unsupported !== undefined) {
-    throw new Error(
-      `Request contains "${unsupported}" content blocks but only text is supported. ` +
-        "Non-text content would be silently dropped.",
-    );
-  }
-
   const opts: MapOptions = { compat, trusted };
   const normalizeId = createIdNormalizer();
   const mapped = messages.map((msg) => mapOneMessage(msg, opts, normalizeId));
@@ -368,6 +435,13 @@ export function buildRequestBody(
   tools?: readonly ChatCompletionTool[],
 ): Record<string, unknown> {
   const messages: ChatCompletionMessage[] = [];
+
+  if (!config.capabilities.vision && containsImageContent(request.messages)) {
+    throw new Error(
+      "Request contains image content but model capabilities.vision is false. " +
+        "Enable vision for a vision-capable model before sending image blocks.",
+    );
+  }
 
   // System prompt from the trusted ModelRequest.systemPrompt field (set by L1
   // engine from agent manifest). NOT read from generic metadata to prevent

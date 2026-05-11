@@ -261,14 +261,6 @@ export const DEFAULT_CAPABILITIES: ModelCapabilities = {
 export function resolveConfig(config: OpenAICompatAdapterConfig): ResolvedConfig {
   const capabilities = { ...DEFAULT_CAPABILITIES, ...config.capabilities };
 
-  // Fail closed: do not advertise capabilities the adapter cannot serve.
-  if (capabilities.vision) {
-    throw new Error(
-      "Cannot set vision: true — multimodal request serialization is not yet implemented. " +
-        "The adapter would reject image/file content at request time.",
-    );
-  }
-
   const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
 
   return {
@@ -288,9 +280,29 @@ export function resolveConfig(config: OpenAICompatAdapterConfig): ResolvedConfig
 // OpenAI Chat Completions API shapes (minimal subset)
 // ---------------------------------------------------------------------------
 
+export interface ChatCompletionTextContentPart {
+  readonly type: "text";
+  readonly text: string;
+  /** Anthropic/OpenRouter prompt-cache extension. */
+  readonly cache_control?: { readonly type: "ephemeral" };
+}
+
+export interface ChatCompletionImageContentPart {
+  readonly type: "image_url";
+  readonly image_url: {
+    readonly url: string;
+  };
+}
+
+export type ChatCompletionContentPart =
+  | ChatCompletionTextContentPart
+  | ChatCompletionImageContentPart;
+
+export type ChatCompletionMessageContent = string | readonly ChatCompletionContentPart[] | null;
+
 export interface ChatCompletionMessage {
   readonly role: "system" | "user" | "assistant" | "tool";
-  readonly content: string | null;
+  readonly content: ChatCompletionMessageContent;
   readonly tool_calls?: readonly ChatCompletionToolCall[];
   readonly tool_call_id?: string;
   /** Tool result name — required by some providers. */
