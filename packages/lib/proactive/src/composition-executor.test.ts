@@ -28,6 +28,7 @@ function recordingCheckpointStore() {
     delete: (id) => {
       deletes.push(id);
     },
+    list: () => [],
   };
   return { store, saves, deletes };
 }
@@ -1888,6 +1889,9 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
       delete: () => {
         throw new Error("backend down");
       },
+      list: () => {
+        throw new Error("backend down");
+      },
     };
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
@@ -1965,6 +1969,37 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
 
     expect(saves[0]?.planHash).toBe("fixed-hash");
     expect(saves[1]?.planHash).toBe("fixed-hash");
+  });
+
+  test("requires_approval does NOT persist a failed snapshot", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-approval",
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+      estimatedCost: 1,
+      // plan-level approval gate — runs zero steps and returns requires_approval.
+      requiresApproval: true,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("requires_approval");
+    // No snapshot writes: approval-pending is tracked through the approval
+    // signal contract, not the checkpoint store. Persisting "failed" here
+    // would cause restart watchdogs to confuse pending-approval with true
+    // failure and trigger the wrong remediation.
+    expect(saves).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
   });
 
   test("without checkpointStore, no snapshot calls occur (behavior unchanged)", async () => {

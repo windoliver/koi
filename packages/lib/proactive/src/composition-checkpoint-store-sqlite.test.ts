@@ -17,6 +17,14 @@ function loadSync(store: CompositionCheckpointStore, id: string): CheckpointSnap
   return result;
 }
 
+function listSync(store: CompositionCheckpointStore): readonly CheckpointSnapshot[] {
+  const result = store.list();
+  if (result instanceof Promise) {
+    throw new Error("sqlite list unexpectedly returned a Promise");
+  }
+  return result;
+}
+
 function snapshot(overrides: Partial<CheckpointSnapshot> = {}): CheckpointSnapshot {
   return {
     executionId: "exec-1",
@@ -166,5 +174,65 @@ describe("sqliteCompositionCheckpointStore", () => {
 
     store.save(snapshot({ stepResults: [{ kind: "complete", n: 7 }] }));
     expect(loadSync(store, "exec-1")?.stepResults).toEqual([{ kind: "complete", n: 7 }]);
+  });
+
+  test("list returns every stored snapshot decoded; empty before any save", () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db);
+    expect(listSync(store)).toEqual([]);
+
+    store.save(snapshot({ executionId: "a", nextStepIndex: 1, stepResults: ["x"] }));
+    store.save(
+      snapshot({
+        executionId: "b",
+        nextStepIndex: 0,
+        stepResults: [],
+        phase: "failed",
+        savedAt: 2_000,
+      }),
+    );
+
+    const all = listSync(store);
+    const ids = all.map((s) => s.executionId).sort();
+    expect(ids).toEqual(["a", "b"]);
+    const byId = new Map(all.map((s) => [s.executionId, s]));
+    expect(byId.get("a")?.stepResults).toEqual(["x"]);
+    expect(byId.get("b")?.phase).toBe("failed");
+  });
+
+  test("load returns undefined on corrupt step_results JSON (no throw)", () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db);
+    store.save(snapshot());
+    // Corrupt the persisted row directly to simulate manual repair / drift.
+    db.prepare("UPDATE composition_checkpoint SET step_results = ? WHERE execution_id = ?").run(
+      "{not-json",
+      "exec-1",
+    );
+    expect(loadSync(store, "exec-1")).toBeUndefined();
+  });
+
+  test("load returns undefined when stored length disagrees with nextStepIndex", () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db);
+    store.save(snapshot());
+    // Persist a length-mismatched row to simulate post-write tampering.
+    db.prepare(
+      "UPDATE composition_checkpoint SET step_results = ?, next_step_index = ? WHERE execution_id = ?",
+    ).run("[]", "1", "exec-1");
+    expect(loadSync(store, "exec-1")).toBeUndefined();
+  });
+
+  test("list skips corrupt rows instead of throwing", () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db);
+    store.save(snapshot({ executionId: "good" }));
+    store.save(snapshot({ executionId: "bad" }));
+    db.prepare("UPDATE composition_checkpoint SET step_results = ? WHERE execution_id = ?").run(
+      "{broken",
+      "bad",
+    );
+    const all = listSync(store);
+    expect(all.map((s) => s.executionId)).toEqual(["good"]);
   });
 });
