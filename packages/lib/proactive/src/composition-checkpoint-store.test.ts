@@ -387,30 +387,65 @@ describe("createInMemoryCheckpointStore", () => {
     expect(reloaded?.seq).toBe(5);
   });
 
-  test("seq guard: delete tombstones the watermark so late save with older seq cannot resurrect", async () => {
-    const store = createInMemoryCheckpointStore();
-    await store.save({
-      executionId: "a",
-      planHash: "h",
-      nextStepIndex: 1,
-      stepResults: [1],
-      phase: "in_progress",
-      savedAt: 1,
-      seq: 5,
-    });
-    await store.delete("a");
-    // Late write with seq < watermark — must NOT recreate the execution.
-    await store.save({
-      executionId: "a",
-      planHash: "h",
-      nextStepIndex: 1,
-      stepResults: ["LATE"],
-      phase: "in_progress",
-      savedAt: 999,
-      seq: 4,
-    });
-    expect(await store.load("a")).toBeUndefined();
-  });
+  test(
+    "seq guard: VERSIONED delete tombstones the watermark so late save with " +
+      "older seq cannot resurrect",
+    async () => {
+      const store = createInMemoryCheckpointStore();
+      await store.save({
+        executionId: "a",
+        planHash: "h",
+        nextStepIndex: 1,
+        stepResults: [1],
+        phase: "in_progress",
+        savedAt: 1,
+        seq: 5,
+      });
+      // Versioned delete (seq provided): leaves a watermark tombstone.
+      await store.delete("a", 5);
+      // Late write with seq < watermark — must NOT recreate the execution.
+      await store.save({
+        executionId: "a",
+        planHash: "h",
+        nextStepIndex: 1,
+        stepResults: ["LATE"],
+        phase: "in_progress",
+        savedAt: 999,
+        seq: 4,
+      });
+      expect(await store.load("a")).toBeUndefined();
+    },
+  );
+
+  test(
+    "unversioned delete clears the watermark — parity with SQLite backend's " +
+      "physical-DELETE legacy semantics",
+    async () => {
+      const store = createInMemoryCheckpointStore();
+      await store.save({
+        executionId: "a",
+        planHash: "h",
+        nextStepIndex: 1,
+        stepResults: [1],
+        phase: "in_progress",
+        savedAt: 1,
+      });
+      await store.delete("a"); // no seq → physical delete + clear watermark
+      // Later legacy save() must be able to recreate the row, matching
+      // SQLite. Pre-fix, the in-memory store kept the watermark and
+      // would silently drop this save while SQLite would persist it.
+      await store.save({
+        executionId: "a",
+        planHash: "h",
+        nextStepIndex: 1,
+        stepResults: ["second"],
+        phase: "in_progress",
+        savedAt: 2,
+      });
+      const loaded = await store.load("a");
+      expect(loaded?.stepResults).toEqual(["second"]);
+    },
+  );
 
   test(
     "seq-versioned delete sets watermark even when no row exists, " +

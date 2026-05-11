@@ -652,7 +652,46 @@ export function createCompositionExecutor(
   // timeout as a swallowed failure (matches the "checkpoints are
   // observability-only" contract). `timeoutMs <= 0` opts out — only safe
   // for synchronous in-memory stores where awaiting cannot stall.
-  async function withTimeout<T>(op: () => Promise<T> | T, timeoutMs: number): Promise<void> {
+  async function withTimeout<T>(
+    op: () => Promise<T> | T,
+    timeoutMs: number,
+    skipChain: boolean = false,
+  ): Promise<void> {
+    // Seq-aware stores order by `seq` at the backend, so chain
+    // ordering is redundant — and harmful for terminal cleanup, which
+    // could otherwise queue behind a hung fire-and-forget step save
+    // and never reach the backend even after its own timeout (the
+    // chain-reset condition is checked against the queue head, and
+    // the terminal op typically isn't the head once chained). When
+    // skipChain=true on a seq-aware store, run the op independently
+    // so terminal delete is unblockable.
+    if (skipChain) {
+      if (timeoutMs <= 0) {
+        try {
+          await op();
+        } catch {
+          /* observability-only */
+        }
+        return;
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const tSentinel = Symbol("checkpoint-store-timeout-direct");
+      const tPromise = new Promise<typeof tSentinel>((resolve) => {
+        timer = setTimeout(() => resolve(tSentinel), timeoutMs);
+      });
+      try {
+        await Promise.race([
+          Promise.resolve()
+            .then(() => op())
+            .catch(() => {}),
+          tPromise,
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      return;
+    }
+
     // Chain this op behind any already-queued op so the backend sees
     // saves and the terminal delete in issue order. Swallow failures so
     // one bad op cannot poison the chain.
@@ -718,6 +757,13 @@ export function createCompositionExecutor(
     // first probe already happened.
     await ensureSeqSeeded(wait);
     const seq = nextSeq();
+    // Terminal saves (wait=true: failed-phase or preflight cleanup)
+    // bypass the chain on seq-aware stores so a hung fire-and-forget
+    // step save cannot strand the terminal write. The backend's seq
+    // guard handles ordering for us. Non-seq-aware stores keep
+    // chained writes — they have no out-of-order protection so
+    // chain ordering is the only ordering guarantee available.
+    const skipChain = wait && checkpointStoreSeqAware;
     const op = withTimeout(
       () =>
         checkpointStore.save({
@@ -730,6 +776,7 @@ export function createCompositionExecutor(
           seq,
         }),
       checkpointStoreTimeoutMs,
+      skipChain,
     );
     if (wait) {
       await op;
@@ -765,6 +812,7 @@ export function createCompositionExecutor(
           seq,
         }),
       checkpointStoreTimeoutMs,
+      checkpointStoreSeqAware, // skip chain on seq-aware backends
     );
   }
 
@@ -797,7 +845,14 @@ export function createCompositionExecutor(
     // re-probe is worth one extra bounded wait.
     await ensureSeqSeeded(true);
     const seq = nextSeq();
-    await withTimeout(() => checkpointStore.delete(executionId, seq), checkpointStoreTimeoutMs);
+    // Terminal delete bypasses the chain on seq-aware stores so a
+    // hung fire-and-forget step save cannot strand it. Backend seq
+    // guard rejects any abandoned save that lands after this.
+    await withTimeout(
+      () => checkpointStore.delete(executionId, seq),
+      checkpointStoreTimeoutMs,
+      checkpointStoreSeqAware,
+    );
   }
 
   async function emitGap(trigger: CompositionTrigger, step: CompositionStep): Promise<void> {

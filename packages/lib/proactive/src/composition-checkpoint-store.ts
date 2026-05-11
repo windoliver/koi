@@ -333,20 +333,25 @@ export function createInMemoryCheckpointStore(
           throw new Error(`delete: seq must be a non-negative integer (got ${String(seq)})`);
         }
       }
-      // Update the watermark before deleting the visible row so a late
-      // save() with an older seq cannot resurrect the row by inserting
-      // fresh. The watermark stays even after delete (tombstone). The
-      // explicit `seq` parameter ensures the watermark is set even when
-      // NO row exists yet — a timed-out save can finish later, and
-      // without a pre-emptive watermark its insert would succeed.
-      const stored = snapshots.get(id);
-      const candidates: number[] = [];
-      if (stored?.seq !== undefined) candidates.push(stored.seq);
-      if (seq !== undefined) candidates.push(seq);
-      if (candidates.length > 0) {
-        const prev = seqWatermarks.get(id) ?? 0;
-        seqWatermarks.set(id, Math.max(prev, ...candidates));
+      // Unversioned delete: physical wipe, matching the SQLite backend's
+      // legacy DELETE path. ALSO clears any prior watermark so a later
+      // unversioned save() for the same id can recreate the row —
+      // otherwise mixed-version flows (save with seq → delete without
+      // seq → save without seq) would silently black-hole the second
+      // save because the watermark guard treats it as a stale write.
+      if (seq === undefined) {
+        snapshots.delete(id);
+        seqWatermarks.delete(id);
+        return;
       }
+      // Versioned delete: tombstone watermark survives so a late save()
+      // with an older seq cannot resurrect the row. Stored row's seq
+      // and supplied seq both feed the watermark (Math.max).
+      const stored = snapshots.get(id);
+      const candidates: number[] = [seq];
+      if (stored?.seq !== undefined) candidates.push(stored.seq);
+      const prev = seqWatermarks.get(id) ?? 0;
+      seqWatermarks.set(id, Math.max(prev, ...candidates));
       snapshots.delete(id);
     },
     list: () => {
