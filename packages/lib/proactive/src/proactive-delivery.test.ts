@@ -880,7 +880,7 @@ describe("createProactiveDelivery", () => {
 
     // Caller mutates after send.
     content.push({ kind: "text", text: "INJECTED" });
-    metadata["tag"] = "CORRUPTED";
+    metadata.tag = "CORRUPTED";
 
     expect(captured).toHaveLength(1);
     expect(captured[0]?.content).toEqual([{ kind: "text", text: "original" }]);

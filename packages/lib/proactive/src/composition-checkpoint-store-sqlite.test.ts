@@ -18,6 +18,11 @@ function loadSync(store: CompositionCheckpointStore, id: string): CheckpointSnap
 }
 
 function listSync(store: CompositionCheckpointStore): readonly CheckpointSnapshot[] {
+  // Contract makes list() optional for backward compatibility; the SQLite
+  // backend always implements it, so a missing implementation is a bug.
+  if (store.list === undefined) {
+    throw new Error("sqlite store unexpectedly omitted list()");
+  }
   const result = store.list();
   if (result instanceof Promise) {
     throw new Error("sqlite list unexpectedly returned a Promise");
@@ -135,7 +140,7 @@ describe("sqliteCompositionCheckpointStore", () => {
     const store = sqliteCompositionCheckpointStore(db);
 
     const cyclic: Record<string, unknown> = {};
-    cyclic["self"] = cyclic;
+    cyclic.self = cyclic;
 
     expect(() => store.save(snapshot({ stepResults: [cyclic] }))).toThrow(/could not be encoded/u);
   });

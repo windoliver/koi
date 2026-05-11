@@ -1,8 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
   type CheckpointSnapshot,
+  type CompositionCheckpointStore,
   createInMemoryCheckpointStore,
 } from "./composition-checkpoint-store.js";
+
+// `list()` is optional on the public contract for backward compatibility,
+// but the in-memory backend always implements it. This helper asserts
+// presence so tests can call it without per-site narrowing.
+async function listAll(store: CompositionCheckpointStore): Promise<readonly CheckpointSnapshot[]> {
+  if (store.list === undefined) {
+    throw new Error("in-memory store unexpectedly omitted list()");
+  }
+  return await store.list();
+}
 
 describe("createInMemoryCheckpointStore", () => {
   test("load before any save returns undefined", async () => {
@@ -203,7 +214,7 @@ describe("createInMemoryCheckpointStore", () => {
   test("save throws when stepResults contain a cyclic object", () => {
     const store = createInMemoryCheckpointStore();
     const cyclic: Record<string, unknown> = { a: 1 };
-    cyclic["self"] = cyclic;
+    cyclic.self = cyclic;
     expect(() =>
       store.save({
         executionId: "exec-1",
@@ -322,7 +333,7 @@ describe("createInMemoryCheckpointStore", () => {
 
   test("list returns every stored snapshot; emptied after delete", async () => {
     const store = createInMemoryCheckpointStore();
-    expect(await store.list()).toEqual([]);
+    expect(await listAll(store)).toEqual([]);
 
     await store.save({
       executionId: "a",
@@ -341,12 +352,12 @@ describe("createInMemoryCheckpointStore", () => {
       savedAt: 2,
     });
 
-    const all = await store.list();
+    const all = await listAll(store);
     const ids = all.map((s) => s.executionId).sort();
     expect(ids).toEqual(["a", "b"]);
 
     await store.delete("a");
-    const remaining = await store.list();
+    const remaining = await listAll(store);
     expect(remaining.map((s) => s.executionId)).toEqual(["b"]);
   });
 
@@ -362,7 +373,7 @@ describe("createInMemoryCheckpointStore", () => {
     };
     await store.save(snap);
 
-    const listed = await store.list();
+    const listed = await listAll(store);
     // Mutate the returned object's nested field.
     const first = listed[0];
     if (first !== undefined) {

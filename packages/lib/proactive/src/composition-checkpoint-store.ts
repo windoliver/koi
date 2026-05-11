@@ -106,8 +106,17 @@ export interface CompositionCheckpointStore {
    * in any order. Hosts that only care about in-flight work should
    * filter by `phase === "in_progress"` (or `"failed"`); a successful
    * execution has already been `delete()`d by the executor.
+   *
+   * Optional for backward compatibility with hosts that wired an
+   * existing store before enumeration was part of the contract. Hosts
+   * that need restart recovery MUST implement it; hosts that only do
+   * keyed lookup (e.g. workflow engines that track executionId
+   * externally, such as Temporal) MAY omit it. Callers should feature-
+   * detect via `typeof store.list === "function"` before relying on it.
+   * Both backends shipped in this package (`createInMemoryCheckpointStore`,
+   * `sqliteCompositionCheckpointStore`) implement it.
    */
-  readonly list: () => readonly CheckpointSnapshot[] | Promise<readonly CheckpointSnapshot[]>;
+  readonly list?: () => readonly CheckpointSnapshot[] | Promise<readonly CheckpointSnapshot[]>;
 }
 
 function isCheckpointValue(value: unknown, ancestors: Set<unknown>): boolean {

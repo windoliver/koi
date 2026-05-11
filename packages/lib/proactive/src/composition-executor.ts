@@ -1199,7 +1199,17 @@ export function createCompositionExecutor(
           if (r.status === "executed") executedPrefix.push(r);
           else break;
         }
-        await saveProgress(plan, executedPrefix, "failed");
+        // Skip checkpoint write on zero-step preflight failures —
+        // stale-plan rejection, trigger mismatch, INVALID_PLAN before any
+        // claim, empty plan, unsupported first step, etc. None committed
+        // durable work and none are resumable; persisting them would let a
+        // restart watchdog sweeping `list()` loop retries on poison plans
+        // or page operators indefinitely. Only persist when at least one
+        // step actually executed (committed side effect OR completed
+        // executionLog short-circuit, both surfaced as ExecutedStepResult).
+        if (executedPrefix.length > 0) {
+          await saveProgress(plan, executedPrefix, "failed");
+        }
       }
       return finalize(trigger, plan, result, state.committedNewWork, state.acquiredSessionSlot);
     },

@@ -1971,6 +1971,37 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     expect(saves[1]?.planHash).toBe("fixed-hash");
   });
 
+  test("preflight failure with zero executed steps does NOT persist a failed snapshot", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-preflight",
+    });
+    // Trigger-id mismatch → returns INVALID_PLAN before any step runs.
+    const plan: CompositionPlan = {
+      triggerId: "trigger-other",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    expect(result.executedCount).toBe(0);
+    // Zero side effects committed, plan is non-resumable. Persisting a
+    // checkpoint would let a restart watchdog sweep `list()` and loop
+    // retries on a poison plan or page operators indefinitely.
+    expect(saves).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
+  });
+
   test("requires_approval does NOT persist a failed snapshot", async () => {
     const { scheduler } = schedulerStub();
     const { store, saves, deletes } = recordingCheckpointStore();
