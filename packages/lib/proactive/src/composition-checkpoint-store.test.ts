@@ -234,6 +234,58 @@ describe("createInMemoryCheckpointStore", () => {
     ).toThrow(/not JSON-serializable/);
   });
 
+  test("save accepts repeated references in acyclic graph (shared subobject)", () => {
+    const store = createInMemoryCheckpointStore();
+    const shared = { x: 1 };
+    expect(() =>
+      store.save({
+        executionId: "exec-1",
+        planHash: "h1",
+        nextStepIndex: 1,
+        stepResults: [{ a: shared, b: shared }],
+        phase: "in_progress",
+        savedAt: 1,
+      }),
+    ).not.toThrow();
+  });
+
+  test("post-save mutation of caller object does not affect persisted snapshot", async () => {
+    const store = createInMemoryCheckpointStore();
+    const result: { step: number; data: string[] } = { step: 0, data: ["a"] };
+    await store.save({
+      executionId: "exec-1",
+      planHash: "h1",
+      nextStepIndex: 1,
+      stepResults: [result],
+      phase: "in_progress",
+      savedAt: 1,
+    });
+    // Caller mutates after save — store must be unaffected.
+    result.step = 999;
+    result.data.push("CORRUPTED");
+    const loaded = await store.load("exec-1");
+    expect(loaded?.stepResults).toEqual([{ step: 0, data: ["a"] }]);
+  });
+
+  test("post-load mutation of returned snapshot does not affect persisted state", async () => {
+    const store = createInMemoryCheckpointStore();
+    await store.save({
+      executionId: "exec-1",
+      planHash: "h1",
+      nextStepIndex: 1,
+      stepResults: [{ step: 0 }],
+      phase: "in_progress",
+      savedAt: 1,
+    });
+    const first = await store.load("exec-1");
+    // Caller mutates the loaded snapshot's nested object via runtime access
+    // (TS readonly is compile-time only).
+    const stepResults = (first as unknown as { stepResults: { step: number }[] }).stepResults;
+    if (stepResults[0] !== undefined) stepResults[0].step = 999;
+    const second = await store.load("exec-1");
+    expect(second?.stepResults).toEqual([{ step: 0 }]);
+  });
+
   test("save accepts plain JSON values (string, number, bool, null, array, object)", () => {
     const store = createInMemoryCheckpointStore();
     expect(() =>
