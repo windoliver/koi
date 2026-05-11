@@ -196,4 +196,59 @@ describe("applyZoneVerdict", () => {
     expect(result.outcome).toBe("fall-through");
     expect(events.map((e) => e.event)).toContain("zone-sandbox-failed");
   });
+
+  it("fails closed when router selects a backend that does not match the zone's sandboxBackendId", async () => {
+    const ev = createZoneEvaluator({
+      zones: [
+        {
+          name: "cleanup",
+          match: { tools: ["bash"] },
+          action: "sandbox-then-auto",
+          maxRisk: "medium",
+          sandboxBackendId: "strict",
+        },
+      ],
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    const sandboxRouter = {
+      create: mock(async () => ({
+        ok: true as const,
+        value: {
+          instance: {
+            exec,
+            readFile: async () => new Uint8Array(),
+            writeFile: async () => {},
+            destroy,
+          },
+          decision: { selected: { name: "permissive" } },
+        },
+      })),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const { events, sink } = makeSink();
+    const result = await applyZoneVerdict({
+      query: { ...baseQuery, action: "bash", context: { command: "ls /tmp" } },
+      evaluator: ev,
+      sandboxRouter: sandboxRouter as unknown as Parameters<
+        typeof applyZoneVerdict
+      >[0]["sandboxRouter"],
+      auditSink: sink,
+    });
+    expect(result.outcome).toBe("fall-through");
+    expect(exec).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalled();
+    const failed = events.find((e) => e.event === "zone-sandbox-failed");
+    expect(failed).toBeDefined();
+    expect((failed?.meta as { reason?: string })?.reason).toMatch(/^backend-mismatch:/);
+  });
 });

@@ -100,7 +100,23 @@ export async function applyZoneVerdict(
       });
       return { outcome: "fall-through", verdict };
     }
-    const { instance } = created.value;
+    const { instance, decision } = created.value;
+    // Fail closed if the router didn't select the backend the zone policy
+    // pinned. Without this, a stricter backend could be silently substituted
+    // by an unrelated default adapter, weakening the policy intent.
+    const selectedName = decision?.selected?.name;
+    if (selectedName !== verdict.backendId) {
+      args.auditSink.record("zone-sandbox-failed", {
+        ...metaFromVerdict(verdict),
+        reason: `backend-mismatch:selected=${selectedName ?? "unknown"}`,
+      });
+      try {
+        await instance.destroy();
+      } catch {
+        // destroy errors during teardown are non-fatal
+      }
+      return { outcome: "fall-through", verdict };
+    }
     try {
       const result = await instance.exec("bash", ["-lc", command], { timeoutMs: 30_000 });
       if (result.exitCode === 0) {

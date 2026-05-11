@@ -307,27 +307,33 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       const { applyZoneVerdict } = await import("./zones-bridge.js");
       type ZoneAuditSink = import("./zones-bridge.js").ZoneAuditSink;
       type ZoneAuditMeta = import("./zones-bridge.js").ZoneAuditMeta;
+      const zoneStartMs = clock();
       const zoneSink: ZoneAuditSink = {
-        // Best-effort audit. The existing audit pipeline emits permission
-        // events via auditApprovalOutcome on grant/deny; here we mirror that
-        // pattern via console.debug if no richer channel is available.
-        // TODO(#1644 follow-up): wire to AuditSink with permissionEvent metadata.
+        // Emit each zone event as a permission_decision AuditEntry through the
+        // standard AuditSink.log() contract. Mirrors the approval-audit module
+        // so zone decisions land in the same durable channel as grant/deny.
         record: (event, meta: ZoneAuditMeta): void => {
-          if (auditSink !== undefined) {
-            try {
-              // Cast: the existing AuditSink.record shape is a tool_call entry;
-              // we extend its metadata with the permission event.
-              (auditSink as { record?: (entry: unknown) => void }).record?.({
-                kind: "tool_call",
-                principal: ctx.session.userId ?? "__anonymous__",
-                action: request.toolId,
-                resource,
-                metadata: { permissionEvent: event, ...meta },
-              });
-            } catch {
-              // never let audit emission affect control flow
-            }
-          }
+          if (auditSink === undefined) return;
+          const entry = {
+            schema_version: 2,
+            timestamp: clock(),
+            sessionId: ctx.session.sessionId as string,
+            agentId: ctx.session.agentId,
+            turnIndex: ctx.turnIndex,
+            kind: "permission_decision" as const,
+            toolName: request.toolId,
+            durationMs: clock() - zoneStartMs,
+            metadata: {
+              permissionEvent: event,
+              principal: ctx.session.userId ?? "__anonymous__",
+              resource,
+              ...meta,
+            } as JsonObject,
+          };
+          void auditSink.log(entry).catch((e: unknown) => {
+            // Log failures are isolated — never affect control flow.
+            void e;
+          });
         },
       };
       // Resolve a filesystem-meaningful resource for the zone query.

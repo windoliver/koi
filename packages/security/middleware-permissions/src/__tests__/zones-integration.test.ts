@@ -105,6 +105,47 @@ describe("zones integration with createPermissionsMiddleware", () => {
     expect(approvalHandler).toHaveBeenCalled();
   });
 
+  test("zone-auto emits a durable permission_decision audit entry via AuditSink.log()", async () => {
+    const evaluator = createZoneEvaluator({
+      zones: READ_ONLY_PROFILE,
+      scorer,
+    });
+    const logged: unknown[] = [];
+    const auditSink = {
+      log: async (entry: unknown): Promise<void> => {
+        logged.push(entry);
+      },
+    };
+    const mw = createPermissionsMiddleware({
+      backend: askBackend(),
+      resolveToolPath,
+      auditSink,
+      zones: { evaluator },
+    });
+    // Supply a never-called approval handler — middleware's "no handler" guard
+    // runs before zone interception in the current code path. Zones bypass
+    // prompting on auto-allow, so this mock must NOT be invoked.
+    const unusedHandler = mock(
+      async (): Promise<ApprovalDecision> => ({ kind: "deny", reason: "unused" }),
+    );
+    const ctx = makeTurnContext(unusedHandler);
+    await mw.wrapToolCall?.(
+      ctx,
+      makeToolRequest("read", { path: "/proj/readme.md" }),
+      noopToolHandler,
+    );
+    const zoneEntry = logged.find(
+      (e): e is { kind: string; metadata: { permissionEvent: string } } =>
+        typeof e === "object" &&
+        e !== null &&
+        (e as { kind?: unknown }).kind === "permission_decision" &&
+        (e as { metadata?: { permissionEvent?: unknown } }).metadata?.permissionEvent ===
+          "zone-auto",
+    );
+    expect(zoneEntry).toBeDefined();
+    expect(unusedHandler).not.toHaveBeenCalled();
+  });
+
   test("omitting zones config leaves prompt path unchanged", async () => {
     const approvalHandler = mock(async (): Promise<ApprovalDecision> => ({ kind: "allow" }));
     const mw = createPermissionsMiddleware({ backend: askBackend() });
