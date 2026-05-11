@@ -241,7 +241,20 @@ export interface CompositionExecutionContext {
    * emitted snapshot so hosts can detect plan drift between attempts.
    */
   readonly hashPlan?: ((plan: CompositionPlan) => string) | undefined;
+  /**
+   * Per-call timeout (ms) for `checkpointStore.save` and `.delete`.
+   * Defaults to 5_000. Checkpoint writes are observability-only and must
+   * never block the executor's structured result — a stalled SQLite lock,
+   * slow network-backed store, or Promise that never settles would
+   * otherwise strand `execute()` after side effects have already
+   * committed. On timeout the operation is abandoned and treated as a
+   * swallowed observability failure. Set to `0` or negative to disable
+   * the timeout (await indefinitely — only safe for in-memory stores).
+   */
+  readonly checkpointStoreTimeoutMs?: number | undefined;
 }
+
+const DEFAULT_CHECKPOINT_STORE_TIMEOUT_MS = 5_000;
 
 function defaultPlanHash(plan: CompositionPlan): string {
   return createHash("sha256")
@@ -495,11 +508,54 @@ export function createCompositionExecutor(
   const checkpointStore = context.checkpointStore;
   const executionId = context.executionId;
   const hashPlan = context.hashPlan ?? defaultPlanHash;
+  const checkpointStoreTimeoutMs =
+    context.checkpointStoreTimeoutMs ?? DEFAULT_CHECKPOINT_STORE_TIMEOUT_MS;
   // Validate at executor construction: wiring a store without an id is a
   // host configuration bug. Defer the surfaced error until execute() runs
   // so the contract (every call resolves to a structured result) holds.
   const missingExecutionId =
     checkpointStore !== undefined && (executionId === undefined || executionId === "");
+
+  // Bound observability-only store I/O so a stalled/hung backend cannot
+  // strand execute() after side effects have already committed. Treats
+  // timeout as a swallowed failure (matches the "checkpoints are
+  // observability-only" contract). `timeoutMs <= 0` opts out — only safe
+  // for synchronous in-memory stores where awaiting cannot stall.
+  async function withTimeout<T>(op: () => Promise<T> | T, timeoutMs: number): Promise<void> {
+    let opPromise: Promise<T> | T;
+    try {
+      opPromise = op();
+    } catch {
+      // Synchronous throw from save/delete — same observability-only policy.
+      return;
+    }
+    if (!(opPromise instanceof Promise)) return; // sync success
+    if (timeoutMs <= 0) {
+      try {
+        await opPromise;
+      } catch {
+        // observability-only
+      }
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutSentinel = Symbol("checkpoint-store-timeout");
+    const timeoutPromise = new Promise<typeof timeoutSentinel>((resolve) => {
+      timer = setTimeout(() => resolve(timeoutSentinel), timeoutMs);
+    });
+    try {
+      const winner = await Promise.race([
+        opPromise.then(
+          () => "ok" as const,
+          () => "err" as const,
+        ),
+        timeoutPromise,
+      ]);
+      void winner; // either branch is observability-only; nothing to surface
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
 
   async function saveProgress(
     plan: CompositionPlan,
@@ -507,30 +563,26 @@ export function createCompositionExecutor(
     phase: "in_progress" | "failed",
   ): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
-    try {
-      await checkpointStore.save({
-        executionId,
-        planHash: hashPlan(plan),
-        nextStepIndex: stepResults.length,
-        stepResults: stepResults.map((r) => r.output),
-        phase,
-        savedAt: now(),
-      });
-    } catch {
-      // Snapshot persistence is observability-only. A non-serializable
-      // step output, a backing-store write failure, or a hashPlan throw
-      // must never convert a structured executor result into an uncaught
-      // throw.
-    }
+    // Build the snapshot synchronously so hashPlan / output mapping
+    // failures are caught by withTimeout's sync-throw handler instead of
+    // turning into an uncaught rejection.
+    await withTimeout(
+      () =>
+        checkpointStore.save({
+          executionId,
+          planHash: hashPlan(plan),
+          nextStepIndex: stepResults.length,
+          stepResults: stepResults.map((r) => r.output),
+          phase,
+          savedAt: now(),
+        }),
+      checkpointStoreTimeoutMs,
+    );
   }
 
   async function deleteProgress(): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
-    try {
-      await checkpointStore.delete(executionId);
-    } catch {
-      // Same rationale as saveProgress — cleanup failure is observability-only.
-    }
+    await withTimeout(() => checkpointStore.delete(executionId), checkpointStoreTimeoutMs);
   }
 
   async function emitGap(trigger: CompositionTrigger, step: CompositionStep): Promise<void> {

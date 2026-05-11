@@ -2033,6 +2033,45 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     expect(deletes).toHaveLength(0);
   });
 
+  test("never-settling checkpoint store does not block step progression or final return", async () => {
+    const { scheduler } = schedulerStub();
+    // Build a store whose save/delete Promises never resolve. Without the
+    // bounded timeout, awaiting these would strand execute() forever
+    // after side effects had already committed.
+    const hungStore: CompositionCheckpointStore = {
+      save: () => new Promise<void>(() => {}),
+      delete: () => new Promise<void>(() => {}),
+      load: () => undefined,
+      list: () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: hungStore,
+      executionId: "exec-hung",
+      checkpointStoreTimeoutMs: 25,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const start = Date.now();
+    const result = await executor.execute(trigger(), plan);
+    const elapsed = Date.now() - start;
+
+    expect(result.status).toBe("executed");
+    expect(result.executedCount).toBe(1);
+    // Two store ops (in_progress save + final delete) each capped at 25ms.
+    // Generous upper bound to absorb event-loop jitter in CI.
+    expect(elapsed).toBeLessThan(500);
+  });
+
   test("without checkpointStore, no snapshot calls occur (behavior unchanged)", async () => {
     const { scheduler } = schedulerStub();
     // No store wired — but recording one to prove it stays untouched.
