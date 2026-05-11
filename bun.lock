@@ -1562,6 +1562,7 @@
         "@koi/agent-procfs": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
+        "@koi/approval-zones": "workspace:*",
         "@koi/artifacts": "workspace:*",
         "@koi/artifacts-s3": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
@@ -2196,12 +2197,14 @@
       "name": "@koi/middleware-permissions",
       "version": "0.0.0",
       "dependencies": {
-        "@koi/approval-zones": "workspace:*",
         "@koi/bash-ast": "workspace:*",
         "@koi/bash-classifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/approval-zones": "workspace:*",
         "@koi/sandbox-router": "workspace:*",
       },
     },
