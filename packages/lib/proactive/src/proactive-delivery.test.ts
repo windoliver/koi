@@ -989,7 +989,9 @@ describe("createProactiveDelivery", () => {
         ["email", email],
       ]),
       preferences: { preferredChannel: "slack" },
-      sendTimeoutMs: 50,
+      // High priority needs explicit opt-in for timeout-bounded
+      // behavior (sendTimeoutMs alone leaves high fallback intact).
+      highSendTimeoutMs: 50,
     });
     const r = await delivery.send({
       priority: "high",
@@ -1030,6 +1032,40 @@ describe("createProactiveDelivery", () => {
     });
     expect(calls).toEqual(["slack", "email"]);
   });
+
+  test(
+    "high: sendTimeoutMs alone does NOT apply to high — fallback still walks " +
+      "every channel past a hung preferred",
+    async () => {
+      const calls: string[] = [];
+      const slack = stubAdapter("slack", () => {
+        calls.push("slack");
+        // Hang briefly then reject so the test completes within
+        // reasonable time but the timeout would fire if active.
+        return new Promise<void>((_, reject) => {
+          setTimeout(() => reject(new Error("net")), 80);
+        });
+      });
+      const email = stubAdapter("email", async () => {
+        calls.push("email");
+      });
+      const delivery = createProactiveDelivery({
+        channels: new Map([
+          ["slack", slack],
+          ["email", email],
+        ]),
+        preferences: { preferredChannel: "slack" },
+        sendTimeoutMs: 20, // normal/urgent only — high path unaffected
+      });
+      const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+      expect(r).toEqual({
+        ok: true,
+        delivered: ["email"],
+        partialFailures: [{ channel: "slack", error: "net" }],
+      });
+      expect(calls).toEqual(["slack", "email"]);
+    },
+  );
 
   test("high: partialFailures field is OMITTED (not []) when no fallback was needed", async () => {
     // Preferred succeeds on first attempt → no partialFailures key at all.
@@ -1142,7 +1178,7 @@ describe("createProactiveDelivery", () => {
         ["email", email],
       ]),
       preferences: { preferredChannel: "slack" },
-      sendTimeoutMs: 50,
+      highSendTimeoutMs: 50,
     });
     const r = await delivery.send({
       priority: "high",

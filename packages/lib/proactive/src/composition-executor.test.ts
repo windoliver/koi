@@ -1843,28 +1843,34 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     expect(deletes).toHaveLength(0);
   });
 
-  test("returns INVALID_PLAN when checkpointStore is wired without executionId", async () => {
+  test(
+    "checkpointStore wired without executionId DEGRADES (execution proceeds; " +
+      "checkpoint writes disabled)",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const { store, saves, deletes } = recordingCheckpointStore();
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+      });
+
+      const result = await executor.execute(trigger(), twoStepPlan());
+
+      // Misconfiguration must not take down execution — checkpoint is
+      // observability-only and executionLog is the correctness source
+      // of truth. All checkpoint helpers no-op silently.
+      expect(result.status).toBe("executed");
+      expect(saves).toHaveLength(0);
+      expect(deletes).toHaveLength(0);
+    },
+  );
+
+  test("checkpointStore wired with executionId='' DEGRADES (no INVALID_PLAN)", async () => {
     const { scheduler } = schedulerStub();
-    const { store, saves, deletes } = recordingCheckpointStore();
-    const executor = createCompositionExecutor({
-      agentId: agentId("agent-1"),
-      scheduler,
-      notify: async () => ({ delivered: true }),
-      executionLog: inMemoryExecutionLog().log,
-      checkpointStore: store,
-    });
-
-    const result = await executor.execute(trigger(), twoStepPlan());
-
-    expect(result.status).toBe("failed");
-    expect(result.error).toMatchObject({ code: "INVALID_PLAN" });
-    expect(saves).toHaveLength(0);
-    expect(deletes).toHaveLength(0);
-  });
-
-  test("returns INVALID_PLAN when executionId is the empty string", async () => {
-    const { scheduler } = schedulerStub();
-    const { store } = recordingCheckpointStore();
+    const { store, saves } = recordingCheckpointStore();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
@@ -1876,8 +1882,8 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
 
     const result = await executor.execute(trigger(), twoStepPlan());
 
-    expect(result.status).toBe("failed");
-    expect(result.error).toMatchObject({ code: "INVALID_PLAN" });
+    expect(result.status).toBe("executed");
+    expect(saves).toHaveLength(0);
   });
 
   test("save failures are swallowed; executor still returns structured success", async () => {

@@ -583,28 +583,30 @@ priority requires a channel.
 ### Per-send timeout (Phase 4)
 
 `createProactiveDelivery({ sendTimeoutMs })` bounds every adapter
-`send()` call. Defaults to `undefined` (no timeout — Phase-3 behavior).
-When set, an adapter that does not resolve within `sendTimeoutMs` is
-treated as a failed attempt for that channel; the underlying promise
-is abandoned, not awaited.
+`send()` call for **`normal`, `low`, and `urgent` priorities only**.
+Defaults to `undefined` (no timeout — Phase-3 behavior). When set,
+an adapter that does not resolve within `sendTimeoutMs` is treated
+as a failed attempt for that channel; the underlying promise is
+abandoned, not awaited.
 
-**Important — timeout is terminal for `high` fallback.** The
-`ChannelAdapter` contract has no abort signal, so a timed-out send
-may still complete in the background and deliver. Falling through to
-a different channel after a timeout would risk double-delivery —
-`idempotencyKey` only dedupes *within* the same transport (e.g.
-Slack's message dedupe), never *across* (Slack and email don't share
-a delivery ledger). The implementation therefore stops the fallback
-walk on the first timeout and returns `reason: "timed_out"` with the
-in-flight slot still consumed (we may have delivered).
+**`high` priority is NOT covered by `sendTimeoutMs`.** Because
+adapters have no abort signal, a timed-out send may still complete
+in the background. If timeouts applied to `high`, a stuck preferred
+channel would short-circuit the fallback walk — falling through to a
+different transport risks double-delivery, and `idempotencyKey` is
+metadata-only (no cross-transport dedupe ledger). To preserve
+high-priority redundancy, `sendTimeoutMs` is therefore scoped to
+non-`high` priorities by default.
 
-This means a stuck preferred channel will short-circuit
-high-priority fallback. Hosts that need timeout-bounded recovery for
-high priority must either (a) ensure adapters never hang past the
-budget, or (b) keep `sendTimeoutMs` unset on the high path and rely
-on adapter-level timeouts that reject (not hang) on failure. A
-future revision of `ChannelAdapter` may add `AbortSignal` support;
-when that lands, fallback after timeout becomes safe.
+**`highSendTimeoutMs` (opt-in):** Hosts that explicitly want
+timeout-bounded behavior for `high` set this separately. When set,
+the first timed-out attempt becomes terminal — `reason: "timed_out"`
+is returned with the in-flight rate-limit slot still consumed.
+Choose this only when (a) you accept that a stuck preferred channel
+will short-circuit fallback, or (b) the underlying adapter rejects
+(rather than hangs) within the budget. A future `ChannelAdapter`
+revision with `AbortSignal` support will make timeout-after-fallback
+safe; until then, leave `highSendTimeoutMs` unset.
 
 **New `DeliveryResult` failure reason — `"timed_out"`:**
 
@@ -660,4 +662,5 @@ delivery is **not** dedupe-safe even if you pass an `idempotencyKey`.
 | `DeliveryResult.reason` adds `"timed_out"` | additive enum widening | extend exhaustive switches |
 | `DeliveryResult.partialFailures` (ok-arm) | optional field, omitted when empty | no action unless you want timeout/failure observability on partial success |
 | `ProactiveNotification.idempotencyKey` | optional input | no action; pass through if your adapter supports it |
-| `ProactiveDeliveryConfig.sendTimeoutMs` | optional input, default unset | no action; opt in per host |
+| `ProactiveDeliveryConfig.sendTimeoutMs` | optional input, default unset, applies to normal/low/urgent only | no action; opt in per host |
+| `ProactiveDeliveryConfig.highSendTimeoutMs` | optional input, default unset, high-priority only | leave unset to preserve high fallback under hung preferred channel |
