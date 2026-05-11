@@ -314,6 +314,31 @@ describe("sqliteCompositionCheckpointStore", () => {
     expect(loadSync(store, "exec-1")).toBeUndefined();
   });
 
+  test(
+    "seq-versioned delete UPSERTs a tombstone even when no row exists, " +
+      "so a delayed save with older seq cannot resurrect",
+    () => {
+      const db = new Database(":memory:");
+      const store = sqliteCompositionCheckpointStore(db);
+      // Simulate the timeout race: terminal delete fires BEFORE any save
+      // has reached the backend. With UPDATE-only delete this is a no-op
+      // and a delayed save then succeeds — resurrecting an execution that
+      // the executor considers finished.
+      store.delete("exec-1", 10);
+      // Delayed save arriving AFTER the tombstone, with an older seq.
+      store.save(snapshot({ stepResults: ["LATE"], seq: 5 }));
+      expect(loadSync(store, "exec-1")).toBeUndefined();
+      // Even a save with a newer seq cannot resurrect with seq <= tombstone.
+      store.save(snapshot({ stepResults: ["NOPE"], seq: 10 }));
+      expect(loadSync(store, "exec-1")).toBeUndefined();
+      // Strictly-newer seq DOES lift the tombstone (terminal delete is not
+      // permanent — the same executionId can be re-used by an explicit
+      // restart with a fresh seq).
+      store.save(snapshot({ stepResults: ["NEW"], seq: 11 }));
+      expect(loadSync(store, "exec-1")?.stepResults).toEqual(["NEW"]);
+    },
+  );
+
   test("seq guard: strictly-newer save after delete lifts the tombstone", () => {
     const db = new Database(":memory:");
     const store = sqliteCompositionCheckpointStore(db);

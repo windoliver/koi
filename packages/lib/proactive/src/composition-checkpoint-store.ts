@@ -108,7 +108,16 @@ export interface CompositionCheckpointStore {
   readonly load: (
     executionId: string,
   ) => CheckpointSnapshot | undefined | Promise<CheckpointSnapshot | undefined>;
-  readonly delete: (executionId: string) => void | Promise<void>;
+  /**
+   * Delete the snapshot for an executionId. Optional `seq` lets the
+   * caller carry the high-watermark into the deletion so a stale save
+   * arriving AFTER this delete cannot resurrect the execution by
+   * inserting a fresh row. Backends honoring seq SHOULD persist a
+   * tombstone at the supplied seq even if no row currently exists for
+   * this id. Callers that omit `seq` get last-writer-wins delete
+   * semantics (legacy behavior).
+   */
+  readonly delete: (executionId: string, seq?: number) => void | Promise<void>;
   /**
    * Enumerate stored snapshots. The primary restart-recovery primitive:
    * after a crash the host typically does NOT know which execution ids
@@ -255,14 +264,20 @@ export function createInMemoryCheckpointStore(
       // state by editing the returned reference's nested fields.
       return stored === undefined ? undefined : structuredClone(stored);
     },
-    delete: (id) => {
+    delete: (id, seq) => {
       // Update the watermark before deleting the visible row so a late
       // save() with an older seq cannot resurrect the row by inserting
-      // fresh. The watermark stays even after delete (tombstone).
+      // fresh. The watermark stays even after delete (tombstone). The
+      // explicit `seq` parameter ensures the watermark is set even when
+      // NO row exists yet — a timed-out save can finish later, and
+      // without a pre-emptive watermark its insert would succeed.
       const stored = snapshots.get(id);
-      if (stored?.seq !== undefined) {
+      const candidates: number[] = [];
+      if (stored?.seq !== undefined) candidates.push(stored.seq);
+      if (seq !== undefined) candidates.push(seq);
+      if (candidates.length > 0) {
         const prev = seqWatermarks.get(id) ?? 0;
-        seqWatermarks.set(id, Math.max(prev, stored.seq));
+        seqWatermarks.set(id, Math.max(prev, ...candidates));
       }
       snapshots.delete(id);
     },

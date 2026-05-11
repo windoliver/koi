@@ -172,10 +172,25 @@ export function sqliteCompositionCheckpointStore(
     `SELECT plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone ` +
       `FROM ${table} WHERE execution_id = ?`,
   );
-  // Delete leaves a tombstone row with the existing seq watermark so a
+  // Delete leaves a tombstone row with the supplied seq watermark so a
   // late save() with an older seq cannot resurrect the execution. The
   // tombstone row is invisible to load() and list() (filtered).
-  const deleteTombstone: SqliteStatementLike = db.prepare(
+  //
+  // Crucially this is an UPSERT, not an UPDATE: a plain UPDATE is a
+  // no-op when no row exists yet, leaving the door open for a delayed
+  // save to insert fresh state after terminal success. UPSERT inserts
+  // a tombstone row even when the executor has never written one,
+  // guaranteeing the seq watermark is present BEFORE any late save can
+  // attempt its INSERT-or-UPDATE.
+  const deleteTombstoneVersioned: SqliteStatementLike = db.prepare(
+    `INSERT INTO ${table} (execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone) ` +
+      `VALUES (?, '', 0, '[]', 'completed', 0, ?, 1) ` +
+      `ON CONFLICT(execution_id) DO UPDATE SET tombstone = 1, seq = MAX(seq, excluded.seq)`,
+  );
+  // Legacy unversioned delete for callers that pass no seq. Plain
+  // tombstone UPDATE: matches existing rows only. Late saves remain
+  // possible but the caller opted out of the seq guard.
+  const deleteTombstoneLegacy: SqliteStatementLike = db.prepare(
     `UPDATE ${table} SET tombstone = 1 WHERE execution_id = ?`,
   );
   const selectAllStmt = db.prepare(
@@ -279,11 +294,20 @@ export function sqliteCompositionCheckpointStore(
       }
       return outcome.snapshot;
     },
-    delete: (id) => {
-      // Tombstone instead of DELETE so a late save() with an older seq
-      // cannot resurrect the execution. Tombstone rows are filtered from
-      // load() and list() output.
-      deleteTombstone.run(id);
+    delete: (id, seq) => {
+      // Versioned tombstone UPSERT when caller supplies seq — the
+      // watermark is persisted even when no row exists yet, so a
+      // delayed save that finishes after this delete cannot succeed
+      // (its INSERT will conflict with the tombstone; its UPDATE will
+      // be blocked by the seq guard).
+      if (seq !== undefined) {
+        if (!Number.isInteger(seq) || seq < 0) {
+          throw new Error(`delete: seq must be a non-negative integer (got ${String(seq)})`);
+        }
+        deleteTombstoneVersioned.run(id, String(seq));
+      } else {
+        deleteTombstoneLegacy.run(id);
+      }
     },
     list: () => {
       const rows = selectAll.all();

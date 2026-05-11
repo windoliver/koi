@@ -412,6 +412,38 @@ describe("createInMemoryCheckpointStore", () => {
     expect(await store.load("a")).toBeUndefined();
   });
 
+  test(
+    "seq-versioned delete sets watermark even when no row exists, " +
+      "so a delayed save with older seq cannot resurrect",
+    async () => {
+      const store = createInMemoryCheckpointStore();
+      // Delete before any save: the only effect must be that future
+      // saves with seq <= 10 are silently dropped.
+      await store.delete("a", 10);
+      await store.save({
+        executionId: "a",
+        planHash: "h",
+        nextStepIndex: 1,
+        stepResults: ["LATE"],
+        phase: "in_progress",
+        savedAt: 1,
+        seq: 5,
+      });
+      expect(await store.load("a")).toBeUndefined();
+      // Strictly-newer seq must succeed (same id can be re-used).
+      await store.save({
+        executionId: "a",
+        planHash: "h",
+        nextStepIndex: 1,
+        stepResults: ["NEW"],
+        phase: "in_progress",
+        savedAt: 2,
+        seq: 11,
+      });
+      expect((await store.load("a"))?.stepResults).toEqual(["NEW"]);
+    },
+  );
+
   test("seq guard: a strictly-newer save overwrites the previous", async () => {
     const store = createInMemoryCheckpointStore();
     await store.save({
