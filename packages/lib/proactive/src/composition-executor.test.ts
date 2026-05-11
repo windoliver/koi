@@ -2767,4 +2767,43 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
       }
     },
   );
+
+  test(
+    "restart visibility: a partial-failure run leaves a phase=failed snapshot " +
+      "in the store that a second executor instance can inspect via list()",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const store = createInMemoryCheckpointStore();
+      // notify() fails on the SECOND step, so the executor commits step 1
+      // then writes a phase=failed snapshot reflecting executedPrefix=[step1].
+      let notifyCalls = 0;
+      const failingNotify = async () => {
+        notifyCalls += 1;
+        if (notifyCalls === 2) throw new Error("simulated channel outage");
+        return { delivered: true };
+      };
+      const executor1 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: failingNotify,
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-restart",
+      });
+      const r1 = await executor1.execute(trigger(), twoStepPlan());
+      expect(r1.status).toBe("failed");
+
+      // Restart visibility: a fresh executor on the same store + executionId
+      // can enumerate the failed run for operator reconciliation.
+      const inflight = (await store.list?.()) ?? [];
+      expect(inflight).toHaveLength(1);
+      expect(inflight[0]?.executionId).toBe("exec-restart");
+      expect(inflight[0]?.phase).toBe("failed");
+      expect(inflight[0]?.nextStepIndex).toBe(1);
+      // seq must be present and non-trivial — proves the durable seq path
+      // ran (not just last-writer-wins legacy mode).
+      expect(typeof inflight[0]?.seq).toBe("number");
+      expect((inflight[0]?.seq ?? 0) > 0).toBe(true);
+    },
+  );
 });

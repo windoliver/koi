@@ -492,4 +492,59 @@ describe("sqliteCompositionCheckpointStore", () => {
     const all = listSync(store);
     expect(all.map((s) => s.executionId)).toEqual(["good"]);
   });
+
+  test("crash recovery: snapshot + watermark survive db close and reopen on file-backed db", () => {
+    const path = `/tmp/koi-checkpoint-crash-${Date.now()}-${Math.random()}.sqlite`;
+    try {
+      // Write phase.
+      {
+        const db = new Database(path);
+        const store = sqliteCompositionCheckpointStore(db);
+        store.save(snapshot({ executionId: "survivor", stepResults: ["one"], seq: 42 }));
+        store.delete("survivor", 50); // versioned delete → tombstone watermark = 50
+        db.close();
+      }
+      // Reopen phase.
+      {
+        const db = new Database(path);
+        const store = sqliteCompositionCheckpointStore(db);
+        // load() hides tombstones.
+        expect(loadSync(store, "survivor")).toBeUndefined();
+        // getWatermark() surfaces the durable tombstone seq.
+        expect(store.getWatermark?.("survivor")).toBe(50);
+        // A new versioned save at seq <= 50 must still be rejected.
+        store.save(snapshot({ executionId: "survivor", stepResults: ["stale"], seq: 50 }));
+        expect(loadSync(store, "survivor")).toBeUndefined();
+        // Strictly-newer save lifts the tombstone (durable monotonicity).
+        store.save(snapshot({ executionId: "survivor", stepResults: ["new"], seq: 51 }));
+        expect(loadSync(store, "survivor")?.stepResults).toEqual(["new"]);
+        db.close();
+      }
+    } finally {
+      try {
+        require("node:fs").unlinkSync(path);
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
+  test("concurrent versioned deletes: both calls succeed, watermark is the max", async () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db);
+    store.save(snapshot({ stepResults: ["x"], seq: 5 }));
+    // Two callers race delete with different seqs. bun:sqlite is sync
+    // per-statement; this exercises the UPSERT MAX(seq) clause rather
+    // than true concurrency, but the assertion is what matters: no
+    // resurrection of the older state regardless of issue order.
+    await Promise.all([
+      Promise.resolve().then(() => store.delete("exec-1", 10)),
+      Promise.resolve().then(() => store.delete("exec-1", 20)),
+    ]);
+    expect(loadSync(store, "exec-1")).toBeUndefined();
+    expect(store.getWatermark?.("exec-1")).toBe(20);
+    // Late save at seq 15 must NOT resurrect — the max-seq tombstone wins.
+    store.save(snapshot({ stepResults: ["LATE"], seq: 15 }));
+    expect(loadSync(store, "exec-1")).toBeUndefined();
+  });
 });
