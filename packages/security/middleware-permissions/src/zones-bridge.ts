@@ -91,25 +91,14 @@ function metaFromVerdict(v: ZoneVerdict): ZoneAuditMeta {
   };
 }
 
-export async function applyZoneVerdict(
+type ZoneSandboxVerdict = Extract<ZoneVerdict, { readonly kind: "sandbox" }>;
+type SandboxOk = Extract<Awaited<ReturnType<SandboxRouter["create"]>>, { readonly ok: true }>;
+type SandboxCreated = SandboxOk["value"];
+
+async function runSandboxPreview(
   args: ApplyZoneVerdictArgs,
+  verdict: ZoneSandboxVerdict,
 ): Promise<ApplyZoneVerdictResult> {
-  const verdict = await args.evaluator.evaluate(args.query);
-
-  if (verdict.kind === "ask") {
-    if (verdict.zone !== undefined) {
-      // Zone matched but bailed (risk-exceeded / non-bash-tool / missing-backend / *-error).
-      args.auditSink.record("zone-ask-passthrough", metaFromVerdict(verdict));
-    }
-    return { outcome: "fall-through", verdict };
-  }
-
-  if (verdict.kind === "auto") {
-    args.auditSink.record("zone-auto", metaFromVerdict(verdict));
-    return { outcome: "auto-allow", verdict };
-  }
-
-  // sandbox
   if (args.sandboxRouter === undefined) {
     args.auditSink.record("zone-sandbox-failed", {
       ...metaFromVerdict(verdict),
@@ -117,9 +106,7 @@ export async function applyZoneVerdict(
     });
     return { outcome: "fall-through", verdict };
   }
-
   args.auditSink.record("zone-sandbox-preview", metaFromVerdict(verdict));
-
   const command =
     typeof args.query.context?.command === "string" ? (args.query.context.command as string) : "";
   if (command === "") {
@@ -129,10 +116,10 @@ export async function applyZoneVerdict(
     });
     return { outcome: "fall-through", verdict };
   }
-
   try {
-    const bashPaths = extractBashPathTargets(command);
-    const created = await args.sandboxRouter.create(buildPreviewProfile(bashPaths));
+    const created = await args.sandboxRouter.create(
+      buildPreviewProfile(extractBashPathTargets(command)),
+    );
     if (!created.ok) {
       args.auditSink.record("zone-sandbox-failed", {
         ...metaFromVerdict(verdict),
@@ -140,45 +127,7 @@ export async function applyZoneVerdict(
       });
       return { outcome: "fall-through", verdict };
     }
-    const { instance, decision } = created.value;
-    // Fail closed if the router didn't select the backend the zone policy
-    // pinned. Without this, a stricter backend could be silently substituted
-    // by an unrelated default adapter, weakening the policy intent.
-    const selectedName = decision?.selected?.name;
-    if (selectedName !== verdict.backendId) {
-      args.auditSink.record("zone-sandbox-failed", {
-        ...metaFromVerdict(verdict),
-        reason: `backend-mismatch:selected=${selectedName ?? "unknown"}`,
-      });
-      try {
-        await instance.destroy();
-      } catch {
-        // destroy errors during teardown are non-fatal
-      }
-      return { outcome: "fall-through", verdict };
-    }
-    try {
-      const result = await instance.exec("bash", ["-lc", command], { timeoutMs: 30_000 });
-      if (result.exitCode === 0) {
-        args.auditSink.record("zone-sandbox-ok", {
-          ...metaFromVerdict(verdict),
-          sandboxExitCode: result.exitCode,
-        });
-        args.auditSink.record("zone-auto", metaFromVerdict(verdict));
-        return { outcome: "auto-allow", verdict };
-      }
-      args.auditSink.record("zone-sandbox-failed", {
-        ...metaFromVerdict(verdict),
-        sandboxExitCode: result.exitCode,
-      });
-      return { outcome: "fall-through", verdict };
-    } finally {
-      try {
-        await instance.destroy();
-      } catch {
-        // destroy errors are not actionable here
-      }
-    }
+    return await execInSandbox(args, verdict, command, created.value);
   } catch (err) {
     args.auditSink.record("zone-sandbox-failed", {
       ...metaFromVerdict(verdict),
@@ -186,4 +135,69 @@ export async function applyZoneVerdict(
     });
     return { outcome: "fall-through", verdict };
   }
+}
+
+async function execInSandbox(
+  args: ApplyZoneVerdictArgs,
+  verdict: ZoneSandboxVerdict,
+  command: string,
+  created: SandboxCreated,
+): Promise<ApplyZoneVerdictResult> {
+  const { instance, decision } = created;
+  // Fail closed if the router didn't select the backend the zone policy
+  // pinned. Without this, a stricter backend could be silently substituted
+  // by an unrelated default adapter, weakening the policy intent.
+  const selectedName = decision?.selected?.name;
+  if (selectedName !== verdict.backendId) {
+    args.auditSink.record("zone-sandbox-failed", {
+      ...metaFromVerdict(verdict),
+      reason: `backend-mismatch:selected=${selectedName ?? "unknown"}`,
+    });
+    try {
+      await instance.destroy();
+    } catch {
+      // destroy errors during teardown are non-fatal
+    }
+    return { outcome: "fall-through", verdict };
+  }
+  try {
+    const result = await instance.exec("bash", ["-lc", command], { timeoutMs: 30_000 });
+    if (result.exitCode === 0) {
+      args.auditSink.record("zone-sandbox-ok", {
+        ...metaFromVerdict(verdict),
+        sandboxExitCode: result.exitCode,
+      });
+      args.auditSink.record("zone-auto", metaFromVerdict(verdict));
+      return { outcome: "auto-allow", verdict };
+    }
+    args.auditSink.record("zone-sandbox-failed", {
+      ...metaFromVerdict(verdict),
+      sandboxExitCode: result.exitCode,
+    });
+    return { outcome: "fall-through", verdict };
+  } finally {
+    try {
+      await instance.destroy();
+    } catch {
+      // destroy errors are not actionable here
+    }
+  }
+}
+
+export async function applyZoneVerdict(
+  args: ApplyZoneVerdictArgs,
+): Promise<ApplyZoneVerdictResult> {
+  const verdict = await args.evaluator.evaluate(args.query);
+  if (verdict.kind === "ask") {
+    if (verdict.zone !== undefined) {
+      // Zone matched but bailed (risk-exceeded / non-bash-tool / missing-backend / *-error).
+      args.auditSink.record("zone-ask-passthrough", metaFromVerdict(verdict));
+    }
+    return { outcome: "fall-through", verdict };
+  }
+  if (verdict.kind === "auto") {
+    args.auditSink.record("zone-auto", metaFromVerdict(verdict));
+    return { outcome: "auto-allow", verdict };
+  }
+  return runSandboxPreview(args, verdict);
 }
