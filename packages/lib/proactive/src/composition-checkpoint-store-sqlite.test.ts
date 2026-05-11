@@ -228,6 +228,62 @@ describe("sqliteCompositionCheckpointStore", () => {
     expect(loadSync(store, "exec-1")).toBeUndefined();
   });
 
+  test("onCorruptRow surfaces decode failures from list() — corrupt rows are not silently lost", () => {
+    const db = new Database(":memory:");
+    const corrupt: { executionId: string | undefined; reason: string }[] = [];
+    const store = sqliteCompositionCheckpointStore(db, {
+      onCorruptRow: (record) => {
+        corrupt.push({ executionId: record.executionId, reason: record.reason });
+      },
+    });
+    store.save(snapshot({ executionId: "good" }));
+    store.save(snapshot({ executionId: "bad" }));
+    db.prepare("UPDATE composition_checkpoint SET step_results = ? WHERE execution_id = ?").run(
+      "{broken",
+      "bad",
+    );
+    const all = listSync(store);
+    expect(all.map((s) => s.executionId)).toEqual(["good"]);
+    // "bad" must be reported so a restart watchdog does not silently lose it.
+    expect(corrupt.length).toBeGreaterThan(0);
+    expect(corrupt.find((c) => c.executionId === "bad")).toBeDefined();
+  });
+
+  test("onCorruptRow surfaces decode failures from load() too", () => {
+    const db = new Database(":memory:");
+    const corrupt: { executionId: string | undefined; reason: string }[] = [];
+    const store = sqliteCompositionCheckpointStore(db, {
+      onCorruptRow: (record) => {
+        corrupt.push({ executionId: record.executionId, reason: record.reason });
+      },
+    });
+    store.save(snapshot());
+    db.prepare("UPDATE composition_checkpoint SET step_results = ? WHERE execution_id = ?").run(
+      "{not-json",
+      "exec-1",
+    );
+    expect(loadSync(store, "exec-1")).toBeUndefined();
+    expect(corrupt.find((c) => c.executionId === "exec-1")).toBeDefined();
+  });
+
+  test("a throwing onCorruptRow callback does not break recovery", () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db, {
+      onCorruptRow: () => {
+        throw new Error("callback boom");
+      },
+    });
+    store.save(snapshot({ executionId: "good" }));
+    store.save(snapshot({ executionId: "bad" }));
+    db.prepare("UPDATE composition_checkpoint SET step_results = ? WHERE execution_id = ?").run(
+      "{broken",
+      "bad",
+    );
+    // The good row must still come back despite the faulty diagnostics callback.
+    const all = listSync(store);
+    expect(all.map((s) => s.executionId)).toEqual(["good"]);
+  });
+
   test("list skips corrupt rows instead of throwing", () => {
     const db = new Database(":memory:");
     const store = sqliteCompositionCheckpointStore(db);

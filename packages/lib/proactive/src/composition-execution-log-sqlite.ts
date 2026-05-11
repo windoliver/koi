@@ -22,13 +22,6 @@ export interface SqliteDatabaseLike {
 export interface SqliteStatementLike {
   readonly run: (...params: (string | null)[]) => unknown;
   readonly get: (...params: (string | null)[]) => unknown;
-  /**
-   * Read all matching rows as an array. Both `bun:sqlite` and
-   * `node:sqlite` expose `.all(...)` returning an array of row objects.
-   * Declared `unknown[]` so callers narrow per-row defensively (rows can
-   * be malformed on schema drift / external repair).
-   */
-  readonly all: (...params: (string | null)[]) => readonly unknown[];
 }
 
 /**

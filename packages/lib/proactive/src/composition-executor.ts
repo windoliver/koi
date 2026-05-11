@@ -533,8 +533,9 @@ export function createCompositionExecutor(
   // observability-only" contract). `timeoutMs <= 0` opts out — only safe
   // for synchronous in-memory stores where awaiting cannot stall.
   async function withTimeout<T>(op: () => Promise<T> | T, timeoutMs: number): Promise<void> {
-    // Chain this op behind any already-queued op. The queue swallows
-    // failures so one bad op does not poison the chain.
+    // Chain this op behind any already-queued op so the backend sees
+    // saves and the terminal delete in issue order. Swallow failures so
+    // one bad op cannot poison the chain.
     const queued = storeOpQueue.then(async () => {
       try {
         await op();
@@ -553,7 +554,25 @@ export function createCompositionExecutor(
       timer = setTimeout(() => resolve(timeoutSentinel), timeoutMs);
     });
     try {
-      await Promise.race([queued, timeoutPromise]);
+      const winner = await Promise.race([queued.then(() => "ok" as const), timeoutPromise]);
+      if (winner === timeoutSentinel) {
+        // The head op did not settle within the budget. Reset the chain
+        // so later save/delete calls on this executor are not blocked
+        // behind a permanently pending promise. The abandoned op still
+        // runs to completion in the background and may commit out of
+        // order with subsequent ops — but that liveness/ordering trade
+        // is intentional: an in-order guarantee that wedges every later
+        // op once the backend hangs is worse than degraded ordering
+        // after a backend stall. Hosts that need durable ordering under
+        // degraded backends should use a store with native versioning
+        // (e.g. seq-monotonic UPSERT) or fail-closed I/O semantics.
+        //
+        // Reassign only if no even-newer op has already replaced the
+        // queue — otherwise we would clobber an in-flight chain head.
+        if (storeOpQueue === queued) {
+          storeOpQueue = Promise.resolve();
+        }
+      }
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
