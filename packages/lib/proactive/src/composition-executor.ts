@@ -16,7 +16,10 @@ import {
   preCommitRejection,
   type SchedulerComponent,
 } from "@koi/core";
-import type { CompositionCheckpointStore } from "./composition-checkpoint-store.js";
+import type {
+  CheckpointSnapshot,
+  CompositionCheckpointStore,
+} from "./composition-checkpoint-store.js";
 import {
   type CompositionGovernance,
   defaultPatternKey,
@@ -527,13 +530,28 @@ export function createCompositionExecutor(
   // when the executor stops awaiting individual ops.
   let storeOpQueue: Promise<void> = Promise.resolve();
 
-  // Strictly-increasing per-executor counter stamped onto every emitted
+  // Strictly-increasing per-executor seq stamped onto every emitted
   // snapshot's `seq` field. Backends that honor seq (shipped in-memory
   // and SQLite stores) refuse stale writes whose seq is not greater than
   // the row's current seq — so even when the in-process queue is reset
   // after a timeout, an abandoned old write cannot overtake newer state
   // at the backend.
-  let storeOpSeq = 0;
+  //
+  // CRITICAL: seq must remain monotonic across executor recreations for
+  // the same `executionId`, otherwise a restart/retry would start at 0
+  // and have its writes rejected by the stored higher watermark. Anchor
+  // the seq to wall-clock time (ms) so two executors created in
+  // different processes never collide unless they tick at the exact
+  // same millisecond. Within an executor, an in-process counter
+  // disambiguates same-ms writes. Wall-clock-anchored seq survives
+  // process restart on real systems and only degrades if the system
+  // clock moves backwards — a documented host responsibility.
+  let storeOpSeq = now();
+  function nextSeq(): number {
+    const t = now();
+    storeOpSeq = t > storeOpSeq ? t : storeOpSeq + 1;
+    return storeOpSeq;
+  }
 
   // Bound observability-only store I/O so a stalled/hung backend cannot
   // strand execute() after side effects have already committed. Treats
@@ -595,7 +613,7 @@ export function createCompositionExecutor(
     // Build the snapshot synchronously so hashPlan / output mapping
     // failures are caught by withTimeout's sync-throw handler instead of
     // turning into an uncaught rejection.
-    const seq = ++storeOpSeq;
+    const seq = nextSeq();
     await withTimeout(
       () =>
         checkpointStore.save({
@@ -613,12 +631,10 @@ export function createCompositionExecutor(
 
   async function deleteProgress(): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
-    // Bump the seq and pass it into delete() so the backend can persist
-    // the watermark as a tombstone even when no row exists yet. Without
-    // this, a delayed save() that the executor abandoned via timeout
-    // could insert fresh state after this delete and resurrect a
-    // completed execution.
-    const seq = ++storeOpSeq;
+    // Wall-clock-anchored seq so this delete's watermark is monotonic
+    // even relative to a prior executor instance's writes for the same
+    // executionId. Backend stamps the tombstone at this seq.
+    const seq = nextSeq();
     await withTimeout(() => checkpointStore.delete(executionId, seq), checkpointStoreTimeoutMs);
   }
 
@@ -1288,16 +1304,37 @@ export function createCompositionExecutor(
           if (r.status === "executed") executedPrefix.push(r);
           else break;
         }
-        // Skip checkpoint write on zero-step preflight failures —
-        // stale-plan rejection, trigger mismatch, INVALID_PLAN before any
-        // claim, empty plan, unsupported first step, etc. None committed
-        // durable work and none are resumable; persisting them would let a
-        // restart watchdog sweeping `list()` loop retries on poison plans
-        // or page operators indefinitely. Only persist when at least one
-        // step actually executed (committed side effect OR completed
-        // executionLog short-circuit, both surfaced as ExecutedStepResult).
         if (executedPrefix.length > 0) {
+          // At least one step committed in this attempt — record terminal
+          // failure so hosts can reconcile.
           await saveProgress(plan, executedPrefix, "failed");
+        } else if (
+          checkpointStore !== undefined &&
+          executionId !== undefined &&
+          executionId !== ""
+        ) {
+          // Zero-step preflight failure (stale plan, trigger mismatch,
+          // INVALID_PLAN before any claim, etc). Two cases:
+          //
+          // 1. No prior snapshot exists → skip; persisting a poison row
+          //    for a brand-new failed-preflight execution would let
+          //    restart watchdogs loop retries on never-runnable plans.
+          //
+          // 2. Prior snapshot exists from an earlier attempt that DID
+          //    execute steps → overwrite to phase=failed. Leaving it as
+          //    in_progress would strand a phantom in-flight execution
+          //    in `list()` recovery sweeps.
+          let prior: CheckpointSnapshot | undefined;
+          try {
+            const loaded = checkpointStore.load(executionId);
+            prior = loaded instanceof Promise ? await loaded : loaded;
+          } catch {
+            // load failures are observability-only; treat as no prior.
+            prior = undefined;
+          }
+          if (prior !== undefined) {
+            await saveProgress(plan, executedPrefix, "failed");
+          }
         }
       }
       return finalize(trigger, plan, result, state.committedNewWork, state.acquiredSessionSlot);
