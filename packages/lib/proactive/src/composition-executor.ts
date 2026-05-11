@@ -527,6 +527,14 @@ export function createCompositionExecutor(
   // when the executor stops awaiting individual ops.
   let storeOpQueue: Promise<void> = Promise.resolve();
 
+  // Strictly-increasing per-executor counter stamped onto every emitted
+  // snapshot's `seq` field. Backends that honor seq (shipped in-memory
+  // and SQLite stores) refuse stale writes whose seq is not greater than
+  // the row's current seq — so even when the in-process queue is reset
+  // after a timeout, an abandoned old write cannot overtake newer state
+  // at the backend.
+  let storeOpSeq = 0;
+
   // Bound observability-only store I/O so a stalled/hung backend cannot
   // strand execute() after side effects have already committed. Treats
   // timeout as a swallowed failure (matches the "checkpoints are
@@ -587,6 +595,7 @@ export function createCompositionExecutor(
     // Build the snapshot synchronously so hashPlan / output mapping
     // failures are caught by withTimeout's sync-throw handler instead of
     // turning into an uncaught rejection.
+    const seq = ++storeOpSeq;
     await withTimeout(
       () =>
         checkpointStore.save({
@@ -596,6 +605,7 @@ export function createCompositionExecutor(
           stepResults: stepResults.map((r) => r.output),
           phase,
           savedAt: now(),
+          seq,
         }),
       checkpointStoreTimeoutMs,
     );
@@ -603,6 +613,10 @@ export function createCompositionExecutor(
 
   async function deleteProgress(): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    // Bump the seq so a late save() observed by the backend after this
+    // delete cannot reuse the previous seq to resurrect state. Backends
+    // honoring seq treat the delete as the new high-watermark.
+    ++storeOpSeq;
     await withTimeout(() => checkpointStore.delete(executionId), checkpointStoreTimeoutMs);
   }
 

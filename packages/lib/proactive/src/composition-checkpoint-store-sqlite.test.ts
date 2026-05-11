@@ -284,6 +284,54 @@ describe("sqliteCompositionCheckpointStore", () => {
     expect(all.map((s) => s.executionId)).toEqual(["good"]);
   });
 
+  test("seq guard: stale save (seq <= stored) is dropped", () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db);
+    store.save(snapshot({ nextStepIndex: 1, stepResults: ["a"], seq: 5 }));
+    // Stale write — should be silently dropped at the SQL level.
+    store.save(
+      snapshot({
+        nextStepIndex: 0,
+        stepResults: [],
+        phase: "failed",
+        savedAt: 999,
+        seq: 3,
+      }),
+    );
+    const loaded = loadSync(store, "exec-1");
+    expect(loaded?.phase).toBe("in_progress");
+    expect(loaded?.nextStepIndex).toBe(1);
+  });
+
+  test("seq guard: delete leaves a tombstone — late save with older seq cannot resurrect", () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db);
+    store.save(snapshot({ nextStepIndex: 1, stepResults: ["x"], seq: 5 }));
+    store.delete("exec-1");
+    expect(loadSync(store, "exec-1")).toBeUndefined();
+    // Late write must not recreate the execution.
+    store.save(snapshot({ nextStepIndex: 1, stepResults: ["LATE"], seq: 4 }));
+    expect(loadSync(store, "exec-1")).toBeUndefined();
+  });
+
+  test("seq guard: strictly-newer save after delete lifts the tombstone", () => {
+    const db = new Database(":memory:");
+    const store = sqliteCompositionCheckpointStore(db);
+    store.save(snapshot({ nextStepIndex: 1, stepResults: ["x"], seq: 5 }));
+    store.delete("exec-1");
+    store.save(
+      snapshot({
+        nextStepIndex: 1,
+        stepResults: ["NEW"],
+        savedAt: 9_999,
+        seq: 6,
+      }),
+    );
+    const loaded = loadSync(store, "exec-1");
+    expect(loaded?.stepResults).toEqual(["NEW"]);
+    expect(loaded?.seq).toBe(6);
+  });
+
   test("list skips corrupt rows instead of throwing", () => {
     const db = new Database(":memory:");
     const store = sqliteCompositionCheckpointStore(db);
