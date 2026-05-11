@@ -479,11 +479,14 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           }
           failures.push(outcome.failure);
           if (outcome.kind === "timeout") {
-            // Timeout is always terminal for high fallback. Adapter contract
-            // has no abort, so the original send may still complete. Falling
-            // back to a different transport would risk double-delivery —
-            // `idempotencyKey` only dedupes within the same transport, never
-            // across (e.g. Slack and email don't share a delivery ledger).
+            // Timeout is always terminal for high fallback. Adapter
+            // contract has no abort signal, and no idempotency field —
+            // the `idempotencyKey` we forward into message metadata is
+            // best-effort metadata-only (see docs/L2/proactive.md). The
+            // original send may still complete in the background, and
+            // falling back to a different transport (or even the same
+            // transport with the same key) is NOT dedupe-safe at the
+            // contract level. Stop the walk and report ambiguous state.
             // Slot stays consumed: we may have delivered.
             return { ok: false, reason: "timed_out", failures };
           }

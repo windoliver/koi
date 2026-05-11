@@ -256,24 +256,12 @@ export interface CompositionExecutionContext {
    */
   readonly checkpointStoreTimeoutMs?: number | undefined;
   /**
-   * Declares that `checkpointStore` rejects stale writes via the `seq`
-   * watermark (versioned saves + tombstoned deletes). When true,
-   * `withTimeout` resets the internal store-op chain on timeout so a
-   * single hung op cannot wedge every later save/delete: the abandoned
-   * op may still commit in the background, but the store's seq guard
-   * drops it as stale.
-   *
-   * When false (default), the chain is NOT reset on timeout. A hung op
-   * then blocks every subsequent save/delete (they too time out and
-   * become no-ops), but the abandoned op CANNOT resurrect terminal
-   * state — because no later op will run on a host-supplied store that
-   * has no seq awareness, the abandoned save landing late only
-   * overwrites itself, not a newer write that never happened.
-   *
-   * Both built-in stores (`createInMemoryCheckpointStore`,
-   * `sqliteCompositionCheckpointStore`) are seq-aware — hosts using
-   * those should set this to `true`. Custom stores that ignore `seq`
-   * must leave it `false` to preserve restart-safety.
+   * Override for the seq-aware capability advertised by
+   * `checkpointStore.seqAware`. Almost no host needs this — built-in
+   * stores set their own flag, and custom stores SHOULD too. Provided
+   * for the rare case where a host wraps a built-in store in a
+   * decorator that erases or fakes the property. `undefined` (default)
+   * = trust the store's own flag.
    */
   readonly checkpointStoreSeqAware?: boolean | undefined;
 }
@@ -534,7 +522,11 @@ export function createCompositionExecutor(
   const hashPlan = context.hashPlan ?? defaultPlanHash;
   const checkpointStoreTimeoutMs =
     context.checkpointStoreTimeoutMs ?? DEFAULT_CHECKPOINT_STORE_TIMEOUT_MS;
-  const checkpointStoreSeqAware = context.checkpointStoreSeqAware === true;
+  // Capability is owned by the store; context flag is an explicit
+  // override for hosts that wrap a built-in in a decorator that hides
+  // the property.
+  const checkpointStoreSeqAware =
+    context.checkpointStoreSeqAware ?? checkpointStore?.seqAware === true;
   // Validate at executor construction: wiring a store without an id is a
   // host configuration bug. Defer the surfaced error until execute() runs
   // so the contract (every call resolves to a structured result) holds.
