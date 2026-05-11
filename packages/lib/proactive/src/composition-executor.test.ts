@@ -2091,6 +2091,11 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
       executionLog: inMemoryExecutionLog().log,
       checkpointStore: store,
       executionId: "exec-stale",
+      // Match the stored prior's planHash so the identity guard
+      // allows the preserve-and-flip path. The test's premise is
+      // "same plan, stale attempt" — i.e. a retry of the same plan
+      // whose preflight now fails due to trigger mismatch.
+      hashPlan: () => "old-hash",
     });
     // Trigger-id mismatch → INVALID_PLAN before any step runs.
     const plan: CompositionPlan = {
@@ -2103,12 +2108,11 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     const result = await executor.execute(trigger(), plan);
 
     expect(result.status).toBe("failed");
-    // Prior snapshot existed → preflight failure must flip phase=failed
-    // WITHOUT destroying the record of what actually executed. The saved
-    // snapshot must preserve planHash / nextStepIndex / stepResults from
-    // the prior payload — overwriting with the current zero-step
-    // current-plan-hash payload would erase recovery state and hide
-    // committed side effects from operators.
+    // Prior snapshot existed AND its planHash matches the current
+    // plan → preflight failure flips phase=failed WHILE preserving
+    // planHash / nextStepIndex / stepResults from the prior payload.
+    // Overwriting with the current zero-step current-plan-hash payload
+    // would erase recovery state and hide committed side effects.
     expect(saves.length).toBeGreaterThan(0);
     const last = saves[saves.length - 1];
     expect(last?.phase).toBe("failed");
@@ -2116,6 +2120,54 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     expect(last?.nextStepIndex).toBe(3);
     expect(last?.stepResults).toEqual(["a", "b", "c"]);
   });
+
+  test(
+    "zero-step preflight failure with planHash MISMATCH leaves the stored " +
+      "snapshot UNTOUCHED (no cross-plan poisoning)",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const saves: CheckpointSnapshot[] = [];
+      const original: CheckpointSnapshot = {
+        executionId: "exec-collision",
+        planHash: "other-work-hash",
+        nextStepIndex: 2,
+        stepResults: ["o1", "o2"],
+        phase: "in_progress",
+        savedAt: 100,
+        seq: 100,
+      };
+      const store: CompositionCheckpointStore = {
+        save: (snap) => {
+          saves.push(snap);
+        },
+        load: () => original,
+        delete: () => {},
+        list: () => [original],
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-collision",
+        // Current plan hashes to DIFFERENT value than the stored prior
+        // — i.e. accidental executionId reuse across unrelated plans.
+        hashPlan: () => "my-different-plan-hash",
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-other",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      const result = await executor.execute(trigger(), plan);
+      expect(result.status).toBe("failed");
+      // No save happened — the live execution's snapshot is intact.
+      expect(saves).toHaveLength(0);
+    },
+  );
 
   test("preflight failure with zero executed steps does NOT persist a failed snapshot", async () => {
     const { scheduler } = schedulerStub();
@@ -2223,53 +2275,59 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     },
   );
 
-  test("hung getWatermark() probe: timeout is paid ONCE per executor, not per step", async () => {
-    const { scheduler } = schedulerStub();
-    let watermarkCalls = 0;
-    const store: CompositionCheckpointStore = {
-      save: () => {},
-      delete: () => {},
-      load: () => undefined,
-      list: () => [],
-      seqAware: true,
-      getWatermark: () => {
-        watermarkCalls += 1;
-        return new Promise(() => {}); // hang
-      },
-    };
-    const executor = createCompositionExecutor({
-      agentId: agentId("agent-1"),
-      scheduler,
-      notify: async () => ({ delivered: true }),
-      executionLog: inMemoryExecutionLog().log,
-      checkpointStore: store,
-      executionId: "exec-hung-watermark",
-      checkpointStoreTimeoutMs: 30,
-    });
-    const plan: CompositionPlan = {
-      triggerId: "trigger-1",
-      triggerEmittedAt: 1,
-      steps: Array.from({ length: 5 }, () => ({
-        kind: "notify_user" as const,
-        channel: "inbox",
-        message: "x",
-        priority: "normal" as const,
-      })),
-      estimatedCost: 5,
-      requiresApproval: false,
-    };
-    const start = Date.now();
-    const result = await executor.execute(trigger(), plan);
-    const elapsed = Date.now() - start;
-    expect(result.status).toBe("executed");
-    // Probe was attempted exactly once. Pre-fix, every step+delete
-    // re-paid the 30ms probe timeout (5 steps + 1 delete = 6 ×
-    // 30ms = 180ms+). Post-fix, one probe attempt; failed probe is
-    // cached so subsequent ops fall back to wall-clock seed.
-    expect(watermarkCalls).toBe(1);
-    // Total elapsed: one probe timeout + terminal delete timeout.
-    expect(elapsed).toBeLessThan(120);
-  });
+  test(
+    "hung getWatermark() probe: timeout is paid AT MOST TWICE per executor " +
+      "(step-loop seed + terminal re-probe), not per step",
+    async () => {
+      const { scheduler } = schedulerStub();
+      let watermarkCalls = 0;
+      const store: CompositionCheckpointStore = {
+        save: () => {},
+        delete: () => {},
+        load: () => undefined,
+        list: () => [],
+        seqAware: true,
+        getWatermark: () => {
+          watermarkCalls += 1;
+          return new Promise(() => {}); // hang
+        },
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-hung-watermark",
+        checkpointStoreTimeoutMs: 30,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: Array.from({ length: 5 }, () => ({
+          kind: "notify_user" as const,
+          channel: "inbox",
+          message: "x",
+          priority: "normal" as const,
+        })),
+        estimatedCost: 5,
+        requiresApproval: false,
+      };
+      const start = Date.now();
+      const result = await executor.execute(trigger(), plan);
+      const elapsed = Date.now() - start;
+      expect(result.status).toBe("executed");
+      // Pre-fix, every step+delete re-paid the 30ms probe timeout
+      // (5 steps + 1 delete = 6 × 30ms = 180ms+). Post-fix, the step
+      // loop pays the seed probe ONCE, then terminal cleanup gets one
+      // more attempt (so terminal writes have a chance to anchor
+      // durably if the backend recovered). That's at most 2 probe
+      // attempts, never N.
+      expect(watermarkCalls).toBeLessThanOrEqual(2);
+      // Total elapsed: ≤ 2 × probe timeout + terminal delete timeout.
+      expect(elapsed).toBeLessThan(150);
+    },
+  );
 
   test(
     "fire-and-forget in_progress saves: execute() latency does NOT scale with " +

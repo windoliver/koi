@@ -42,6 +42,33 @@ function snapshot(overrides: Partial<CheckpointSnapshot> = {}): CheckpointSnapsh
   };
 }
 
+describe("sqliteCompositionCheckpointStore migrations", () => {
+  test("re-opening an already-migrated db is idempotent (duplicate-column tolerated)", () => {
+    const db = new Database(":memory:");
+    sqliteCompositionCheckpointStore(db);
+    // Second construction on the same db must not throw — both seq and
+    // tombstone columns already exist from the first call.
+    expect(() => sqliteCompositionCheckpointStore(db)).not.toThrow();
+  });
+
+  test("migration failures other than duplicate-column surface immediately", () => {
+    // Inject a db whose exec() throws a non-duplicate-column error on
+    // ALTER. Construction must fail fast rather than continue with a
+    // half-migrated schema.
+    const realDb = new Database(":memory:");
+    const failingDb = {
+      exec: (sql: string) => {
+        if (/ALTER TABLE/.test(sql)) {
+          throw new Error("database is locked");
+        }
+        realDb.exec(sql);
+      },
+      prepare: (sql: string) => realDb.prepare(sql),
+    } as unknown as Database;
+    expect(() => sqliteCompositionCheckpointStore(failingDb)).toThrow(/migration failed/);
+  });
+});
+
 describe("sqliteCompositionCheckpointStore", () => {
   test("save then load round-trips the snapshot", () => {
     const db = new Database(":memory:");

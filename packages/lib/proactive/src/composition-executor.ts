@@ -563,11 +563,20 @@ export function createCompositionExecutor(
   // first save/delete and lifting storeOpSeq above the stored value
   // means a backwards clock jump cannot brick checkpoint progress.
   let storeOpSeq = now();
-  let seqSeeded = false;
-  async function ensureSeqSeeded(): Promise<void> {
-    if (seqSeeded) return;
+  let seqSeededDurably = false; // clean successful probe
+  let seqSeededOnce = false; // any probe attempt (success or timeout/throw)
+  async function ensureSeqSeeded(durable: boolean = false): Promise<void> {
+    // Step-loop callers pass durable=false → skip after the first
+    // attempt so a degraded backend cannot re-pay the timeout cost
+    // per step. Terminal callers pass durable=true → re-probe if we
+    // haven't yet confirmed a clean watermark seed, so the final
+    // failed/delete writes have a chance to anchor above the durable
+    // watermark and survive the seq-aware backend's guard.
+    if (seqSeededDurably) return;
+    if (!durable && seqSeededOnce) return;
     if (checkpointStore === undefined || executionId === undefined || executionId === "") {
-      seqSeeded = true; // no store to probe — done forever
+      seqSeededDurably = true; // no store to probe — done forever
+      seqSeededOnce = true;
       return;
     }
     // Bound the probe with the same observability-only timeout used
@@ -607,28 +616,27 @@ export function createCompositionExecutor(
         }),
       ]);
       if (result === timeoutSentinel) {
-        // Probe hung. Mark seeded so subsequent step saves do NOT
-        // re-pay the timeout cost — the goal of fire-and-forget step
-        // saves is that a degraded backend adds AT MOST one bounded
-        // wait per plan, not one per step. We fall back to the
-        // wall-clock seed for the remainder of this executor's life;
-        // the seq guard at a seq-aware backend still rejects late
-        // writes whose seq is below the stored watermark, so the
-        // worst-case observable effect is missing checkpoints for
-        // this run, never resurrected state.
-        seqSeeded = true;
+        // Probe hung. Mark seeded ONCE so subsequent step saves do
+        // not re-pay the timeout cost — the goal of fire-and-forget
+        // step saves is that a degraded backend adds AT MOST one
+        // bounded wait per plan, not one per step. Leave durable=false
+        // so terminal cleanup gets one more probe attempt: terminal
+        // writes are where stale-seq drops actually break recovery
+        // (missing failed snapshot or missing delete), so it's worth
+        // one extra bounded wait per plan to anchor the counter
+        // durably if the backend has recovered.
+        seqSeededOnce = true;
         return;
       }
       if (typeof result === "number" && result >= storeOpSeq) {
         storeOpSeq = result + 1;
       }
-      seqSeeded = true;
+      seqSeededDurably = true;
+      seqSeededOnce = true;
     } catch {
-      // Probe throw — also a one-shot signal. Same rationale as
-      // timeout: do NOT retry on every step. Mark seeded and fall
-      // back to wall-clock-anchored seq. A persistent backend error
-      // here would otherwise add a probe attempt per step.
-      seqSeeded = true;
+      // Probe throw — one-shot for step loop, but terminal cleanup
+      // gets another chance (same rationale as timeout above).
+      seqSeededOnce = true;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -703,7 +711,12 @@ export function createCompositionExecutor(
     // Build the snapshot synchronously so hashPlan / output mapping
     // failures are caught by withTimeout's sync-throw handler instead of
     // turning into an uncaught rejection.
-    await ensureSeqSeeded();
+    // Terminal blocking saves (wait=true: failed/preflight cleanup) are
+    // worth re-probing the watermark on if the first probe timed out —
+    // they're the writes that actually matter for recovery state.
+    // Step-loop fire-and-forget saves pass durable=false → skip if the
+    // first probe already happened.
+    await ensureSeqSeeded(wait);
     const seq = nextSeq();
     const op = withTimeout(
       () =>
@@ -737,7 +750,8 @@ export function createCompositionExecutor(
   // stale-plan retry. A fresh seq is stamped so the watermark advances.
   async function savePriorAsFailed(prior: CheckpointSnapshot): Promise<void> {
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
-    await ensureSeqSeeded();
+    // Terminal write — durable re-probe is worth one extra bounded wait.
+    await ensureSeqSeeded(true);
     const seq = nextSeq();
     await withTimeout(
       () =>
@@ -779,8 +793,9 @@ export function createCompositionExecutor(
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
     // Seq is monotonic across restarts: ensureSeqSeeded lifts the
     // counter above any prior watermark before stamping. Backend
-    // records the tombstone at this seq.
-    await ensureSeqSeeded();
+    // records the tombstone at this seq. Terminal write — durable
+    // re-probe is worth one extra bounded wait.
+    await ensureSeqSeeded(true);
     const seq = nextSeq();
     await withTimeout(() => checkpointStore.delete(executionId, seq), checkpointStoreTimeoutMs);
   }
@@ -1484,7 +1499,16 @@ export function createCompositionExecutor(
           // not strand execute() — drop to "treat as no prior" on timeout
           // or any throw.
           const prior = await loadProgressBounded(checkpointStore, executionId);
-          if (prior !== undefined) {
+          // Identity guard: only mutate the prior snapshot if its
+          // planHash matches the current attempt's plan. If a host has
+          // accidentally reused this executionId across unrelated plans
+          // (or two concurrent attempts collided), the stored snapshot
+          // belongs to OTHER work — flipping it to phase=failed would
+          // poison the live execution's checkpoint and mislead restart
+          // recovery into treating healthy work as failed. Leave it
+          // untouched and let the mismatched preflight finish without
+          // side effects on durable state.
+          if (prior !== undefined && prior.planHash === hashPlan(plan)) {
             await savePriorAsFailed(prior);
           }
         }
