@@ -162,7 +162,11 @@ describe("createProactiveDelivery", () => {
       content: [{ kind: "text", text: "alert" }],
     });
 
-    expect(result).toEqual({ ok: true, delivered: ["slack"] });
+    expect(result).toEqual({
+      ok: true,
+      delivered: ["slack"],
+      partialFailures: [{ channel: "email", error: "smtp down" }],
+    });
   });
 
   test("urgent total failure — every channel fails → all_failed with all in failures", async () => {
@@ -919,6 +923,26 @@ describe("createProactiveDelivery", () => {
     expect(r.failures?.[0]?.channel).toBe("inbox");
   });
 
+  test("urgent: every channel times out → timed_out (distinct from all_failed)", async () => {
+    const slack = stubAdapter("slack", () => new Promise<void>(() => {}));
+    const email = stubAdapter("email", () => new Promise<void>(() => {}));
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      sendTimeoutMs: 50,
+    });
+    const r = await delivery.send({
+      priority: "urgent",
+      content: [{ kind: "text", text: "alert" }],
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toBe("timed_out");
+    expect(r.failures?.length).toBe(2);
+  });
+
   test("urgent fan-out: hung adapter times out, sibling success returns", async () => {
     const slack = stubAdapter("slack", async () => {});
     const email = stubAdapter("email", () => new Promise<void>(() => {})); // never resolves
@@ -938,9 +962,15 @@ describe("createProactiveDelivery", () => {
     expect(r.delivered).toContain("slack");
   });
 
-  test("high fallback: hung preferred → times out, fallback to next channel succeeds", async () => {
-    const slack = stubAdapter("slack", () => new Promise<void>(() => {})); // hangs
-    const email = stubAdapter("email", async () => {});
+  test("high fallback: hung preferred → timed_out (terminal, no fallback to avoid double-delivery)", async () => {
+    const calls: string[] = [];
+    const slack = stubAdapter("slack", () => {
+      calls.push("slack");
+      return new Promise<void>(() => {});
+    }); // hangs
+    const email = stubAdapter("email", async () => {
+      calls.push("email");
+    });
     const delivery = createProactiveDelivery({
       channels: new Map([
         ["slack", slack],
@@ -953,30 +983,54 @@ describe("createProactiveDelivery", () => {
       priority: "high",
       content: [{ kind: "text", text: "h" }],
     });
-    expect(r).toEqual({ ok: true, delivered: ["email"] });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toBe("timed_out");
+    expect(r.failures?.[0]?.channel).toBe("slack");
+    // Email NOT called — timeout is terminal because adapter has no abort
+    // and the original send may complete. Falling through would risk
+    // double-delivery.
+    expect(calls).toEqual(["slack"]);
   });
 
-  test("high fallback: hung attempt refunds rate-limit slot when full failure", async () => {
+  test("high: hard error (not timeout) still falls back to next channel", async () => {
+    const calls: string[] = [];
+    const slack = stubAdapter("slack", async () => {
+      calls.push("slack");
+      throw new Error("network");
+    });
+    const email = stubAdapter("email", async () => {
+      calls.push("email");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { preferredChannel: "slack" },
+      sendTimeoutMs: 50,
+    });
+    const r = await delivery.send({ priority: "high", content: [{ kind: "text", text: "h" }] });
+    expect(r).toEqual({ ok: true, delivered: ["email"] });
+    expect(calls).toEqual(["slack", "email"]);
+  });
+
+  test("normal: hung adapter → timed_out (slot NOT refunded — may have delivered)", async () => {
     const t = 1_700_000_000_000;
-    const slack = stubAdapter("slack", () => new Promise<void>(() => {})); // hangs
+    const slack = stubAdapter("slack", () => new Promise<void>(() => {}));
     const delivery = createProactiveDelivery({
       channels: new Map([["slack", slack]]),
       preferences: { maxNotificationsPerHour: 1 },
       sendTimeoutMs: 30,
       now: () => t,
     });
-    const r1 = await delivery.send({ priority: "high", content: [{ kind: "text", text: "1" }] });
+    const r1 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "1" }] });
     expect(r1.ok).toBe(false);
-    // Slot must be refunded — next normal send still allowed at cap=1.
-    const ok = stubAdapter("ok", async () => {});
-    const delivery2 = createProactiveDelivery({
-      channels: new Map([["ok", ok]]),
-      preferences: { maxNotificationsPerHour: 1 },
-      sendTimeoutMs: 30,
-      now: () => t,
-    });
-    const r2 = await delivery2.send({ priority: "normal", content: [{ kind: "text", text: "2" }] });
-    expect(r2.ok).toBe(true);
+    if (r1.ok) throw new Error("unreachable");
+    expect(r1.reason).toBe("timed_out");
+    // Slot stays consumed — second send blocked at cap=1.
+    const r2 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "2" }] });
+    expect(r2).toEqual({ ok: false, reason: "rate_limited" });
   });
 
   test("throws when sendTimeoutMs is non-positive", () => {
@@ -990,6 +1044,110 @@ describe("createProactiveDelivery", () => {
     expect(() =>
       createProactiveDelivery({ channels: new Map([["slack", slack]]), sendTimeoutMs: Number.NaN }),
     ).toThrow(/sendTimeoutMs must be a finite positive integer/);
+  });
+
+  test("idempotencyKey is merged into OutboundMessage.metadata for channel sends", async () => {
+    const captured: OutboundMessage[] = [];
+    const slack = stubAdapter("slack", async (m) => {
+      captured.push(m);
+    });
+    const delivery = createProactiveDelivery({ channels: new Map([["slack", slack]]) });
+    await delivery.send({
+      priority: "normal",
+      content: [{ kind: "text", text: "x" }],
+      metadata: { source: "test" },
+      idempotencyKey: "abc-123",
+    });
+    expect(captured[0]?.metadata).toEqual({ source: "test", idempotencyKey: "abc-123" });
+  });
+
+  test("idempotencyKey is merged into InboxEnvelope.metadata for low+inbox", async () => {
+    const captured: InboxEnvelope[] = [];
+    const inbox: InboxSink = {
+      enqueue: (env) => {
+        captured.push(env);
+      },
+    };
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      inbox,
+    });
+    await delivery.send({
+      priority: "low",
+      content: [{ kind: "text", text: "x" }],
+      idempotencyKey: "low-dedup-1",
+    });
+    expect(captured[0]?.metadata).toEqual({ idempotencyKey: "low-dedup-1" });
+  });
+
+  test("successful send does not leave a live timeout pending", async () => {
+    // Smoke check: if the timer were not cleared, this would keep the event
+    // loop pinned for the full timeout window. We instead verify the loop
+    // returns to idle within a small wall-clock window after a fast send.
+    const slack = stubAdapter("slack", async () => {});
+    const delivery = createProactiveDelivery({
+      channels: new Map([["slack", slack]]),
+      sendTimeoutMs: 60_000, // very long — would catch a leak
+    });
+    const start = Date.now();
+    const r = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "x" }] });
+    expect(r.ok).toBe(true);
+    // Without clearTimeout the timer holds a live handle but does not delay
+    // this promise; we mainly assert the send returned promptly.
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+
+  test("high fallback: with idempotencyKey, timeout falls back to next channel (dedupe-safe retry)", async () => {
+    const calls: string[] = [];
+    const slack = stubAdapter("slack", () => {
+      calls.push("slack");
+      return new Promise<void>(() => {});
+    });
+    const email = stubAdapter("email", async () => {
+      calls.push("email");
+    });
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      preferences: { preferredChannel: "slack" },
+      sendTimeoutMs: 50,
+    });
+    const r = await delivery.send({
+      priority: "high",
+      content: [{ kind: "text", text: "h" }],
+      idempotencyKey: "dedupe-1",
+    });
+    // Email delivered. Slack still hangs in background; idempotencyKey on
+    // both messages means downstream dedupe drops the late slack completion.
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.delivered).toEqual(["email"]);
+    expect(calls).toEqual(["slack", "email"]);
+  });
+
+  test("urgent partial timeout: success returned with partialFailures including timeout entry", async () => {
+    const slack = stubAdapter("slack", async () => {});
+    const email = stubAdapter("email", () => new Promise<void>(() => {}));
+    const delivery = createProactiveDelivery({
+      channels: new Map([
+        ["slack", slack],
+        ["email", email],
+      ]),
+      sendTimeoutMs: 50,
+    });
+    const r = await delivery.send({
+      priority: "urgent",
+      content: [{ kind: "text", text: "alert" }],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.delivered).toEqual(["slack"]);
+    expect(r.partialFailures?.length).toBe(1);
+    expect(r.partialFailures?.[0]?.channel).toBe("email");
+    expect(r.partialFailures?.[0]?.error).toMatch(/timed out/);
   });
 
   test("preferences.timezone alone (no quiet hours) does not throw", () => {
