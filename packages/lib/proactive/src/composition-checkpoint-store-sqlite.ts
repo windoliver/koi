@@ -155,7 +155,10 @@ export function sqliteCompositionCheckpointStore(
       `saved_at = excluded.saved_at, ` +
       `seq = excluded.seq, ` +
       `tombstone = 0 ` +
-      `WHERE excluded.seq > ${table}.seq`,
+      // COALESCE legacy rows whose seq IS NULL (pre-upgrade) so a
+      // versioned write can still advance them. Without coalesce,
+      // `x > NULL` evaluates to NULL → UPDATE skipped forever.
+      `WHERE excluded.seq > COALESCE(${table}.seq, -1)`,
   );
   const upsertUnguarded: SqliteStatementLike = db.prepare(
     `INSERT INTO ${table} (execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone) ` +
@@ -185,7 +188,13 @@ export function sqliteCompositionCheckpointStore(
   const deleteTombstoneVersioned: SqliteStatementLike = db.prepare(
     `INSERT INTO ${table} (execution_id, plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone) ` +
       `VALUES (?, '', 0, '[]', 'completed', 0, ?, 1) ` +
-      `ON CONFLICT(execution_id) DO UPDATE SET tombstone = 1, seq = MAX(seq, excluded.seq)`,
+      `ON CONFLICT(execution_id) DO UPDATE SET ` +
+      `tombstone = 1, ` +
+      // COALESCE legacy rows whose seq IS NULL — scalar `MAX(NULL, x)`
+      // yields NULL in SQLite, which would brick the row by leaving its
+      // watermark NULL forever (subsequent guarded UPSERTs compare
+      // against NULL and never advance).
+      `seq = MAX(COALESCE(seq, -1), excluded.seq)`,
   );
   // Legacy unversioned delete for callers that pass no seq. Plain
   // tombstone UPDATE: matches existing rows only. Late saves remain
