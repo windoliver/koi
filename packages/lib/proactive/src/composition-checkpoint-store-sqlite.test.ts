@@ -303,16 +303,39 @@ describe("sqliteCompositionCheckpointStore", () => {
     expect(loaded?.nextStepIndex).toBe(1);
   });
 
-  test("seq guard: delete leaves a tombstone — late save with older seq cannot resurrect", () => {
-    const db = new Database(":memory:");
-    const store = sqliteCompositionCheckpointStore(db);
-    store.save(snapshot({ nextStepIndex: 1, stepResults: ["x"], seq: 5 }));
-    store.delete("exec-1");
-    expect(loadSync(store, "exec-1")).toBeUndefined();
-    // Late write must not recreate the execution.
-    store.save(snapshot({ nextStepIndex: 1, stepResults: ["LATE"], seq: 4 }));
-    expect(loadSync(store, "exec-1")).toBeUndefined();
-  });
+  test(
+    "seq guard: versioned delete leaves a tombstone — late save with " +
+      "older seq cannot resurrect",
+    () => {
+      const db = new Database(":memory:");
+      const store = sqliteCompositionCheckpointStore(db);
+      store.save(snapshot({ nextStepIndex: 1, stepResults: ["x"], seq: 5 }));
+      // Versioned delete: carries the seq into the tombstone.
+      store.delete("exec-1", 5);
+      expect(loadSync(store, "exec-1")).toBeUndefined();
+      // Late write at older seq must not recreate the execution.
+      store.save(snapshot({ nextStepIndex: 1, stepResults: ["LATE"], seq: 4 }));
+      expect(loadSync(store, "exec-1")).toBeUndefined();
+    },
+  );
+
+  test(
+    "unversioned delete is physical (NOT tombstone) — later unversioned save " +
+      "for the same executionId still succeeds",
+    () => {
+      const db = new Database(":memory:");
+      const store = sqliteCompositionCheckpointStore(db);
+      // Pure legacy round-trip: save, delete (no seq), save again — must
+      // recreate the row. Pre-fix the legacy delete tombstoned the row,
+      // and the unversioned UPSERT was filtered by tombstone=0 → silent
+      // black hole, recovery state permanently disappeared.
+      store.save(snapshot({ nextStepIndex: 1, stepResults: ["first"] }));
+      store.delete("exec-1");
+      expect(loadSync(store, "exec-1")).toBeUndefined();
+      store.save(snapshot({ nextStepIndex: 1, stepResults: ["second"] }));
+      expect(loadSync(store, "exec-1")?.stepResults).toEqual(["second"]);
+    },
+  );
 
   test(
     "legacy row with seq=NULL migrates cleanly: versioned delete sets watermark, " +

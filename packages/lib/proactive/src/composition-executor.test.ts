@@ -2223,6 +2223,54 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     },
   );
 
+  test("hung getWatermark() probe: timeout is paid ONCE per executor, not per step", async () => {
+    const { scheduler } = schedulerStub();
+    let watermarkCalls = 0;
+    const store: CompositionCheckpointStore = {
+      save: () => {},
+      delete: () => {},
+      load: () => undefined,
+      list: () => [],
+      seqAware: true,
+      getWatermark: () => {
+        watermarkCalls += 1;
+        return new Promise(() => {}); // hang
+      },
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-hung-watermark",
+      checkpointStoreTimeoutMs: 30,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: Array.from({ length: 5 }, () => ({
+        kind: "notify_user" as const,
+        channel: "inbox",
+        message: "x",
+        priority: "normal" as const,
+      })),
+      estimatedCost: 5,
+      requiresApproval: false,
+    };
+    const start = Date.now();
+    const result = await executor.execute(trigger(), plan);
+    const elapsed = Date.now() - start;
+    expect(result.status).toBe("executed");
+    // Probe was attempted exactly once. Pre-fix, every step+delete
+    // re-paid the 30ms probe timeout (5 steps + 1 delete = 6 ×
+    // 30ms = 180ms+). Post-fix, one probe attempt; failed probe is
+    // cached so subsequent ops fall back to wall-clock seed.
+    expect(watermarkCalls).toBe(1);
+    // Total elapsed: one probe timeout + terminal delete timeout.
+    expect(elapsed).toBeLessThan(120);
+  });
+
   test(
     "fire-and-forget in_progress saves: execute() latency does NOT scale with " +
       "step count on a degraded backend",
