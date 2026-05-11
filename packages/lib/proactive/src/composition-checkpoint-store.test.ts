@@ -469,6 +469,81 @@ describe("createInMemoryCheckpointStore", () => {
     expect(reloaded?.seq).toBe(6);
   });
 
+  test("mixed-version writers: unversioned save() cannot resurrect after versioned delete(id, seq)", async () => {
+    const store = createInMemoryCheckpointStore();
+    await store.save({
+      executionId: "a",
+      planHash: "h1",
+      nextStepIndex: 1,
+      stepResults: ["committed"],
+      phase: "in_progress",
+      savedAt: 1,
+      seq: 5,
+    });
+    await store.delete("a", 10);
+    expect(await store.load("a")).toBeUndefined();
+    // Legacy caller in a rolling deploy — save() without seq must NOT
+    // resurrect the tombstoned execution.
+    await store.save({
+      executionId: "a",
+      planHash: "h2",
+      nextStepIndex: 1,
+      stepResults: ["RESURRECTED"],
+      phase: "in_progress",
+      savedAt: 2,
+    });
+    expect(await store.load("a")).toBeUndefined();
+  });
+
+  test("mixed-version writers: unversioned save() cannot overwrite a row claimed by a versioned writer", async () => {
+    const store = createInMemoryCheckpointStore();
+    await store.save({
+      executionId: "a",
+      planHash: "h1",
+      nextStepIndex: 2,
+      stepResults: ["v1", "v2"],
+      phase: "in_progress",
+      savedAt: 1,
+      seq: 7,
+    });
+    // Legacy save without seq must be a no-op once a versioned writer
+    // has claimed the row.
+    await store.save({
+      executionId: "a",
+      planHash: "h2",
+      nextStepIndex: 0,
+      stepResults: [],
+      phase: "in_progress",
+      savedAt: 2,
+    });
+    const loaded = await store.load("a");
+    expect(loaded?.stepResults).toEqual(["v1", "v2"]);
+    expect(loaded?.seq).toBe(7);
+  });
+
+  test("pure legacy rows (never versioned) still accept unversioned last-writer-wins", async () => {
+    const store = createInMemoryCheckpointStore();
+    await store.save({
+      executionId: "a",
+      planHash: "h1",
+      nextStepIndex: 1,
+      stepResults: ["first"],
+      phase: "in_progress",
+      savedAt: 1,
+    });
+    await store.save({
+      executionId: "a",
+      planHash: "h1",
+      nextStepIndex: 2,
+      stepResults: ["first", "second"],
+      phase: "in_progress",
+      savedAt: 2,
+    });
+    const loaded = await store.load("a");
+    expect(loaded?.nextStepIndex).toBe(2);
+    expect(loaded?.stepResults).toEqual(["first", "second"]);
+  });
+
   test("list returns deep clones — mutating result does not affect stored state", async () => {
     const store = createInMemoryCheckpointStore();
     const snap: CheckpointSnapshot = {

@@ -579,3 +579,60 @@ rate-limit slot.
 If `channels` is empty but `inbox` is set, `low` still succeeds via
 the inbox — the `no_channels` early-return only applies when the
 priority requires a channel.
+
+### Per-send timeout (Phase 4)
+
+`createProactiveDelivery({ sendTimeoutMs })` bounds every adapter
+`send()` call. Defaults to `undefined` (no timeout — Phase-3 behavior).
+When set, an adapter that does not resolve within `sendTimeoutMs` is
+treated as a failed attempt for that channel; the underlying promise
+is abandoned, not awaited.
+
+**New `DeliveryResult` failure reason — `"timed_out"`:**
+
+```ts
+| { ok: false; reason: "timed_out"; failures: readonly { channel: string; error: Error }[] }
+```
+
+Emitted when **every** attempt (including any `high`-fallback walk)
+exceeded `sendTimeoutMs`. Mixed outcomes — some channels timed out,
+at least one succeeded — return `ok: true` with the new
+`partialFailures` field carrying the timed-out channels (see below).
+
+Downstream callers performing an exhaustive switch on
+`DeliveryResult.reason` MUST add a `"timed_out"` arm or the upgrade
+becomes a `noImplicitReturns`/`switch`-exhaustiveness break. Callers
+that only inspect `ok` continue to work but lose visibility into
+timeout-only failures.
+
+### Partial-success surface (Phase 4)
+
+`urgent` (parallel-fan-out) and `high` (sequential-fallback) sends can
+now succeed *and* report per-channel failures in the same result:
+
+```ts
+| { ok: true; delivered: readonly string[]; partialFailures?: readonly { channel: string; error: Error }[] }
+```
+
+`partialFailures` is **omitted** (not `[]`) when every attempted
+channel succeeded — existing `ok: true` consumers that ignore the new
+field keep working unchanged. Hosts that want to alert on
+partial-degradation should check `partialFailures !== undefined`.
+
+### Idempotency key (Phase 4)
+
+`ProactiveNotification.idempotencyKey?: string` is forwarded to
+adapters that accept it (channel adapters opt in via the existing
+`SendOptions.idempotencyKey` field). Adapters that do not propagate it
+treat the send as a normal best-effort dispatch — the caller-side
+guarantee is "if your channel honors idempotency keys, this is the
+key it will see," not "the delivery layer dedupes on your behalf."
+
+### Migration notes
+
+| Change | Type | Action for consumers |
+|---|---|---|
+| `DeliveryResult.reason` adds `"timed_out"` | additive enum widening | extend exhaustive switches |
+| `DeliveryResult.partialFailures` (ok-arm) | optional field, omitted when empty | no action unless you want timeout/failure observability on partial success |
+| `ProactiveNotification.idempotencyKey` | optional input | no action; pass through if your adapter supports it |
+| `ProactiveDeliveryConfig.sendTimeoutMs` | optional input, default unset | no action; opt in per host |
