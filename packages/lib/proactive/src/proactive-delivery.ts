@@ -8,6 +8,16 @@ export interface ProactiveNotification {
   readonly content: readonly ContentBlock[];
   readonly threadId?: string;
   readonly metadata?: JsonObject;
+  /**
+   * Caller-supplied dedupe key for safe retry after a `timed_out` result.
+   * Forwarded into `OutboundMessage.metadata.idempotencyKey` (and into the
+   * `InboxEnvelope` metadata) so adapters / sinks that honor it can drop
+   * duplicates when the original send completes after the timeout. Without a
+   * key, callers must treat `timed_out` as ambiguous (delivery state unknown)
+   * and decide policy themselves; with a key, retrying on `timed_out` is
+   * dedupe-safe end-to-end as long as every adapter in scope honors the key.
+   */
+  readonly idempotencyKey?: string;
 }
 
 export interface DeliveryPreferences {
@@ -38,10 +48,22 @@ export interface ProactiveDeliveryConfig {
 export type DeliveryFailure = { readonly channel: string; readonly error: string };
 
 export type DeliveryResult =
-  | { readonly ok: true; readonly delivered: readonly string[] }
+  | {
+      readonly ok: true;
+      readonly delivered: readonly string[];
+      /**
+       * Per-channel failures/timeouts that occurred ALONGSIDE successful
+       * deliveries — only populated by `urgent` fan-out today. Lets callers
+       * reconcile (e.g. retry the timed-out subset with the same
+       * idempotencyKey, alert on partial failure) instead of seeing a clean
+       * success that masked silent loss. Empty / undefined when every
+       * channel succeeded.
+       */
+      readonly partialFailures?: readonly DeliveryFailure[];
+    }
   | {
       readonly ok: false;
-      readonly reason: "no_channels" | "rate_limited" | "all_failed" | "quiet_hours";
+      readonly reason: "no_channels" | "rate_limited" | "all_failed" | "quiet_hours" | "timed_out";
       readonly failures?: readonly DeliveryFailure[];
     };
 
@@ -65,8 +87,14 @@ type BuildOutboundResult =
 function buildOutbound(notification: ProactiveNotification): BuildOutboundResult {
   try {
     const content = structuredClone(notification.content);
-    const metadata =
+    const baseMeta =
       notification.metadata !== undefined ? structuredClone(notification.metadata) : undefined;
+    // Merge idempotencyKey into metadata so adapters that honor it for dedupe
+    // can see it in a single, conventional location.
+    const metadata: JsonObject | undefined =
+      notification.idempotencyKey !== undefined
+        ? { ...(baseMeta ?? {}), idempotencyKey: notification.idempotencyKey }
+        : baseMeta;
     const msg: OutboundMessage = {
       content,
       ...(notification.threadId !== undefined ? { threadId: notification.threadId } : {}),
@@ -114,33 +142,60 @@ function selectHighOrder(
   return out;
 }
 
+/**
+ * Sentinel error class so timeout detection is reliable across the layered
+ * try/catch boundaries (reading `error.message` for "timed out" would be
+ * brittle and adapter-defined error messages might collide).
+ */
+class SendTimeoutError extends Error {}
+
 async function withTimeout<T>(
   p: Promise<T>,
   timeoutMs: number | undefined,
   label: string,
 ): Promise<T> {
   if (timeoutMs === undefined) return p;
-  return Promise.race([
-    p,
-    new Promise<T>((_, reject) => {
-      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-    }),
-  ]);
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((_, reject) => {
+        handle = setTimeout(
+          () => reject(new SendTimeoutError(`${label} timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    // Clear the timer so successful sends don't leave a live handle pending
+    // for the full timeout window — keeps the event loop quiescent under
+    // bursty traffic.
+    if (handle !== undefined) clearTimeout(handle);
+  }
 }
+
+type SendOutcome =
+  | { readonly kind: "ok" }
+  | { readonly kind: "error"; readonly failure: DeliveryFailure }
+  | { readonly kind: "timeout"; readonly failure: DeliveryFailure };
 
 async function sendOne(
   channel: { name: string; adapter: ChannelAdapter },
   msg: OutboundMessage,
   timeoutMs: number | undefined,
-): Promise<DeliveryFailure | undefined> {
+): Promise<SendOutcome> {
   try {
     await withTimeout(Promise.resolve(channel.adapter.send(msg)), timeoutMs, "channel.send");
-    return undefined;
+    return { kind: "ok" };
   } catch (e: unknown) {
-    return {
+    const failure: DeliveryFailure = {
       channel: channel.name,
       error: e instanceof Error ? e.message : "channel.send failed",
     };
+    if (e instanceof SendTimeoutError) {
+      return { kind: "timeout", failure };
+    }
+    return { kind: "error", failure };
   }
 }
 
@@ -272,12 +327,18 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
         // notification. Same boundary discipline as channel sends.
         let envelope: InboxEnvelope;
         try {
+          const baseMeta =
+            notification.metadata !== undefined
+              ? structuredClone(notification.metadata)
+              : undefined;
+          const metadata: JsonObject | undefined =
+            notification.idempotencyKey !== undefined
+              ? { ...(baseMeta ?? {}), idempotencyKey: notification.idempotencyKey }
+              : baseMeta;
           envelope = {
             content: structuredClone(notification.content),
             ...(notification.threadId !== undefined ? { threadId: notification.threadId } : {}),
-            ...(notification.metadata !== undefined
-              ? { metadata: structuredClone(notification.metadata) }
-              : {}),
+            ...(metadata !== undefined ? { metadata } : {}),
             enqueuedAt: t,
           };
         } catch (e: unknown) {
@@ -300,16 +361,16 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           );
           return { ok: true, delivered: ["inbox"] };
         } catch (e: unknown) {
-          return {
-            ok: false,
-            reason: "all_failed",
-            failures: [
-              {
-                channel: "inbox",
-                error: e instanceof Error ? e.message : "inbox.enqueue failed",
-              },
-            ],
+          const failure: DeliveryFailure = {
+            channel: "inbox",
+            error: e instanceof Error ? e.message : "inbox.enqueue failed",
           };
+          // Inbox timeout: enqueue may complete after we return; surface as
+          // timed_out so callers can dedupe rather than blindly retry.
+          if (e instanceof SendTimeoutError) {
+            return { ok: false, reason: "timed_out", failures: [failure] };
+          }
+          return { ok: false, reason: "all_failed", failures: [failure] };
         }
       }
       if (config.channels.size === 0) {
@@ -326,27 +387,47 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
         // its input cannot race against parallel sends to other channels.
         // If cloning fails for any adapter, that adapter gets an all_failed
         // entry — a single bad payload does not crash the whole send.
-        const results = await Promise.all(
+        const results: SendOutcome[] = await Promise.all(
           entries.map(async (c) => {
             const built = buildOutbound(notification);
-            if (!built.ok) return { channel: c.name, error: built.error };
+            if (!built.ok) {
+              const f: SendOutcome = {
+                kind: "error",
+                failure: { channel: c.name, error: built.error },
+              };
+              return f;
+            }
             return sendOne(c, built.msg, sendTimeoutMs);
           }),
         );
         const delivered: string[] = [];
         const failures: DeliveryFailure[] = [];
+        let timeoutCount = 0;
         for (let i = 0; i < entries.length; i++) {
           const entry = entries[i];
-          const failure = results[i];
-          if (entry === undefined) continue;
-          if (failure === undefined) {
+          const outcome = results[i];
+          if (entry === undefined || outcome === undefined) continue;
+          if (outcome.kind === "ok") {
             delivered.push(entry.name);
           } else {
-            failures.push(failure);
+            failures.push(outcome.failure);
+            if (outcome.kind === "timeout") timeoutCount += 1;
           }
         }
         if (delivered.length === 0) {
+          // If every failure was a timeout, surface "timed_out" so callers can
+          // distinguish "we don't know whether it delivered" from "it
+          // definitely failed". Mixed outcomes still report all_failed.
+          if (timeoutCount === failures.length && timeoutCount > 0) {
+            return { ok: false, reason: "timed_out", failures };
+          }
           return { ok: false, reason: "all_failed", failures };
+        }
+        // Some channels delivered — preserve partial-failure visibility so
+        // callers can reconcile (retry timed-out subset, alert on hard
+        // failures) instead of seeing clean success that masked silent loss.
+        if (failures.length > 0) {
+          return { ok: true, delivered, partialFailures: failures };
         }
         return { ok: true, delivered };
       }
@@ -363,6 +444,7 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           return { ok: false, reason: "no_channels" };
         }
         const failures: DeliveryFailure[] = [];
+        let anyTimeout = false;
         for (const target of order) {
           // Per-attempt cloned message so an adapter that mutates its input
           // cannot poison subsequent fallback attempts. Clone failure on a
@@ -373,11 +455,28 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
             failures.push({ channel: target.name, error: built.error });
             continue;
           }
-          const failure = await sendOne(target, built.msg, sendTimeoutMs);
-          if (failure === undefined) {
+          const outcome = await sendOne(target, built.msg, sendTimeoutMs);
+          if (outcome.kind === "ok") {
             return { ok: true, delivered: [target.name] };
           }
-          failures.push(failure);
+          failures.push(outcome.failure);
+          if (outcome.kind === "timeout") {
+            anyTimeout = true;
+            // Timeout: the adapter contract has no abort, so the original
+            // send may complete after this returns. Falling back risks
+            // double-delivery UNLESS the caller passed an idempotencyKey, in
+            // which case downstream dedupe makes retry safe — continue
+            // walking remaining channels. Without a key, terminal.
+            if (notification.idempotencyKey === undefined) {
+              return { ok: false, reason: "timed_out", failures };
+            }
+          }
+        }
+        // Every attempt exhausted. If any was a timeout we still don't know
+        // whether something delivered — keep the slot consumed and report
+        // timed_out. Otherwise refund and report all_failed.
+        if (anyTimeout) {
+          return { ok: false, reason: "timed_out", failures };
         }
         refundSlot(t, notification.priority);
         return { ok: false, reason: "all_failed", failures };
@@ -399,10 +498,15 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           failures: [{ channel: target.name, error: built.error }],
         };
       }
-      const failure = await sendOne(target, built.msg, sendTimeoutMs);
-      if (failure !== undefined) {
+      const outcome = await sendOne(target, built.msg, sendTimeoutMs);
+      if (outcome.kind !== "ok") {
+        // Same rationale as high fallback: timeout = "may have delivered",
+        // do not refund the slot. Hard failure = refund.
+        if (outcome.kind === "timeout") {
+          return { ok: false, reason: "timed_out", failures: [outcome.failure] };
+        }
         refundSlot(t, notification.priority);
-        return { ok: false, reason: "all_failed", failures: [failure] };
+        return { ok: false, reason: "all_failed", failures: [outcome.failure] };
       }
       return { ok: true, delivered: [target.name] };
     },
