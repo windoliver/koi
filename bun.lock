@@ -2207,6 +2207,14 @@
         "@koi/approval-zones": "workspace:*",
         "@koi/sandbox-router": "workspace:*",
       },
+      "peerDependencies": {
+        "@koi/approval-zones": "workspace:*",
+        "@koi/sandbox-router": "workspace:*",
+      },
+      "optionalPeers": [
+        "@koi/approval-zones",
+        "@koi/sandbox-router",
+      ],
     },
     "packages/security/nexus-delegation": {
       "name": "@koi/nexus-delegation",
