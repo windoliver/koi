@@ -568,20 +568,40 @@ export function createCompositionExecutor(
     if (seqSeeded) return;
     seqSeeded = true; // set first to avoid concurrent reseeds
     if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    // Bound the probe with the same observability-only timeout used
+    // for save/delete. A hung custom store's load() must NOT strand
+    // execute() — even though seeding runs before the first store op
+    // chain hop, it's still on the structured-completion critical
+    // path. Race the load against a setTimeout; fail open on either
+    // timeout or throw (worst case: first save lands at a stale seq
+    // and is dropped by the backend guard — observable as a missing
+    // checkpoint, never as corrupted state).
+    const id = executionId;
+    const store = checkpointStore;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutSentinel = Symbol("seq-seed-timeout");
     try {
-      const loaded = checkpointStore.load(executionId);
-      const value = loaded instanceof Promise ? await loaded : loaded;
-      if (value?.seq !== undefined && value.seq >= storeOpSeq) {
+      const loadResult = await Promise.race([
+        Promise.resolve().then(async () => {
+          const loaded = store.load(id);
+          return loaded instanceof Promise ? await loaded : loaded;
+        }),
+        new Promise<typeof timeoutSentinel>((resolve) => {
+          if (checkpointStoreTimeoutMs <= 0) return; // opt-out — never resolve
+          timer = setTimeout(() => resolve(timeoutSentinel), checkpointStoreTimeoutMs);
+        }),
+      ]);
+      if (loadResult === timeoutSentinel) return;
+      if (loadResult?.seq !== undefined && loadResult.seq >= storeOpSeq) {
         // Lift above the durable watermark so the next stamp wins.
-        // The +1 disambiguates same-ms clocks; nextSeq()'s monotonic
-        // step will continue from here regardless of wall clock.
-        storeOpSeq = value.seq + 1;
+        // nextSeq()'s monotonic step continues from here regardless
+        // of wall clock.
+        storeOpSeq = loadResult.seq + 1;
       }
     } catch {
-      // Probe failures must not block emission. The seq guard at the
-      // backend still drops late writes; worst case here is the first
-      // save lands with an older seq and is silently dropped — visible
-      // as a missing checkpoint but never as corrupted state.
+      // Probe failures must not block emission.
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
   function nextSeq(): number {
