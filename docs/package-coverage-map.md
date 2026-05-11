@@ -4,9 +4,9 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 222 workspace packages
+- 223 workspace packages
 - 11 package families
-- 222 packages with local test files
+- 223 packages with local test files
 - 198 packages with dedicated package docs
 
 ## Family Summary
@@ -22,7 +22,7 @@ Current snapshot:
 | net | 10 | 91 | 10 |
 | sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
-| security | 21 | 114 | 21 |
+| security | 22 | 122 | 21 |
 | ui | 2 | 57 | 2 |
 
 ## Package Inventory
@@ -255,8 +255,9 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/scheduler-provider` (packages/sched/scheduler-provider) - Agent-facing tools for scheduler interaction (9 tools via SchedulerComponent). Tests: 1. Docs: docs/L2/scheduler-provider.md.
 - `@koi/verified-loop` (packages/sched/verified-loop) - External verification loop — iterate agent against objective gates instead of LLM self-assessment. Tests: 5. Docs: docs/L2/verified-loop.md.
 
-## security (21)
+## security (22)
 
+- `@koi/approval-zones` (packages/security/approval-zones) - Approval zones with risk scoring — converts ask verdicts into auto / sandbox-then-auto / ask. Tests: 6. Docs: -.
 - `@koi/audit-sink-ndjson` (packages/security/audit-sink-ndjson) - Buffered NDJSON file sink for @koi/middleware-audit. Tests: 1. Docs: docs/L2/audit-sink-ndjson.md.
 - `@koi/audit-sink-nexus` (packages/security/audit-sink-nexus) - Nexus-backed AuditSink — batched writes with interval and size triggers. Tests: 2. Docs: docs/L2/audit-sink-nexus.md.
 - `@koi/audit-sink-sqlite` (packages/security/audit-sink-sqlite) - SQLite sink with WAL mode and time+kind index for @koi/middleware-audit. Tests: 1. Docs: docs/L2/audit-sink-sqlite.md.
@@ -269,7 +270,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/middleware-audit` (packages/security/middleware-audit) - Security-grade audit logging middleware with hash chain tamper-detection, Ed25519 signing, and bounded backpressure. Tests: 4. Docs: docs/L2/middleware-audit.md.
 - `@koi/middleware-exfiltration-guard` (packages/security/middleware-exfiltration-guard) - Scan tool inputs and model output for secret exfiltration (base64/URL-encoded secrets). Tests: 2. Docs: docs/L2/middleware-exfiltration-guard.md.
 - `@koi/middleware-intent-capsule` (packages/security/middleware-intent-capsule) - Cryptographic mandate binding middleware — Ed25519 session signing for OWASP ASI01 goal-hijack defense. Tests: 2. Docs: docs/L2/middleware-intent-capsule.md.
-- `@koi/middleware-permissions` (packages/security/middleware-permissions) - Tool-level access control middleware with pattern-based classifier, denial tracking, and human-in-the-loop approval. Tests: 13. Docs: docs/L2/middleware-permissions.md.
+- `@koi/middleware-permissions` (packages/security/middleware-permissions) - Tool-level access control middleware with pattern-based classifier, denial tracking, and human-in-the-loop approval. Tests: 15. Docs: docs/L2/middleware-permissions.md.
 - `@koi/nexus-delegation` (packages/security/nexus-delegation) - Nexus-backed DelegationComponent: per-child API key grant/revoke over Nexus REST. L2.. Tests: 6. Docs: docs/L2/nexus-delegation.md.
 - `@koi/permission-escalation-nexus` (packages/security/permission-escalation-nexus) - Nexus-backed coordinator-to-worker permission escalation transport. Tests: 5. Docs: docs/L2/permission-escalation-nexus.md.
 - `@koi/permissions` (packages/security/permissions) - Rule-based tool access control implementing PermissionBackend. Tests: 7. Docs: docs/L2/permissions.md.

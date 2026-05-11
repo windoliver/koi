@@ -19,7 +19,7 @@
 - **Working dir:** `/Users/sophiawj/private/koi/.claude/worktrees/issue-1644-approval-zones` — all paths in this plan are relative to it.
 - **Branch:** `worktree-issue-1644-approval-zones` (already created by setup).
 - **Commits:** one per task end. Use Conventional Commits prefix `feat(approval-zones):` for code, `test(approval-zones):` for test-only, `docs(approval-zones):` for docs.
-- **Test runner:** `bun test packages/security/approval-zones/` for the package; `bun test --filter @koi/approval-zones` from repo root.
+- **Test runner:** `bun test packages/security/approval-zones/` for the package; `bun run test --filter=@koi/approval-zones` from repo root.
 - **TDD discipline:** every behavior step is failing-test → minimal-impl → green → commit. Do not batch.
 - **Package name:** `@koi/approval-zones` (Koi convention drops the `security/` prefix from package name; directory still lives under `packages/security/approval-zones`).
 - **Layer:** L2. Must be added to `scripts/layers.ts` `L2_PACKAGES` (or whichever set permissions packages live in — check the file).
@@ -2021,7 +2021,7 @@ Expected: PASS. If it fails because the script demands a recorded cassette, add 
 ```bash
 bun --cwd packages/security/approval-zones test
 bun --cwd packages/security/middleware-permissions test
-bun --cwd packages/meta/runtime test --filter "Golden: @koi/approval-zones"
+bun test packages/meta/runtime/src/__tests__/golden-replay.test.ts -t "Golden: @koi/approval-zones"
 ```
 Expected: all pass.
 
