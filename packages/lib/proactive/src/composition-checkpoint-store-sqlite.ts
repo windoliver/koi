@@ -87,6 +87,28 @@ const VALID_PHASES = new Set<CheckpointPhase>(["in_progress", "completed", "fail
  * Same `SqliteDatabaseLike` contract as `sqliteCompositionExecutionLog` —
  * works with Bun's `bun:sqlite` and Node's `node:sqlite` (Node ≥22).
  */
+// Discriminates "duplicate column" errors (idempotent re-migration on
+// an already-migrated DB) from genuine failures that must surface.
+// Both bun:sqlite and node:sqlite produce a message containing
+// "duplicate column" — we match on the substring to stay portable
+// across both drivers without depending on driver-specific error codes.
+function applyAddColumnIfMissing(
+  db: SqliteDatabaseLike,
+  table: string,
+  column: string,
+  decl: string,
+): void {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/duplicate column/i.test(message)) return;
+    throw new Error(`sqliteCompositionCheckpointStore: migration failed for ${table}.${column}`, {
+      cause: e,
+    });
+  }
+}
+
 export function sqliteCompositionCheckpointStore(
   db: SqliteDatabaseLike,
   config: SqliteCheckpointStoreConfig = {},
@@ -126,16 +148,14 @@ export function sqliteCompositionCheckpointStore(
   // Schema-additive ALTER for existing databases that pre-date the seq /
   // tombstone columns. SQLite ALTER TABLE ADD COLUMN is idempotent only
   // when the column doesn't already exist, so wrap in try/catch.
-  try {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN seq INTEGER`);
-  } catch {
-    /* column already exists */
-  }
-  try {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN tombstone INTEGER NOT NULL DEFAULT 0`);
-  } catch {
-    /* column already exists */
-  }
+  // Migration: tolerate only "duplicate column" errors (column already
+  // present from a prior migration). Any OTHER ALTER failure (locked
+  // DB, read-only, malformed schema) MUST surface here so the host
+  // fails fast at construction — swallowing every exception would let
+  // the store proceed with a half-migrated schema and turn upgrade
+  // problems into runtime recovery failures on the first save/load.
+  applyAddColumnIfMissing(db, table, "seq", "INTEGER");
+  applyAddColumnIfMissing(db, table, "tombstone", "INTEGER NOT NULL DEFAULT 0");
 
   // UPSERT with monotonic seq guard via `WHERE excluded.seq > ${table}.seq`.
   // - First write: INSERT path applies (no prior row).
