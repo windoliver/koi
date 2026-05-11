@@ -7,11 +7,30 @@ import {
   scheduleId,
   taskId,
 } from "../../../kernel/core/src/index.js";
+import type {
+  CheckpointSnapshot,
+  CompositionCheckpointStore,
+} from "./composition-checkpoint-store.js";
 import {
   createCompositionExecutor,
   isPreCommitRejection,
   preCommitRejection,
 } from "./composition-executor.js";
+
+function recordingCheckpointStore() {
+  const saves: CheckpointSnapshot[] = [];
+  const deletes: string[] = [];
+  const store: CompositionCheckpointStore = {
+    save: (snapshot) => {
+      saves.push(snapshot);
+    },
+    load: () => undefined,
+    delete: (id) => {
+      deletes.push(id);
+    },
+  };
+  return { store, saves, deletes };
+}
 
 function trigger(): CompositionTrigger {
   return {
@@ -1714,5 +1733,258 @@ describe("createCompositionExecutor", () => {
     expect(isPreCommitRejection(undefined)).toBe(false);
     expect(isPreCommitRejection("brand")).toBe(false);
     expect(isPreCommitRejection(42)).toBe(false);
+  });
+});
+
+describe("createCompositionExecutor — checkpoint store wiring", () => {
+  function twoStepPlan(): CompositionPlan {
+    return {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        { kind: "notify_user", channel: "inbox", message: "first", priority: "normal" },
+        { kind: "notify_user", channel: "inbox", message: "second", priority: "normal" },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+  }
+
+  test("saves a snapshot after each successful step and deletes on terminal success", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-1",
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("executed");
+    expect(saves).toHaveLength(2);
+    expect(saves[0]).toMatchObject({
+      executionId: "exec-1",
+      nextStepIndex: 1,
+      phase: "in_progress",
+    });
+    expect(saves[0]?.stepResults).toEqual([{ delivered: true }]);
+    expect(saves[1]).toMatchObject({
+      executionId: "exec-1",
+      nextStepIndex: 2,
+      phase: "in_progress",
+    });
+    expect(saves[1]?.stepResults).toEqual([{ delivered: true }, { delivered: true }]);
+    // Same planHash across both snapshots.
+    expect(saves[0]?.planHash).toBe(saves[1]?.planHash ?? "");
+    expect(deletes).toEqual(["exec-1"]);
+  });
+
+  test("saves phase=failed snapshot on terminal failure (mid-plan throw)", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    let count = 0;
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => {
+        count += 1;
+        if (count === 2) throw new Error("transient");
+        return { delivered: true };
+      },
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-2",
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("failed");
+    // One in_progress (step 1) + one failed (terminal).
+    expect(saves).toHaveLength(2);
+    expect(saves[0]).toMatchObject({ nextStepIndex: 1, phase: "in_progress" });
+    expect(saves[1]).toMatchObject({ nextStepIndex: 1, phase: "failed" });
+    expect(deletes).toHaveLength(0);
+  });
+
+  test("saves phase=failed snapshot on unsupported terminal", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-3",
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        { kind: "notify_user", channel: "inbox", message: "first", priority: "normal" },
+        { kind: "tool_call", toolName: "missing", input: {} },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("unsupported");
+    expect(saves).toHaveLength(2);
+    expect(saves[0]).toMatchObject({ nextStepIndex: 1, phase: "in_progress" });
+    expect(saves[1]).toMatchObject({ nextStepIndex: 1, phase: "failed" });
+    expect(deletes).toHaveLength(0);
+  });
+
+  test("returns INVALID_PLAN when checkpointStore is wired without executionId", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatchObject({ code: "INVALID_PLAN" });
+    expect(saves).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
+  });
+
+  test("returns INVALID_PLAN when executionId is the empty string", async () => {
+    const { scheduler } = schedulerStub();
+    const { store } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "",
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatchObject({ code: "INVALID_PLAN" });
+  });
+
+  test("save failures are swallowed; executor still returns structured success", async () => {
+    const { scheduler } = schedulerStub();
+    const throwingStore: CompositionCheckpointStore = {
+      save: () => {
+        throw new Error("backend down");
+      },
+      load: () => undefined,
+      delete: () => {
+        throw new Error("backend down");
+      },
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: throwingStore,
+      executionId: "exec-throw",
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("executed");
+    expect(result.executedCount).toBe(2);
+  });
+
+  test("default planHash is stable across logically equivalent plans", async () => {
+    const { scheduler } = schedulerStub();
+    const { store: storeA, saves: savesA } = recordingCheckpointStore();
+    const { store: storeB, saves: savesB } = recordingCheckpointStore();
+
+    const planA: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+    // Same logical plan; the canonicalizer should produce identical JSON.
+    const planB: CompositionPlan = {
+      requiresApproval: false,
+      estimatedCost: 1,
+      triggerEmittedAt: 1,
+      steps: [{ priority: "normal", message: "x", channel: "inbox", kind: "notify_user" }],
+      triggerId: "trigger-1",
+    };
+
+    const execA = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: storeA,
+      executionId: "a",
+    });
+    const execB = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: storeB,
+      executionId: "b",
+    });
+
+    await execA.execute(trigger(), planA);
+    await execB.execute(trigger(), planB);
+
+    expect(savesA[0]?.planHash).toBe(savesB[0]?.planHash ?? "");
+  });
+
+  test("custom hashPlan override is respected", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-custom",
+      hashPlan: () => "fixed-hash",
+    });
+
+    await executor.execute(trigger(), twoStepPlan());
+
+    expect(saves[0]?.planHash).toBe("fixed-hash");
+    expect(saves[1]?.planHash).toBe("fixed-hash");
+  });
+
+  test("without checkpointStore, no snapshot calls occur (behavior unchanged)", async () => {
+    const { scheduler } = schedulerStub();
+    // No store wired — but recording one to prove it stays untouched.
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      // intentionally NOT wiring checkpointStore
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("executed");
+    // Sanity: the unused store recorded nothing.
+    expect(saves).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
+    void store;
   });
 });

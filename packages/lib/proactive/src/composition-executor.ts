@@ -16,6 +16,7 @@ import {
   preCommitRejection,
   type SchedulerComponent,
 } from "@koi/core";
+import type { CompositionCheckpointStore } from "./composition-checkpoint-store.js";
 import {
   type CompositionGovernance,
   defaultPatternKey,
@@ -213,6 +214,39 @@ export interface CompositionExecutionContext {
   readonly outcomeRecorder?: OutcomeRecorder | undefined;
   /** Clock override; defaults to `Date.now`. Used for CompositionGap timestamps. */
   readonly now?: (() => number) | undefined;
+  /**
+   * Optional checkpoint store for per-plan progress observability. When
+   * wired together with `executionId`, the executor emits a snapshot after
+   * each successful step, deletes on terminal success, and persists a
+   * `phase: "failed"` snapshot on terminal failure / unsupported. Snapshots
+   * are observability-only — store failures are swallowed and the
+   * executionLog remains the correctness source of truth for did-this-side-
+   * effect-already-commit. Hosts use the snapshot stream to enumerate
+   * in-flight executions on restart; the actual resume mechanism is the
+   * mandatory executionLog's claim/record/release contract.
+   */
+  readonly checkpointStore?: CompositionCheckpointStore | undefined;
+  /**
+   * Stable per-execution identifier. Required when `checkpointStore` is
+   * provided. Hosts typically derive this from
+   * `${agentId}:${trigger.id}:${trigger.emittedAt}` or from a workflow ID
+   * for Temporal-backed deployments. Without `checkpointStore`, this field
+   * is ignored. With `checkpointStore` and missing/empty `executionId`,
+   * execute() returns INVALID_PLAN immediately.
+   */
+  readonly executionId?: string | undefined;
+  /**
+   * Plan-stable hash override. Defaults to a SHA-256 of the canonicalized
+   * plan (field-order independent). Used as the `planHash` field of every
+   * emitted snapshot so hosts can detect plan drift between attempts.
+   */
+  readonly hashPlan?: ((plan: CompositionPlan) => string) | undefined;
+}
+
+function defaultPlanHash(plan: CompositionPlan): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalize(plan)))
+    .digest("hex");
 }
 
 const DEFAULT_ALLOWED_NOTIFY_CHANNELS: readonly string[] = ["inbox"];
@@ -458,6 +492,46 @@ export function createCompositionExecutor(
 ): CompositionExecutor {
   const now = context.now ?? Date.now;
   const recorder = context.outcomeRecorder;
+  const checkpointStore = context.checkpointStore;
+  const executionId = context.executionId;
+  const hashPlan = context.hashPlan ?? defaultPlanHash;
+  // Validate at executor construction: wiring a store without an id is a
+  // host configuration bug. Defer the surfaced error until execute() runs
+  // so the contract (every call resolves to a structured result) holds.
+  const missingExecutionId =
+    checkpointStore !== undefined && (executionId === undefined || executionId === "");
+
+  async function saveProgress(
+    plan: CompositionPlan,
+    stepResults: readonly ExecutedStepResult[],
+    phase: "in_progress" | "failed",
+  ): Promise<void> {
+    if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    try {
+      await checkpointStore.save({
+        executionId,
+        planHash: hashPlan(plan),
+        nextStepIndex: stepResults.length,
+        stepResults: stepResults.map((r) => r.output),
+        phase,
+        savedAt: now(),
+      });
+    } catch {
+      // Snapshot persistence is observability-only. A non-serializable
+      // step output, a backing-store write failure, or a hashPlan throw
+      // must never convert a structured executor result into an uncaught
+      // throw.
+    }
+  }
+
+  async function deleteProgress(): Promise<void> {
+    if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    try {
+      await checkpointStore.delete(executionId);
+    } catch {
+      // Same rationale as saveProgress — cleanup failure is observability-only.
+    }
+  }
 
   async function emitGap(trigger: CompositionTrigger, step: CompositionStep): Promise<void> {
     if (recorder?.recordGap === undefined) return;
@@ -1066,6 +1140,10 @@ export function createCompositionExecutor(
         }
         return failedResult(trigger.id, stepResults, stepFailed(step, cause));
       }
+      // Step pushed successfully (failures return early above) — snapshot
+      // progress so a host watching the checkpoint store sees the plan
+      // advancing step-by-step.
+      await saveProgress(plan, stepResults, "in_progress");
     }
 
     return {
@@ -1081,8 +1159,41 @@ export function createCompositionExecutor(
       trigger: CompositionTrigger,
       plan: CompositionPlan,
     ): Promise<CompositionExecutionResult> {
+      // Fail fast on host-misconfigured snapshot wiring (store without id).
+      // Surface as a structured INVALID_PLAN so the contract still holds.
+      if (missingExecutionId) {
+        return {
+          triggerId: trigger.id,
+          status: "failed",
+          stepResults: [],
+          executedCount: 0,
+          error: {
+            code: "INVALID_PLAN",
+            message: "checkpointStore is configured but executionId is missing or empty",
+          },
+        };
+      }
       const state = { committedNewWork: false, acquiredSessionSlot: false };
       const result = await runPlan(trigger, plan, state);
+      // Terminal snapshot housekeeping. Pure success deletes the snapshot
+      // (no in-flight execution to resume). Any non-terminal-success
+      // outcome — failed / unsupported / requires_approval — leaves a
+      // `phase: "failed"` snapshot so hosts can enumerate executions that
+      // stopped short. (`requires_approval` runs zero steps; the snapshot
+      // is still useful as a signal that the plan was attempted.)
+      if (result.status === "executed") {
+        await deleteProgress();
+      } else {
+        // Cast widening: result.stepResults narrows differently per status
+        // (failed/unsupported include the final non-executed step). Snapshot
+        // only the executed prefix to match `nextStepIndex` semantics.
+        const executedPrefix: ExecutedStepResult[] = [];
+        for (const r of result.stepResults) {
+          if (r.status === "executed") executedPrefix.push(r);
+          else break;
+        }
+        await saveProgress(plan, executedPrefix, "failed");
+      }
       return finalize(trigger, plan, result, state.committedNewWork, state.acquiredSessionSlot);
     },
   };
