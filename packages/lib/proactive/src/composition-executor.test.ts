@@ -2033,6 +2033,64 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
     expect(deletes).toHaveLength(0);
   });
 
+  test(
+    "checkpoint store ops are serialized per executor: a slow save cannot " +
+      "commit AFTER a later delete (no stale-snapshot resurrection)",
+    async () => {
+      const { scheduler } = schedulerStub();
+      // Order the test observes ops complete on the STORE side. Even if the
+      // executor's view of save() times out, the underlying op finishes
+      // before the next op runs — so a slow save will never overtake a
+      // later delete and resurrect a stale snapshot.
+      const observed: { op: "save" | "delete"; at: number }[] = [];
+      let releaseSlowSave: (() => void) | undefined;
+      const slowSavePromise = new Promise<void>((resolve) => {
+        releaseSlowSave = resolve;
+      });
+
+      const store: CompositionCheckpointStore = {
+        save: async () => {
+          await slowSavePromise;
+          observed.push({ op: "save", at: observed.length });
+        },
+        delete: async () => {
+          observed.push({ op: "delete", at: observed.length });
+        },
+        load: () => undefined,
+        list: () => [],
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-serialize",
+        // Short timeout so the executor returns before save resolves; the
+        // store-side ordering must still hold.
+        checkpointStoreTimeoutMs: 25,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+
+      const result = await executor.execute(trigger(), plan);
+      expect(result.status).toBe("executed");
+      // Nothing visible yet — save is still hung.
+      expect(observed).toEqual([]);
+
+      // Release the hung save; ordering must put save BEFORE delete.
+      releaseSlowSave?.();
+      // Drain microtasks so the chained delete runs.
+      await new Promise<void>((r) => setTimeout(r, 10));
+      expect(observed.map((o) => o.op)).toEqual(["save", "delete"]);
+    },
+  );
+
   test("never-settling checkpoint store does not block step progression or final return", async () => {
     const { scheduler } = schedulerStub();
     // Build a store whose save/delete Promises never resolve. Without the
