@@ -3,21 +3,43 @@ import type { PermissionQuery, SandboxProfile } from "@koi/core";
 import type { SandboxRouter } from "@koi/sandbox-router";
 
 /**
- * Read-only preview profile for `sandbox-then-auto`.
- *
- * Deny-by-default: filesystem reads closed, network disabled, hard
- * timeout + memory cap. The preview is a *rehearsal* — the host re-run
- * is what actually has side effects. This profile codifies the safety
- * intent documented in #1644 ("sandboxed execution provides damage
- * containment"); without an explicit profile the router would apply
- * adapter defaults that may grant broad network / fs access and
- * undermine the rehearsal value.
+ * Path-shaped token regex. Matches absolute or `~/`-prefixed paths in a
+ * raw bash command string. Tilde prefixes get expanded later by the host.
+ * Intentionally permissive — false positives in extraction widen
+ * `allowRead`, which the rest of the policy still constrains.
  */
-const PREVIEW_PROFILE: SandboxProfile = {
-  filesystem: { defaultReadAccess: "closed" },
-  network: { allow: false },
-  resources: { timeoutMs: 30_000, maxMemoryMb: 256 },
-};
+const PATH_TOKEN_REGEX = /(?<![A-Za-z0-9_])(?:~\/|\/)[A-Za-z0-9_.\-/]+/g;
+
+/** Extract path-shaped tokens from a bash command. Best-effort. */
+export function extractBashPathTargets(command: string): readonly string[] {
+  if (command === "") return [];
+  const out: string[] = [];
+  for (const m of command.matchAll(PATH_TOKEN_REGEX)) {
+    out.push(m[0]);
+  }
+  return out;
+}
+
+/**
+ * Build a deny-by-default preview profile for `sandbox-then-auto`.
+ *
+ * Filesystem reads start closed; any path tokens extracted from the
+ * bash command are added to `allowRead` so commands like `ls /tmp/x`
+ * can actually rehearse. Writes are not allow-listed (preview is a
+ * read-only rehearsal — the host re-run handles real side effects).
+ * Network is disabled; hard timeout + memory cap keep adapter defaults
+ * from leaking through.
+ */
+function buildPreviewProfile(allowRead: readonly string[]): SandboxProfile {
+  return {
+    filesystem:
+      allowRead.length > 0
+        ? { defaultReadAccess: "closed", allowRead }
+        : { defaultReadAccess: "closed" },
+    network: { allow: false },
+    resources: { timeoutMs: 30_000, maxMemoryMb: 256 },
+  };
+}
 
 export interface ZoneAuditSink {
   record(
@@ -109,7 +131,8 @@ export async function applyZoneVerdict(
   }
 
   try {
-    const created = await args.sandboxRouter.create(PREVIEW_PROFILE);
+    const bashPaths = extractBashPathTargets(command);
+    const created = await args.sandboxRouter.create(buildPreviewProfile(bashPaths));
     if (!created.ok) {
       args.auditSink.record("zone-sandbox-failed", {
         ...metaFromVerdict(verdict),

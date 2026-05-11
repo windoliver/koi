@@ -339,12 +339,28 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       // Resolve a filesystem-meaningful resource for the zone query.
       // The `resource` variable is a permission key (e.g. "read", "bash:git status")
       // not always a path. Zones use resource for path matching + risk scoring.
-      // Prefer an absolute path from resolveToolPath; fall back to enriched resource
-      // if it's already an absolute path; otherwise fall back to toolId so the zone
-      // matcher can still fire on m.tools patterns without a misleading path score.
+      // Prefer an absolute path from resolveToolPath; for bash, extract the
+      // first path-shaped token from the command so path-based zones (e.g.
+      // `paths: ["/tmp/**"]`) can match ordinary shell commands. Otherwise
+      // accept the enriched resource if it's already an absolute path; final
+      // fallback is the toolId so the matcher can still fire on m.tools alone.
       const zoneResolvedPath = config.resolveToolPath?.(request.toolId, request.input ?? {});
-      const zoneResource =
-        zoneResolvedPath ?? (resource.startsWith("/") ? resource : request.toolId);
+      let zoneResource: string;
+      if (zoneResolvedPath !== undefined) {
+        zoneResource = zoneResolvedPath;
+      } else if (request.toolId === "bash") {
+        const bashCommand =
+          typeof (request.input as Record<string, unknown>)?.command === "string"
+            ? ((request.input as Record<string, unknown>).command as string)
+            : "";
+        const { extractBashPathTargets } = await import("./zones-bridge.js");
+        const firstPath = extractBashPathTargets(bashCommand)[0];
+        zoneResource = firstPath ?? (resource.startsWith("/") ? resource : request.toolId);
+      } else if (resource.startsWith("/")) {
+        zoneResource = resource;
+      } else {
+        zoneResource = request.toolId;
+      }
       const zoneResult = await applyZoneVerdict({
         query: {
           principal: ctx.session.userId ?? "__anonymous__",

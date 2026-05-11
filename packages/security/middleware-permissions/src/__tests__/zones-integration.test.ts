@@ -4,6 +4,7 @@ import {
   createZoneEvaluator,
   EDIT_TEST_FILES_PROFILE,
   READ_ONLY_PROFILE,
+  SCRIPTED_CLEANUP_PROFILE,
 } from "@koi/approval-zones";
 import type { JsonObject } from "@koi/core/common";
 import type {
@@ -143,6 +144,65 @@ describe("zones integration with createPermissionsMiddleware", () => {
           "zone-auto",
     );
     expect(zoneEntry).toBeDefined();
+    expect(unusedHandler).not.toHaveBeenCalled();
+  });
+
+  test("SCRIPTED_CLEANUP_PROFILE: bash ls /tmp/work triggers sandbox-then-auto path", async () => {
+    const evaluator = createZoneEvaluator({
+      zones: SCRIPTED_CLEANUP_PROFILE,
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: "ok",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    const sandboxRouter = {
+      create: mock(async () => ({
+        ok: true as const,
+        value: {
+          instance: {
+            exec,
+            readFile: async () => new Uint8Array(),
+            writeFile: async () => {},
+            destroy,
+          },
+          decision: { selected: { name: "default" } },
+        },
+      })),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const unusedHandler = mock(
+      async (): Promise<ApprovalDecision> => ({ kind: "deny", reason: "unused" }),
+    );
+    const mw = createPermissionsMiddleware({
+      backend: askBackend(),
+      resolveToolPath,
+      zones: {
+        evaluator,
+        sandboxRouter: sandboxRouter as unknown as Parameters<
+          typeof createPermissionsMiddleware
+        >[0]["zones"] extends infer Z
+          ? Z extends { sandboxRouter?: infer R }
+            ? R
+            : never
+          : never,
+      },
+    });
+    const ctx = makeTurnContext(unusedHandler);
+    const result = await mw.wrapToolCall?.(
+      ctx,
+      makeToolRequest("bash", { command: "ls /tmp/work" }),
+      noopToolHandler,
+    );
+    expect(result?.output).toBe("done");
+    expect(exec).toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalled();
     expect(unusedHandler).not.toHaveBeenCalled();
   });
 

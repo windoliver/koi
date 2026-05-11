@@ -2,7 +2,27 @@ import { describe, expect, it, mock } from "bun:test";
 import type { RiskScorer } from "@koi/approval-zones";
 import { createZoneEvaluator } from "@koi/approval-zones";
 import type { PermissionQuery } from "@koi/core";
-import { applyZoneVerdict, type ZoneAuditSink } from "./zones-bridge.js";
+import { applyZoneVerdict, extractBashPathTargets, type ZoneAuditSink } from "./zones-bridge.js";
+
+describe("extractBashPathTargets", () => {
+  it("returns absolute path tokens from a bash command", () => {
+    expect(extractBashPathTargets("ls /tmp/work")).toEqual(["/tmp/work"]);
+    expect(extractBashPathTargets("rm -rf /tmp/foo /tmp/bar")).toEqual(["/tmp/foo", "/tmp/bar"]);
+  });
+
+  it("returns ~/ tokens (tilde-prefixed paths)", () => {
+    expect(extractBashPathTargets("ls ~/Downloads")).toEqual(["~/Downloads"]);
+  });
+
+  it("returns empty array when command has no path tokens", () => {
+    expect(extractBashPathTargets("echo hello")).toEqual([]);
+    expect(extractBashPathTargets("")).toEqual([]);
+  });
+
+  it("ignores embedded slashes inside identifiers", () => {
+    expect(extractBashPathTargets("foo a/b /c/d")).toEqual(["/c/d"]);
+  });
+});
 
 const scorer: RiskScorer = { score: () => ({ tier: "low", reasons: [] }) };
 
@@ -311,5 +331,62 @@ describe("applyZoneVerdict", () => {
     expect(p.filesystem.defaultReadAccess).toBe("closed");
     expect(p.network.allow).toBe(false);
     expect(p.resources.timeoutMs).toBeGreaterThan(0);
+  });
+
+  it("expands SandboxProfile.filesystem.allowRead with paths from the bash command", async () => {
+    const ev = createZoneEvaluator({
+      zones: [
+        {
+          name: "cleanup",
+          match: { tools: ["bash"] },
+          action: "sandbox-then-auto",
+          maxRisk: "medium",
+          sandboxBackendId: "default",
+        },
+      ],
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    let capturedProfile: unknown;
+    const sandboxRouter = {
+      create: mock(async (profile: unknown) => {
+        capturedProfile = profile;
+        return {
+          ok: true as const,
+          value: {
+            instance: {
+              exec,
+              readFile: async () => new Uint8Array(),
+              writeFile: async () => {},
+              destroy,
+            },
+            decision: { selected: { name: "default" } },
+          },
+        };
+      }),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const { sink } = makeSink();
+    await applyZoneVerdict({
+      query: { ...baseQuery, action: "bash", context: { command: "ls /tmp/foo" } },
+      evaluator: ev,
+      sandboxRouter: sandboxRouter as unknown as Parameters<
+        typeof applyZoneVerdict
+      >[0]["sandboxRouter"],
+      auditSink: sink,
+    });
+    const p = capturedProfile as {
+      readonly filesystem: { allowRead?: readonly string[] };
+    };
+    expect(p.filesystem.allowRead).toContain("/tmp/foo");
   });
 });
