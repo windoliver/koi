@@ -40,10 +40,17 @@ export interface ProactiveDelivery {
 }
 
 function buildOutbound(notification: ProactiveNotification): OutboundMessage {
+  // Deep-clone content + metadata so a misbehaving adapter that mutates its
+  // input cannot poison the caller's notification, sibling parallel sends
+  // (urgent fan-out), or subsequent fallback attempts (high priority).
+  // structuredClone preserves structural type; covariance allows assigning a
+  // mutable clone to the readonly field.
   return {
-    content: notification.content,
+    content: structuredClone(notification.content),
     ...(notification.threadId !== undefined ? { threadId: notification.threadId } : {}),
-    ...(notification.metadata !== undefined ? { metadata: notification.metadata } : {}),
+    ...(notification.metadata !== undefined
+      ? { metadata: structuredClone(notification.metadata) }
+      : {}),
   };
 }
 
@@ -230,12 +237,15 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
       if (notification.priority === "urgent") {
         // Urgent is its own path — fan-out, never gated by rate limit, never
         // consumes window capacity.
-        const msg = buildOutbound(notification);
         const entries = Array.from(config.channels.entries(), ([name, adapter]) => ({
           name,
           adapter,
         }));
-        const results = await Promise.all(entries.map((c) => sendOne(c, msg)));
+        // Per-adapter cloned message so a misbehaving adapter that mutates
+        // its input cannot race against parallel sends to other channels.
+        const results = await Promise.all(
+          entries.map((c) => sendOne(c, buildOutbound(notification))),
+        );
         const delivered: string[] = [];
         const failures: DeliveryFailure[] = [];
         for (let i = 0; i < entries.length; i++) {
@@ -265,10 +275,11 @@ export function createProactiveDelivery(config: ProactiveDeliveryConfig): Proact
           refundSlot(t, notification.priority);
           return { ok: false, reason: "no_channels" };
         }
-        const msg = buildOutbound(notification);
         const failures: DeliveryFailure[] = [];
         for (const target of order) {
-          const failure = await sendOne(target, msg);
+          // Per-attempt cloned message so an adapter that mutates its input
+          // cannot poison subsequent fallback attempts.
+          const failure = await sendOne(target, buildOutbound(notification));
           if (failure === undefined) {
             return { ok: true, delivered: [target.name] };
           }

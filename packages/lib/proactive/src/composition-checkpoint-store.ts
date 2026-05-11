@@ -52,26 +52,33 @@ export interface CompositionCheckpointStore {
   readonly delete: (executionId: string) => void | Promise<void>;
 }
 
-function isCheckpointValue(value: unknown, seen: Set<unknown>): boolean {
+function isCheckpointValue(value: unknown, ancestors: Set<unknown>): boolean {
   if (value === null) return true;
   const t = typeof value;
   if (t === "string" || t === "boolean") return true;
   if (t === "number") return Number.isFinite(value as number);
   if (t === "function" || t === "undefined" || t === "symbol" || t === "bigint") return false;
-  if (typeof value !== "object" || value === null) return false;
-  if (seen.has(value)) return false; // cycle
-  seen.add(value);
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      if (!isCheckpointValue(item, seen)) return false;
+  if (typeof value !== "object") return false;
+  // Cycle detection: only the current recursion path counts as a cycle.
+  // A repeated reference in sibling positions of an acyclic graph is valid
+  // JSON-serializable data and must be accepted.
+  if (ancestors.has(value)) return false;
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (!isCheckpointValue(item, ancestors)) return false;
+      }
+      return true;
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) return false; // class instance, Error, etc.
+    for (const key of Object.keys(value)) {
+      if (!isCheckpointValue((value as Record<string, unknown>)[key], ancestors)) return false;
     }
     return true;
+  } finally {
+    ancestors.delete(value);
   }
-  if (Object.getPrototypeOf(value) !== Object.prototype) return false; // class instance, Error, etc.
-  for (const key of Object.keys(value)) {
-    if (!isCheckpointValue((value as Record<string, unknown>)[key], seen)) return false;
-  }
-  return true;
 }
 
 function validateSnapshot(snapshot: CheckpointSnapshot): void {
@@ -103,9 +110,17 @@ export function createInMemoryCheckpointStore(): CompositionCheckpointStore {
   return {
     save: (snapshot) => {
       validateSnapshot(snapshot);
-      snapshots.set(snapshot.executionId, snapshot);
+      // Defensive deep-clone so post-save mutation of the caller's object
+      // (or its nested objects/arrays) cannot rewrite persisted state.
+      // Validation has already proven the snapshot is JSON-serializable.
+      snapshots.set(snapshot.executionId, structuredClone(snapshot));
     },
-    load: (id) => snapshots.get(id),
+    load: (id) => {
+      const stored = snapshots.get(id);
+      // Defensive deep-clone on read so callers cannot mutate persisted
+      // state by editing the returned reference's nested fields.
+      return stored === undefined ? undefined : structuredClone(stored);
+    },
     delete: (id) => {
       snapshots.delete(id);
     },
