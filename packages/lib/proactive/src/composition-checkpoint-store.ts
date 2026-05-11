@@ -153,6 +153,25 @@ export interface CompositionCheckpointStore {
    * cannot resurrect terminal state.
    */
   readonly seqAware?: boolean;
+  /**
+   * Return the highest `seq` ever observed for `executionId`, INCLUDING
+   * tombstones from versioned deletes. `load()` intentionally hides
+   * tombstone rows so a deleted execution looks gone — but the seq
+   * watermark from that delete is still authoritative for ordering.
+   * The executor uses this on first save/delete to seed its in-process
+   * seq counter so a reused `executionId` whose tombstone watermark
+   * exceeds wall-clock `now()` (NTP rollback, clock-skewed restart,
+   * very large prior seq) does not silently emit writes that the store
+   * guard then drops.
+   *
+   * Optional: stores that don't expose tombstones can omit this. The
+   * executor falls back to `load(id)?.seq`, which works for in-progress
+   * snapshots but cannot recover the watermark after a terminal delete.
+   * Both built-in backends implement it.
+   *
+   * Returns `undefined` when no watermark exists for `executionId`.
+   */
+  readonly getWatermark?: (executionId: string) => number | undefined | Promise<number | undefined>;
 }
 
 function isCheckpointValue(value: unknown, ancestors: Set<unknown>): boolean {
@@ -322,5 +341,6 @@ export function createInMemoryCheckpointStore(
       return out;
     },
     seqAware: true,
+    getWatermark: (id) => seqWatermarks.get(id),
   };
 }

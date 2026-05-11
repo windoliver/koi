@@ -566,40 +566,58 @@ export function createCompositionExecutor(
   let seqSeeded = false;
   async function ensureSeqSeeded(): Promise<void> {
     if (seqSeeded) return;
-    seqSeeded = true; // set first to avoid concurrent reseeds
-    if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    if (checkpointStore === undefined || executionId === undefined || executionId === "") {
+      seqSeeded = true; // no store to probe — done forever
+      return;
+    }
     // Bound the probe with the same observability-only timeout used
-    // for save/delete. A hung custom store's load() must NOT strand
-    // execute() — even though seeding runs before the first store op
-    // chain hop, it's still on the structured-completion critical
-    // path. Race the load against a setTimeout; fail open on either
-    // timeout or throw (worst case: first save lands at a stale seq
-    // and is dropped by the backend guard — observable as a missing
-    // checkpoint, never as corrupted state).
+    // for save/delete. A hung custom store must NOT strand execute()
+    // — even though seeding runs before the first store-op chain hop,
+    // it's still on the structured-completion critical path. Race the
+    // probe against a setTimeout. On success (incl. undefined result)
+    // mark seeded; on timeout/throw, leave `seqSeeded` false so the
+    // NEXT save/delete retries the probe — a one-shot failure must
+    // not permanently brick checkpointing.
+    //
+    // Prefer `getWatermark(id)` over `load(id)`: it surfaces tombstone
+    // watermarks too, so a reused executionId after a versioned delete
+    // still picks up the prior monotonic anchor. `load(id)` hides
+    // tombstones (by contract) and would falsely report "no prior",
+    // letting the seq counter start below the tombstone seq and have
+    // every later save dropped by the backend guard.
     const id = executionId;
     const store = checkpointStore;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutSentinel = Symbol("seq-seed-timeout");
     try {
-      const loadResult = await Promise.race([
-        Promise.resolve().then(async () => {
-          const loaded = store.load(id);
-          return loaded instanceof Promise ? await loaded : loaded;
-        }),
+      const probe: Promise<number | undefined> = Promise.resolve().then(async () => {
+        if (typeof store.getWatermark === "function") {
+          const w = store.getWatermark(id);
+          return w instanceof Promise ? await w : w;
+        }
+        const loaded = store.load(id);
+        const value = loaded instanceof Promise ? await loaded : loaded;
+        return value?.seq;
+      });
+      const result = await Promise.race([
+        probe,
         new Promise<typeof timeoutSentinel>((resolve) => {
           if (checkpointStoreTimeoutMs <= 0) return; // opt-out — never resolve
           timer = setTimeout(() => resolve(timeoutSentinel), checkpointStoreTimeoutMs);
         }),
       ]);
-      if (loadResult === timeoutSentinel) return;
-      if (loadResult?.seq !== undefined && loadResult.seq >= storeOpSeq) {
-        // Lift above the durable watermark so the next stamp wins.
-        // nextSeq()'s monotonic step continues from here regardless
-        // of wall clock.
-        storeOpSeq = loadResult.seq + 1;
+      if (result === timeoutSentinel) {
+        // Leave seqSeeded false — next op retries the probe.
+        return;
       }
+      if (typeof result === "number" && result >= storeOpSeq) {
+        storeOpSeq = result + 1;
+      }
+      seqSeeded = true;
     } catch {
-      // Probe failures must not block emission.
+      // Probe failures must not block emission. Leave seqSeeded false
+      // so a subsequent op can retry — a transient throw should not
+      // permanently disable durable seq seeding.
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
