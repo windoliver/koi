@@ -796,4 +796,44 @@ describe("createProactiveDelivery", () => {
     const r3 = await delivery.send({ priority: "normal", content: [{ kind: "text", text: "n" }] });
     expect(r3).toEqual({ ok: true, delivered: ["slack"] });
   });
+
+  test("throws when maxNotificationsPerHour is NaN", () => {
+    const slack = stubAdapter("slack", async () => {});
+    expect(() =>
+      createProactiveDelivery({
+        channels: new Map([["slack", slack]]),
+        preferences: { maxNotificationsPerHour: Number.NaN },
+      }),
+    ).toThrow(/maxNotificationsPerHour must be a finite non-negative integer/);
+  });
+
+  test("throws when maxNotificationsPerHour is negative", () => {
+    const slack = stubAdapter("slack", async () => {});
+    expect(() =>
+      createProactiveDelivery({
+        channels: new Map([["slack", slack]]),
+        preferences: { maxNotificationsPerHour: -1 },
+      }),
+    ).toThrow(/maxNotificationsPerHour must be a finite non-negative integer/);
+  });
+
+  test("throws when maxNotificationsPerHour is fractional", () => {
+    const slack = stubAdapter("slack", async () => {});
+    expect(() =>
+      createProactiveDelivery({
+        channels: new Map([["slack", slack]]),
+        preferences: { maxNotificationsPerHour: 1.5 },
+      }),
+    ).toThrow(/maxNotificationsPerHour must be a finite non-negative integer/);
+  });
+
+  test("throws when maxNotificationsPerHour is Infinity", () => {
+    const slack = stubAdapter("slack", async () => {});
+    expect(() =>
+      createProactiveDelivery({
+        channels: new Map([["slack", slack]]),
+        preferences: { maxNotificationsPerHour: Number.POSITIVE_INFINITY },
+      }),
+    ).toThrow(/maxNotificationsPerHour must be a finite non-negative integer/);
+  });
 });
