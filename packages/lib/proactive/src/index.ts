@@ -20,6 +20,10 @@ export {
   safeJsonEncoder,
 } from "./composition-checkpoint-store.js";
 export {
+  type SqliteCheckpointStoreConfig,
+  sqliteCompositionCheckpointStore,
+} from "./composition-checkpoint-store-sqlite.js";
+export {
   type SqliteDatabaseLike,
   type SqliteStatementLike,
   sqliteCompositionExecutionLog,
