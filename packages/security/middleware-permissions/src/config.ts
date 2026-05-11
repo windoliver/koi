@@ -2,12 +2,14 @@
  * Configuration types and validation for @koi/middleware-permissions.
  */
 
+import type { ZoneEvaluator } from "@koi/approval-zones";
 import type { AuditSink } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type { KoiError, Result } from "@koi/core/errors";
 import type { PermissionBackend } from "@koi/core/permission-backend";
 import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
 import type { CircuitBreakerConfig } from "@koi/errors";
+import type { SandboxRouter } from "@koi/sandbox-router";
 
 import type { ApprovalStore } from "./approval-store.js";
 
@@ -254,6 +256,19 @@ export interface PermissionsMiddlewareConfig {
    * Set to `false` or leave unset for legacy prefix-only enforcement.
    */
   readonly enableBashSpecGuard?: boolean | undefined;
+
+  /**
+   * Optional approval-zone integration. When set, ask verdicts that miss
+   * persistent + session approvals are routed through the zone evaluator
+   * before prompting the user. See `@koi/approval-zones`.
+   */
+  readonly zones?:
+    | {
+        readonly evaluator: ZoneEvaluator;
+        /** Required only if any configured zone uses `sandbox-then-auto`. */
+        readonly sandboxRouter?: SandboxRouter | undefined;
+      }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------

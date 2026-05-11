@@ -299,6 +299,65 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       }
     }
 
+    // Approval-zones interception (#1644).
+    // Runs AFTER persistent + session + approval-cache lookups (user grants
+    // win) and BEFORE the user prompt. Zones never override allow/deny;
+    // they only convert ask -> auto-allow or sandbox-preview-then-auto.
+    if (config.zones !== undefined) {
+      const { applyZoneVerdict } = await import("./zones-bridge.js");
+      type ZoneAuditSink = import("./zones-bridge.js").ZoneAuditSink;
+      type ZoneAuditMeta = import("./zones-bridge.js").ZoneAuditMeta;
+      const zoneSink: ZoneAuditSink = {
+        // Best-effort audit. The existing audit pipeline emits permission
+        // events via auditApprovalOutcome on grant/deny; here we mirror that
+        // pattern via console.debug if no richer channel is available.
+        // TODO(#1644 follow-up): wire to AuditSink with permissionEvent metadata.
+        record: (event, meta: ZoneAuditMeta): void => {
+          if (auditSink !== undefined) {
+            try {
+              // Cast: the existing AuditSink.record shape is a tool_call entry;
+              // we extend its metadata with the permission event.
+              (auditSink as { record?: (entry: unknown) => void }).record?.({
+                kind: "tool_call",
+                principal: ctx.session.userId ?? "__anonymous__",
+                action: request.toolId,
+                resource,
+                metadata: { permissionEvent: event, ...meta },
+              });
+            } catch {
+              // never let audit emission affect control flow
+            }
+          }
+        },
+      };
+      // Resolve a filesystem-meaningful resource for the zone query.
+      // The `resource` variable is a permission key (e.g. "read", "bash:git status")
+      // not always a path. Zones use resource for path matching + risk scoring.
+      // Prefer an absolute path from resolveToolPath; fall back to enriched resource
+      // if it's already an absolute path; otherwise fall back to toolId so the zone
+      // matcher can still fire on m.tools patterns without a misleading path score.
+      const zoneResolvedPath = config.resolveToolPath?.(request.toolId, request.input ?? {});
+      const zoneResource =
+        zoneResolvedPath ?? (resource.startsWith("/") ? resource : request.toolId);
+      const zoneResult = await applyZoneVerdict({
+        query: {
+          principal: ctx.session.userId ?? "__anonymous__",
+          action: request.toolId,
+          resource: zoneResource,
+          ...(request.input !== undefined ? { context: request.input as JsonObject } : {}),
+        },
+        evaluator: config.zones.evaluator,
+        sandboxRouter: config.zones.sandboxRouter,
+        auditSink: zoneSink,
+      });
+      if (zoneResult.outcome === "auto-allow") {
+        emitApprovalStep(ctx, request.toolId, { kind: "allow" }, request.input, clock());
+        await dispatchApprovalOutcome?.({ effect: "allow" });
+        return next(request);
+      }
+      // fall-through: continue to existing prompt flow unchanged
+    }
+
     // Build dedup key for in-flight coordination
     const dedupUserId = ctx.session.userId ?? "__anonymous__";
     const dedupCtx = serializeTurnContext(ctx);
