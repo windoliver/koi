@@ -7,9 +7,10 @@ import {
   scheduleId,
   taskId,
 } from "../../../kernel/core/src/index.js";
-import type {
-  CheckpointSnapshot,
-  CompositionCheckpointStore,
+import {
+  type CheckpointSnapshot,
+  type CompositionCheckpointStore,
+  createInMemoryCheckpointStore,
 } from "./composition-checkpoint-store.js";
 import {
   createCompositionExecutor,
@@ -2440,6 +2441,60 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
       expect(result.status).toBe("executed");
       // Bounded by ~timeout + per-step work; well under 500ms.
       expect(elapsed).toBeLessThan(500);
+    },
+  );
+
+  test(
+    "seq seeds from tombstone watermark: reused executionId after versioned " +
+      "delete with clock-rollback still persists checkpoints",
+    async () => {
+      const { scheduler } = schedulerStub();
+      // Real in-memory store; first executor completes (writes a save
+      // then a versioned delete that tombstones the watermark).
+      const realStore = createInMemoryCheckpointStore();
+      const executor1 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: realStore,
+        executionId: "exec-reuse",
+        now: () => 9_000_000_000_000, // very high
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      const r1 = await executor1.execute(trigger(), plan);
+      expect(r1.status).toBe("executed");
+      // Successful execute() leaves a tombstone watermark; load() shows nothing.
+      expect(await realStore.load("exec-reuse")).toBeUndefined();
+      expect(realStore.getWatermark?.("exec-reuse")).toBeGreaterThan(9_000_000_000_000);
+
+      // Second executor reuses the same executionId. Clock rolled back to
+      // a small value (1000). Pre-fix, ensureSeqSeeded called load() which
+      // returned undefined (tombstone hidden), so seq counter started from
+      // now()=1000 — every save dropped by the backend guard, leaving
+      // recovery state empty after a real successful execution.
+      const executor2 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: realStore,
+        executionId: "exec-reuse",
+        now: () => 1_000,
+      });
+      const r2 = await executor2.execute(trigger(), plan);
+      expect(r2.status).toBe("executed");
+      // Post-fix, the tombstone watermark advanced from the new run's
+      // ops — it must be strictly higher than the original watermark.
+      const wAfter = realStore.getWatermark?.("exec-reuse");
+      expect(wAfter).toBeDefined();
+      expect(wAfter ?? 0).toBeGreaterThan(9_000_000_000_000);
     },
   );
 

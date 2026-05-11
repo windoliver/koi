@@ -188,6 +188,12 @@ export function sqliteCompositionCheckpointStore(
     `SELECT plan_hash, next_step_index, step_results, phase, saved_at, seq, tombstone ` +
       `FROM ${table} WHERE execution_id = ?`,
   );
+  // Watermark probe: returns the row's seq (including tombstones), so
+  // a deleted execution's monotonic anchor is still recoverable for
+  // executor seq seeding on reused executionIds.
+  const selectWatermark: SqliteStatementLike = db.prepare(
+    `SELECT seq FROM ${table} WHERE execution_id = ?`,
+  );
   // Delete leaves a tombstone row with the supplied seq watermark so a
   // late save() with an older seq cannot resurrect the execution. The
   // tombstone row is invisible to load() and list() (filtered).
@@ -355,6 +361,13 @@ export function sqliteCompositionCheckpointStore(
       return out;
     },
     seqAware: true,
+    getWatermark: (id) => {
+      const raw = selectWatermark.get(id);
+      if (raw === null || raw === undefined || typeof raw !== "object") return undefined;
+      const value = (raw as { readonly seq?: unknown }).seq;
+      if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+      return value;
+    },
   };
 }
 
