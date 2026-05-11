@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 145 | 764 | 126 |
+| lib | 145 | 767 | 126 |
 | meta | 6 | 119 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
@@ -154,7 +154,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/playbook-store-nexus` (packages/lib/playbook-store-nexus) - L2 storage adapter: ACE PlaybookStore/StructuredPlaybookStore/TrajectoryStore/PlaybookProposalStore over Nexus. Tests: 5. Docs: docs/L2/playbook-store-nexus.md.
 - `@koi/playbook-store-sqlite` (packages/lib/playbook-store-sqlite) - L2 storage adapter: persistent ACE PlaybookStore + TrajectoryStore + PlaybookProposalStore over SQLite. Tests: 1. Docs: docs/L2/playbook-store-sqlite.md.
 - `@koi/plugins` (packages/lib/plugins) - Plugin manifest validation, multi-source discovery, and in-memory registry. Tests: 7. Docs: docs/L2/plugins.md.
-- `@koi/proactive` (packages/lib/proactive) - Proactive/autonomous tool surfaces — sleep, wake, and cron tools over SchedulerComponent. Tests: 21. Docs: docs/L2/proactive.md.
+- `@koi/proactive` (packages/lib/proactive) - Proactive/autonomous tool surfaces — sleep, wake, and cron tools over SchedulerComponent. Tests: 24. Docs: docs/L2/proactive.md.
 - `@koi/query-engine` (packages/lib/query-engine) - Stream consumer that maps ModelChunk to EngineEvent with tool-call argument accumulation. Tests: 6. Docs: docs/L2/query-engine.md.
 - `@koi/replay` (packages/lib/replay) - Deterministic cassette recording and replay for Koi agent tests. Tests: 3. Docs: docs/L2/replay.md.
 - `@koi/rules-loader` (packages/lib/rules-loader) - Hierarchical project rules file discovery, loading, merging, and system prompt injection. Tests: 6. Docs: docs/L2/rules-loader.md.
