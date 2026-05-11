@@ -588,6 +588,24 @@ When set, an adapter that does not resolve within `sendTimeoutMs` is
 treated as a failed attempt for that channel; the underlying promise
 is abandoned, not awaited.
 
+**Important — timeout is terminal for `high` fallback.** The
+`ChannelAdapter` contract has no abort signal, so a timed-out send
+may still complete in the background and deliver. Falling through to
+a different channel after a timeout would risk double-delivery —
+`idempotencyKey` only dedupes *within* the same transport (e.g.
+Slack's message dedupe), never *across* (Slack and email don't share
+a delivery ledger). The implementation therefore stops the fallback
+walk on the first timeout and returns `reason: "timed_out"` with the
+in-flight slot still consumed (we may have delivered).
+
+This means a stuck preferred channel will short-circuit
+high-priority fallback. Hosts that need timeout-bounded recovery for
+high priority must either (a) ensure adapters never hang past the
+budget, or (b) keep `sendTimeoutMs` unset on the high path and rely
+on adapter-level timeouts that reject (not hang) on failure. A
+future revision of `ChannelAdapter` may add `AbortSignal` support;
+when that lands, fallback after timeout becomes safe.
+
 **New `DeliveryResult` failure reason — `"timed_out"`:**
 
 ```ts

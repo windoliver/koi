@@ -241,7 +241,12 @@ export function createInMemoryCheckpointStore(
           // Late write — silently drop to preserve recovery correctness.
           return;
         }
-        seqWatermarks.set(snapshot.executionId, snapshot.seq);
+        // NOTE: do NOT advance the watermark yet — encode/validate may
+        // throw below. Advancing pre-validation would let a single bad
+        // payload permanently suppress later legitimate saves at
+        // <= snapshot.seq, hiding real progress and breaking restart
+        // visibility. Watermark is committed only after the snapshot
+        // actually lands in `snapshots`.
       } else if (seqWatermarks.has(snapshot.executionId)) {
         // Mixed-version writer guard, mirroring the SQLite backend's
         // `WHERE tombstone = 0 AND seq IS NULL` UPSERT clause. Once any
@@ -264,6 +269,12 @@ export function createInMemoryCheckpointStore(
       // (or its nested objects/arrays) cannot rewrite persisted state.
       // Validation has already proven the snapshot is JSON-serializable.
       snapshots.set(encoded.executionId, structuredClone(encoded));
+      // Watermark commit happens only after the snapshot actually
+      // persisted — a thrown encode/validate above leaves the previous
+      // watermark intact so retrying with a fixed payload succeeds.
+      if (snapshot.seq !== undefined) {
+        seqWatermarks.set(snapshot.executionId, snapshot.seq);
+      }
     },
     load: (id) => {
       const stored = snapshots.get(id);

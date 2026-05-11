@@ -255,6 +255,27 @@ export interface CompositionExecutionContext {
    * the timeout (await indefinitely — only safe for in-memory stores).
    */
   readonly checkpointStoreTimeoutMs?: number | undefined;
+  /**
+   * Declares that `checkpointStore` rejects stale writes via the `seq`
+   * watermark (versioned saves + tombstoned deletes). When true,
+   * `withTimeout` resets the internal store-op chain on timeout so a
+   * single hung op cannot wedge every later save/delete: the abandoned
+   * op may still commit in the background, but the store's seq guard
+   * drops it as stale.
+   *
+   * When false (default), the chain is NOT reset on timeout. A hung op
+   * then blocks every subsequent save/delete (they too time out and
+   * become no-ops), but the abandoned op CANNOT resurrect terminal
+   * state — because no later op will run on a host-supplied store that
+   * has no seq awareness, the abandoned save landing late only
+   * overwrites itself, not a newer write that never happened.
+   *
+   * Both built-in stores (`createInMemoryCheckpointStore`,
+   * `sqliteCompositionCheckpointStore`) are seq-aware — hosts using
+   * those should set this to `true`. Custom stores that ignore `seq`
+   * must leave it `false` to preserve restart-safety.
+   */
+  readonly checkpointStoreSeqAware?: boolean | undefined;
 }
 
 const DEFAULT_CHECKPOINT_STORE_TIMEOUT_MS = 5_000;
@@ -513,6 +534,7 @@ export function createCompositionExecutor(
   const hashPlan = context.hashPlan ?? defaultPlanHash;
   const checkpointStoreTimeoutMs =
     context.checkpointStoreTimeoutMs ?? DEFAULT_CHECKPOINT_STORE_TIMEOUT_MS;
+  const checkpointStoreSeqAware = context.checkpointStoreSeqAware === true;
   // Validate at executor construction: wiring a store without an id is a
   // host configuration bug. Defer the surfaced error until execute() runs
   // so the contract (every call resolves to a structured result) holds.
@@ -581,17 +603,20 @@ export function createCompositionExecutor(
     });
     try {
       const winner = await Promise.race([queued.then(() => "ok" as const), timeoutPromise]);
-      if (winner === timeoutSentinel) {
+      if (winner === timeoutSentinel && checkpointStoreSeqAware) {
         // The head op did not settle within the budget. Reset the chain
         // so later save/delete calls on this executor are not blocked
         // behind a permanently pending promise. The abandoned op still
         // runs to completion in the background and may commit out of
-        // order with subsequent ops — but that liveness/ordering trade
-        // is intentional: an in-order guarantee that wedges every later
-        // op once the backend hangs is worse than degraded ordering
-        // after a backend stall. Hosts that need durable ordering under
-        // degraded backends should use a store with native versioning
-        // (e.g. seq-monotonic UPSERT) or fail-closed I/O semantics.
+        // order with subsequent ops — that liveness/ordering trade is
+        // only safe when the store rejects stale writes via the `seq`
+        // watermark (`checkpointStoreSeqAware: true`). Without that
+        // guarantee a timed-out save could land AFTER a terminal
+        // delete() and resurrect an `in_progress` checkpoint, breaking
+        // restart safety. Hosts wiring a non-seq-aware custom store
+        // must leave `checkpointStoreSeqAware` false — the chain is
+        // then NOT reset, every later op also times out, and no
+        // resurrection is possible because no later op runs.
         //
         // Reassign only if no even-newer op has already replaced the
         // queue — otherwise we would clobber an in-flight chain head.

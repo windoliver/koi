@@ -544,6 +544,44 @@ describe("createInMemoryCheckpointStore", () => {
     expect(loaded?.stepResults).toEqual(["first", "second"]);
   });
 
+  test(
+    "failed save (encode throws) does NOT advance the seq watermark — " +
+      "retry with same seq still succeeds",
+    async () => {
+      const store = createInMemoryCheckpointStore();
+      // First save throws during encode/validate (cyclic). Pre-fix, the
+      // watermark advanced before the throw, so a follow-up legitimate
+      // save at seq <= 5 was silently dropped — a single bad payload
+      // permanently suppressed later progress.
+      const cyclic: Record<string, unknown> = { a: 1 };
+      cyclic.self = cyclic;
+      expect(() =>
+        store.save({
+          executionId: "exec-1",
+          planHash: "h1",
+          nextStepIndex: 1,
+          stepResults: [cyclic as unknown],
+          phase: "in_progress",
+          savedAt: 1,
+          seq: 5,
+        }),
+      ).toThrow();
+      // Retry at the SAME seq (5) with a valid payload — must persist.
+      await store.save({
+        executionId: "exec-1",
+        planHash: "h1",
+        nextStepIndex: 1,
+        stepResults: [{ ok: true }],
+        phase: "in_progress",
+        savedAt: 2,
+        seq: 5,
+      });
+      const loaded = await store.load("exec-1");
+      expect(loaded?.stepResults).toEqual([{ ok: true }]);
+      expect(loaded?.seq).toBe(5);
+    },
+  );
+
   test("list returns deep clones — mutating result does not affect stored state", async () => {
     const store = createInMemoryCheckpointStore();
     const snap: CheckpointSnapshot = {

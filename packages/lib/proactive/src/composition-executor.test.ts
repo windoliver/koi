@@ -2223,6 +2223,55 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
   );
 
   test(
+    "non-seq-aware store: chain is NOT reset on timeout — terminal delete " +
+      "stays queued behind hung save so a late save cannot land after delete",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const observed: ("save-applied" | "delete-applied")[] = [];
+      const store: CompositionCheckpointStore = {
+        save: () => {
+          // Hang forever — simulates a backend that never resolves.
+          return new Promise<void>(() => {});
+        },
+        delete: () => {
+          observed.push("delete-applied");
+        },
+        load: () => undefined,
+        list: () => [],
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-noreset",
+        checkpointStoreTimeoutMs: 25,
+        // checkpointStoreSeqAware omitted → defaults to false. Without
+        // seq guarantees, resetting the chain would let an abandoned
+        // save commit AFTER the terminal delete and resurrect state.
+        // The executor must keep the chain serialized so delete waits
+        // (and itself times out as a no-op) rather than firing while
+        // the hung save lurks in the background.
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      const result = await executor.execute(trigger(), plan);
+      expect(result.status).toBe("executed");
+      await new Promise<void>((r) => setTimeout(r, 60));
+      // Delete must NOT have run — it timed out waiting behind the
+      // hung save. Pre-fix the chain reset let it fire and a late save
+      // could then resurrect the (already-completed) execution.
+      expect(observed).not.toContain("delete-applied");
+    },
+  );
+
+  test(
     "hung store op does not permanently block later ops: chain resets " +
       "after timeout so subsequent executions can progress",
     async () => {
@@ -2252,6 +2301,11 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
         checkpointStore: store,
         executionId: "exec-hung-1",
         checkpointStoreTimeoutMs: 25,
+        // Chain reset on timeout is now gated behind seq-awareness so a
+        // non-versioned custom store cannot resurrect terminal state via
+        // a delayed save landing after a delete. This store does not
+        // honor seq, but the test exercises the reset path itself.
+        checkpointStoreSeqAware: true,
       });
       const plan: CompositionPlan = {
         triggerId: "trigger-1",
