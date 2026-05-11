@@ -19265,3 +19265,40 @@ describe("Golden: @koi/proactive", () => {
     expect(successfulProactiveCalls.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/approval-zones (2 standalone queries)
+// Standalone tests that exercise the exported evaluator and risk scorer
+// surface directly from @koi/runtime's consumer boundary.
+// No LLM, no cassette — proves the approval-zones contract is reachable
+// through @koi/runtime's dependency graph.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/approval-zones", () => {
+  test("READ_ONLY_PROFILE auto-allows read on project files", async () => {
+    const { READ_ONLY_PROFILE, createZoneEvaluator, createDefaultRiskScorer } = await import(
+      "@koi/approval-zones"
+    );
+    const ev = createZoneEvaluator({
+      zones: READ_ONLY_PROFILE,
+      scorer: createDefaultRiskScorer({ projectRoot: "/proj" }),
+    });
+    const v = await ev.evaluate({
+      principal: "agent:main",
+      action: "read",
+      resource: "/proj/src/foo.ts",
+    });
+    expect(v.kind).toBe("auto");
+  });
+
+  test("default scorer rates ~/.ssh as critical", async () => {
+    const { createDefaultRiskScorer } = await import("@koi/approval-zones");
+    const scorer = createDefaultRiskScorer({ projectRoot: "/proj" });
+    const r = await scorer.score({
+      toolId: "read",
+      args: {},
+      resource: "/Users/me/.ssh/id_rsa",
+    });
+    expect(r.tier).toBe("critical");
+  });
+});

@@ -11,6 +11,7 @@
     }
   },
   "dependencies": {
+    "@koi/approval-zones": "workspace:*",
     "@koi/agent-discovery": "workspace:*",
     "@koi/agent-monitor": "workspace:*",
     "@koi/agent-procfs": "workspace:*",
