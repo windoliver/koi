@@ -80,6 +80,10 @@ interface ProactiveToolsProviderConfig {
 | `list_monitors` | none | `{ ok: true, monitors: MonitorSummary[] }` |
 | `update_monitor` | `monitor_id`, patch fields from `create_monitor` except `idempotency_key` | `{ ok: true, monitor_id, schedule_id }` |
 | `cancel_monitor` | `monitor_id` | `{ ok: true, removed }` |
+| `create_brief` | `name`, `topic`, `window`, `channel`, `expression`, `timezone?`, `context_hint?`, `idempotency_key?` | `{ ok: true, brief_id, schedule_id, deduped? }` |
+| `list_briefs` | none | `{ ok: true, briefs: BriefSummary[] }` |
+| `update_brief` | `brief_id`, patch fields from `create_brief` except `idempotency_key` | `{ ok: true, brief_id, schedule_id }` |
+| `cancel_brief` | `brief_id` | `{ ok: true, removed }` |
 | `notify` | `channel`, `text`, `thread_id?`, `metadata?` | `{ ok: true }` or `{ ok: false, error, available_channels? }` |
 
 Listing existing schedules is intentionally **not** exposed: the L0
@@ -151,6 +155,35 @@ same process state. Replaying the same key with identical monitor fields returns
 original `monitor_id` and `schedule_id` with `deduped: true`; reusing the key with
 different fields fails closed. Failed creations clear the reservation so a retry can
 start fresh. This guarantee does not survive restart or reattach.
+
+### Brief tools
+
+`create_brief`, `list_briefs`, `update_brief`, and `cancel_brief` mirror the monitor
+tools but encode a different semantic: scheduled digest synthesis. Where a monitor
+fires "check whether anything is wrong and alert if needed", a brief fires
+"synthesize a concise digest of `topic` over `window` and deliver it to `channel`
+via `notify`". The wake text instructs the agent to call `notify` unconditionally —
+delivery is the goal, not an exception path.
+
+Fields: `name`, `topic`, `window`, `channel`, `expression`, optional `timezone`,
+optional `context_hint`. The recurring `"dispatch"` wake text is derived from those
+fields and includes the explicit `notify`-this-channel directive.
+
+`list_briefs` returns summary data only: `brief_id`, `schedule_id`, `name`, `topic`,
+`window`, `channel`, `expression`, and optional `context_hint`. `update_brief` uses
+the same patch + replace-then-retire semantics as `update_monitor`. `cancel_brief`
+removes the brief record and unschedules the backing cron entry.
+
+**Channel validation:** when the provider has a `resolveChannel` resolver attached,
+`create_brief` and `update_brief` validate the channel name eagerly and return
+`{ ok: false, error: "unknown channel: <name>", available_channels: [...] }` for
+unknown channels. Without a resolver (no channel adapters wired) the channel
+field is accepted as-is — the eventual `notify` call inside the woken turn is
+what will fail closed.
+
+**State limits and idempotency scope:** identical to the monitor tools — in-memory,
+process-local, attach-local. Same-process dedupe by `idempotency_key`; no
+durability across restart or reattach.
 
 ### `notify`
 

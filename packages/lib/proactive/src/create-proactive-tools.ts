@@ -3,6 +3,14 @@
  */
 
 import type { Tool } from "@koi/core";
+import {
+  type BriefToolState,
+  createBriefToolState,
+  createCancelBriefTool,
+  createCreateBriefTool,
+  createListBriefsTool,
+  createUpdateBriefTool,
+} from "./brief-tools.js";
 import { createCancelSleepTool } from "./cancel-sleep-tool.js";
 import {
   type CronToolState,
@@ -31,6 +39,10 @@ export const PROACTIVE_TOOL_NAMES = [
   "list_monitors",
   "update_monitor",
   "cancel_monitor",
+  "create_brief",
+  "list_briefs",
+  "update_brief",
+  "cancel_brief",
   "notify",
 ] as const;
 
@@ -38,13 +50,14 @@ export interface ProactiveToolStates {
   readonly sleepState: SleepToolState;
   readonly cronState: CronToolState;
   readonly monitorState: MonitorToolState;
+  readonly briefState: BriefToolState;
 }
 
 export function assembleProactiveTools(
   config: ProactiveToolsConfig,
   states: ProactiveToolStates,
 ): readonly Tool[] {
-  const { sleepState, cronState, monitorState } = states;
+  const { sleepState, cronState, monitorState, briefState } = states;
   const { resolveChannel } = config;
   return [
     createSleepTool(config, sleepState),
@@ -55,6 +68,10 @@ export function assembleProactiveTools(
     createListMonitorsTool(monitorState),
     createUpdateMonitorTool(config, monitorState),
     createCancelMonitorTool(config, monitorState),
+    createCreateBriefTool(config, briefState),
+    createListBriefsTool(briefState),
+    createUpdateBriefTool(config, briefState),
+    createCancelBriefTool(config, briefState),
     ...(resolveChannel !== undefined
       ? [
           createNotifyTool({
@@ -69,12 +86,12 @@ export function assembleProactiveTools(
 export function createProactiveTools(config: ProactiveToolsConfig): readonly Tool[] {
   // State maps live for the lifetime of the tool set (typically one agent
   // assembly). schedule_cron + cancel_schedule share the cron map; sleep +
-  // cancel_sleep share the sleep map. See cron-tools.ts and sleep-tool.ts
-  // for the idempotency semantics they enforce. Monitor tools share a
-  // process-local state map for create/list/update/cancel.
+  // cancel_sleep share the sleep map. Monitor tools share a process-local
+  // state map for create/list/update/cancel; brief tools mirror that pattern.
   return assembleProactiveTools(config, {
     sleepState: createSleepToolState(),
     cronState: createCronToolState(),
     monitorState: createMonitorToolState(),
+    briefState: createBriefToolState(),
   });
 }

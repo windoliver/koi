@@ -86,7 +86,7 @@ describe("createProactiveToolsProvider", () => {
     expect(provider.priority).toBe(999);
   });
 
-  test("attach resolves SCHEDULER from the agent and registers eight tools", async () => {
+  test("attach resolves SCHEDULER from the agent and registers twelve tools", async () => {
     const stub = createSchedulerStub();
     const agent = makeAgent(stub.component);
     const provider = createProactiveToolsProvider();
@@ -102,6 +102,10 @@ describe("createProactiveToolsProvider", () => {
       "list_monitors",
       "update_monitor",
       "cancel_monitor",
+      "create_brief",
+      "list_briefs",
+      "update_brief",
+      "cancel_brief",
     ].map((name) => toolToken(name) as string);
     expect(components.size).toBe(expectedKeys.length);
     expect([...components.keys()]).toEqual(expectedKeys);

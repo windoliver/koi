@@ -19113,7 +19113,7 @@ describe("Golden: @koi/proactive", () => {
     }
   });
 
-  test("createProactiveTools returns the 4 expected agent-callable tools", async () => {
+  test("createProactiveTools returns the 12 expected agent-callable tools", async () => {
     const { Database } = await import("bun:sqlite");
     const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
       "@koi/scheduler"
@@ -19137,7 +19137,7 @@ describe("Golden: @koi/proactive", () => {
       agentId: "golden-proactive" as import("@koi/core").AgentId,
     });
 
-    expect(tools.length).toBe(8);
+    expect(tools.length).toBe(12);
     const names = tools.map((t) => t.descriptor.name);
     expect(names).toEqual([
       "sleep",
@@ -19148,6 +19148,10 @@ describe("Golden: @koi/proactive", () => {
       "list_monitors",
       "update_monitor",
       "cancel_monitor",
+      "create_brief",
+      "list_briefs",
+      "update_brief",
+      "cancel_brief",
     ]);
     for (const tool of tools) expect(tool.origin).toBe("primordial");
 
