@@ -144,4 +144,85 @@ describe("notify tool", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("text");
   });
+
+  test("concurrent sends to same adapter preserve per-call args", async () => {
+    const sent: OutboundMessage[] = [];
+    const slack = stubAdapter({
+      name: "slack",
+      send: async (m) => {
+        await new Promise<void>((r) => {
+          const g = globalThis as unknown as {
+            setTimeout: (cb: () => void, ms: number) => unknown;
+          };
+          g.setTimeout(() => r(), 5);
+        });
+        sent.push(m);
+      },
+    });
+    const tool = createNotifyTool({
+      resolveChannel: () => slack,
+      names: () => ["slack"],
+    });
+
+    const results = await Promise.all([
+      tool.execute({ channel: "slack", text: "alpha", thread_id: "T-A" }),
+      tool.execute({ channel: "slack", text: "beta", thread_id: "T-B" }),
+      tool.execute({ channel: "slack", text: "gamma", thread_id: "T-C" }),
+    ]);
+
+    expect(results).toEqual([{ ok: true }, { ok: true }, { ok: true }]);
+    const texts = sent.map((m) => (m.content[0] as { text: string }).text).toSorted();
+    expect(texts).toEqual(["alpha", "beta", "gamma"]);
+    const pairs = sent
+      .map((m) => `${(m.content[0] as { text: string }).text}:${m.threadId ?? ""}`)
+      .toSorted();
+    expect(pairs).toEqual(["alpha:T-A", "beta:T-B", "gamma:T-C"]);
+  });
+
+  test("forwards large text payload without truncation or buffering corruption", async () => {
+    const big = "x".repeat(64 * 1024);
+    const sent: OutboundMessage[] = [];
+    const slack = stubAdapter({
+      name: "slack",
+      send: async (m) => {
+        sent.push(m);
+      },
+    });
+    const tool = createNotifyTool({
+      resolveChannel: () => slack,
+      names: () => ["slack"],
+    });
+
+    const result = await tool.execute({ channel: "slack", text: big });
+    expect(result).toEqual({ ok: true });
+    expect(sent).toHaveLength(1);
+    const first = sent[0];
+    expect(first).toBeDefined();
+    if (first === undefined) return;
+    expect((first.content[0] as { text: string }).text.length).toBe(big.length);
+    expect((first.content[0] as { text: string }).text).toBe(big);
+  });
+
+  test("forwards unicode metadata keys and values without mutation", async () => {
+    const sent: OutboundMessage[] = [];
+    const slack = stubAdapter({
+      name: "slack",
+      send: async (m) => {
+        sent.push(m);
+      },
+    });
+    const tool = createNotifyTool({
+      resolveChannel: () => slack,
+      names: () => ["slack"],
+    });
+
+    const meta = { ключ: "значение", "🔑": "🎯", "thread-参考": ["a", "b"] };
+    const result = await tool.execute({ channel: "slack", text: "hi", metadata: meta });
+    expect(result).toEqual({ ok: true });
+    expect(sent).toHaveLength(1);
+    const first = sent[0];
+    expect(first).toBeDefined();
+    if (first === undefined) return;
+    expect(first.metadata).toEqual(meta);
+  });
 });

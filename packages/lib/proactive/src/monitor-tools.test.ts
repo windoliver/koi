@@ -495,6 +495,28 @@ describe("monitor tools", () => {
     expect(result).toEqual({ ok: true, removed: false });
   });
 
+  test("cancel_monitor twice is idempotent — second call removes nothing and does not re-unschedule", async () => {
+    const stub = createSchedulerStub();
+    const state = createMonitorToolState();
+    const createMonitor = createCreateMonitorTool({ scheduler: stub.component }, state);
+    const cancelMonitor = createCancelMonitorTool({ scheduler: stub.component }, state);
+
+    const created = (await createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1212 is unblocked",
+      check_prompt: "Inspect repo state.",
+      expression: "0 9 * * *",
+    })) as { monitor_id: string; schedule_id: string };
+
+    const first = await cancelMonitor.execute({ monitor_id: created.monitor_id });
+    expect(first).toEqual({ ok: true, removed: true });
+    expect(stub.unscheduleCalls).toEqual([scheduleId(created.schedule_id)]);
+
+    const second = await cancelMonitor.execute({ monitor_id: created.monitor_id });
+    expect(second).toEqual({ ok: true, removed: false });
+    expect(stub.unscheduleCalls).toEqual([scheduleId(created.schedule_id)]);
+  });
+
   test("formatMonitorWakeMessage renders deterministic multi-line text", () => {
     expect(
       formatMonitorWakeMessage({
