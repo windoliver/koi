@@ -4,6 +4,8 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+- 2026-05-12: `@koi/proactive` adds `createMonitorTools` (create/list/update/cancel monitors + scheduler integration with rotation, timezone, and unschedule rollback semantics) and `createNotifyTool` (channel-routed outbound notification with `ResolveChannel`-typed lookup and snapshot-stable error formatting). Runtime exposure: `createProactiveTools` now wires the monitor tool roster behind a `MonitorToolState` and registers the notify tool when `resolveChannel` is provided. Provider snapshots `channel:*` resolver entries to avoid mid-turn channel churn. No runtime dependency-set change — both tools land inside `@koi/proactive`.
+
 Review-finding correctness sync: no runtime dependency-set change. The integrated
 L2 packages received targeted hardening that flows through the runtime surface:
 `@koi/tasks` local shell tasks now scrub inherited host env and terminate process
