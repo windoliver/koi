@@ -11,6 +11,11 @@ stderr-framed protocol. OS-level isolation (seatbelt/bwrap) is delegated to
 
 - **Result protocol moved to fd=3 (#2106)**: the framing marker + JSON payload now flow over a dedicated pipe (`stdio: ["ignore", "pipe", "pipe", "pipe"]`) that the runner writes via `writeSync(3, ...)` and the parent reads via `Bun.file(fd).stream()`. Previously the marker shared stderr with arbitrary user-code output; on Linux CI runners under heavy `process.stderr.write` bursts the marker could be overrun by libuv-queued user writes, surfacing as `CRASH: Sandbox exited without result marker` for legitimately successful executions. fd=3 is touched only by the runner so user code on stdout/stderr can no longer race the protocol. Stderr-side scanning is preserved as a backward-compat fallback for direct-exec/legacy parents.
 
+- **Bun fd=3 compatibility hardening**: the parent now accepts the extra protocol pipe
+  whether Bun exposes it as a raw numeric file descriptor or directly as a
+  `ReadableStream<Uint8Array>`. Missing fd=3 still falls back to legacy stderr
+  scanning, but newer Bun runtimes no longer lose the dedicated protocol stream shape.
+
 ## Why it exists
 
 `@koi/forge` (verifier) and `@koi/sandbox-ipc` need to run brick code in a separate

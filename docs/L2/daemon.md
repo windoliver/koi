@@ -7,6 +7,10 @@ Supervise OS-level worker processes for long-running agent work. Provides a plug
 - TUI daemon surface (#1944): `FileSessionRegistry` is now a public type export so the CLI can hold registry handles for the TUI bridge without re-deriving them from `createFileSessionRegistry`.
 - `createSupervisor` keeps the heartbeat-aware backend selection path and returns explicit `UNAVAILABLE` diagnostics when availability probes fail or time out, so operators can distinguish transient backend outages from static misconfiguration.
 - `createSubprocessBackend` and supervisor wiring stay aligned on heartbeat opt-in behavior (`backendHints.heartbeat`) with a single `@koi/core` contract surface for daemon types.
+- `createSubprocessBackend` now spawns workers with an allowlisted environment instead
+  of copying the full supervisor process environment. Explicit `WorkerSpawnRequest.env`
+  entries are still applied afterward, including `null` deletes, so callers can pass
+  intentional worker configuration without leaking unrelated host secrets.
 
 ---
 

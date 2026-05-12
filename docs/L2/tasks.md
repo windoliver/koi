@@ -13,6 +13,17 @@ Provides concrete implementations of the `TaskBoardStore` interface, plus the ru
 task lifecycle system: output streaming, task kind types, a lifecycle registry, and
 a task runner that orchestrates start/stop with board reconciliation.
 
+## Recent updates
+
+- `createLocalShellLifecycle()` now starts shell tasks with an allowlisted environment
+  instead of inheriting arbitrary host variables. Explicit `LocalShellConfig.env`
+  values are still forwarded, while defaults preserve only execution basics such as
+  `PATH`, `TMPDIR`, locale, and Bun runtime paths.
+- Local shell cancellation now sends `SIGTERM` to the subprocess process group when
+  `setsid` is available, then escalates to `SIGKILL` after a short grace period. The
+  same path is used for explicit stop and timeout cancellation so shell descendants do
+  not survive task teardown.
+
 ### Persistence
 
 Two store backends ship with this package:
@@ -226,7 +237,7 @@ downstream consumers (TUI, trajectory) receive the full board state at startup.
 
 ### LocalShellTask Lifecycle
 
-`createLocalShellLifecycle()` — spawns shell processes via `Bun.spawn()`, pipes stdout/stderr to `TaskOutputStream`, handles timeouts, and propagates exit codes.
+`createLocalShellLifecycle()` — spawns shell processes via `Bun.spawn()`, pipes stdout/stderr to `TaskOutputStream`, handles timeouts, and propagates exit codes. The lifecycle builds a minimal environment by default (`PATH`, temp, locale, and Bun runtime paths), then applies explicit task env overrides. On systems with `setsid`, tasks run in their own process group and `stop()`/timeout cancellation terminates the group before escalating to `SIGKILL`.
 
 ### LocalAgentTask Lifecycle (#1657)
 
