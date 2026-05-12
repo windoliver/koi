@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent, SchedulerComponent, SubsystemToken } from "@koi/core";
+import type {
+  Agent,
+  ChannelAdapter,
+  JsonObject,
+  SchedulerComponent,
+  SubsystemToken,
+} from "@koi/core";
 import { COMPONENT_PRIORITY, SCHEDULER, toolToken } from "@koi/core";
 import { createProactiveToolsProvider } from "./provider.js";
 import { createSchedulerStub } from "./test-helpers.js";
@@ -7,9 +13,13 @@ import { createSchedulerStub } from "./test-helpers.js";
 function makeAgent(
   scheduler: SchedulerComponent | undefined,
   agentIdValue = "agent-default",
+  channels: ReadonlyMap<string, ChannelAdapter> = new Map(),
 ): Agent {
   const map = new Map<string, unknown>();
   if (scheduler !== undefined) map.set(SCHEDULER as string, scheduler);
+  for (const [name, adapter] of channels) {
+    map.set(`channel:${name}`, adapter);
+  }
   const pid = {
     id: agentIdValue as unknown as Agent["pid"]["id"],
     name: agentIdValue,
@@ -44,6 +54,26 @@ function makeAgent(
   };
 }
 
+function makeStubChannel(name: string): ChannelAdapter {
+  return {
+    name,
+    capabilities: {
+      text: true,
+      images: false,
+      files: false,
+      buttons: false,
+      audio: false,
+      video: false,
+      threads: true,
+      supportsA2ui: false,
+    },
+    connect: async () => {},
+    disconnect: async () => {},
+    send: async () => {},
+    onMessage: () => () => {},
+  };
+}
+
 describe("createProactiveToolsProvider", () => {
   test("returns a ComponentProvider named 'proactive' at BUNDLED priority by default", () => {
     const provider = createProactiveToolsProvider();
@@ -56,17 +86,25 @@ describe("createProactiveToolsProvider", () => {
     expect(provider.priority).toBe(999);
   });
 
-  test("attach resolves SCHEDULER from the agent and registers four tools", async () => {
+  test("attach resolves SCHEDULER from the agent and registers eight tools", async () => {
     const stub = createSchedulerStub();
     const agent = makeAgent(stub.component);
     const provider = createProactiveToolsProvider();
 
     const result = await provider.attach(agent);
     const components = "components" in result ? result.components : result;
-    const toolNames = ["sleep", "cancel_sleep", "schedule_cron", "cancel_schedule"] as const;
-    for (const n of toolNames) {
-      expect(components.has(toolToken(n) as string)).toBe(true);
-    }
+    const expectedKeys = [
+      "sleep",
+      "cancel_sleep",
+      "schedule_cron",
+      "cancel_schedule",
+      "create_monitor",
+      "list_monitors",
+      "update_monitor",
+      "cancel_monitor",
+    ].map((name) => toolToken(name) as string);
+    expect(components.size).toBe(expectedKeys.length);
+    expect([...components.keys()]).toEqual(expectedKeys);
   });
 
   test("attach surfaces a skipped entry when the agent has no SCHEDULER component", async () => {
@@ -262,5 +300,112 @@ describe("createProactiveToolsProvider", () => {
 
     expect(stubB.scheduleCalls).toHaveLength(1);
     expect(r2.deduped).toBeUndefined();
+  });
+
+  test("monitor state resets on reattach so a new attach starts with an empty monitor list", async () => {
+    const stub = createSchedulerStub();
+    const agent = makeAgent(stub.component, "agent-monitor");
+    const provider = createProactiveToolsProvider();
+
+    const createKey = toolToken("create_monitor") as string;
+    const listKey = toolToken("list_monitors") as string;
+
+    const first = await provider.attach(agent);
+    const firstComponents = "components" in first ? first.components : first;
+    const createMonitor = firstComponents.get(createKey) as {
+      execute: (args: object) => Promise<unknown>;
+    };
+    const listFirst = firstComponents.get(listKey) as {
+      execute: (args: object) => Promise<unknown>;
+    };
+
+    await createMonitor.execute({
+      name: "dependency-watch",
+      goal: "Detect whether issue #1301 is unblocked",
+      check_prompt: "Check issue status and summarize what changed.",
+      expression: "0 9 * * *",
+    });
+
+    const firstList = (await listFirst.execute({})) as { monitors: unknown[] };
+    expect(firstList.monitors).toHaveLength(1);
+
+    const second = await provider.attach(agent);
+    const secondComponents = "components" in second ? second.components : second;
+    const listSecond = secondComponents.get(listKey) as {
+      execute: (args: object) => Promise<unknown>;
+    };
+
+    const secondList = (await listSecond.execute({})) as { monitors: unknown[] };
+    expect(secondList.monitors).toHaveLength(0);
+  });
+
+  test("installs notify tool when channel:* components are attached", async () => {
+    const provider = createProactiveToolsProvider();
+    const slack = makeStubChannel("slack");
+    const agent = makeAgent(
+      createSchedulerStub().component,
+      "agent-1",
+      new Map([["slack", slack]]),
+    );
+
+    const result = await provider.attach(agent);
+    const map = "components" in result ? result.components : result;
+    expect(map.has(toolToken("notify") as string)).toBe(true);
+  });
+
+  test("omits notify tool when no channel:* components are attached", async () => {
+    const provider = createProactiveToolsProvider();
+    const agent = makeAgent(createSchedulerStub().component, "agent-1");
+
+    const result = await provider.attach(agent);
+    const map = "components" in result ? result.components : result;
+    expect(map.has(toolToken("notify") as string)).toBe(false);
+  });
+
+  test("notify uses snapshot — channels added after attach are not visible", async () => {
+    const provider = createProactiveToolsProvider();
+    const slack = makeStubChannel("slack");
+    const channels = new Map<string, ChannelAdapter>([["slack", slack]]);
+    const agent = makeAgent(createSchedulerStub().component, "agent-1", channels);
+
+    const result = await provider.attach(agent);
+    const map = "components" in result ? result.components : result;
+    const notify = map.get(toolToken("notify") as string) as {
+      execute: (args: JsonObject) => Promise<unknown>;
+    };
+
+    // Mutate the agent's components AFTER attach — should not change snapshot.
+    (agent.components() as Map<string, unknown>).set("channel:email", makeStubChannel("email"));
+
+    const res = (await notify.execute({ channel: "email", text: "hi" })) as {
+      ok: boolean;
+      error: string;
+      available_channels: readonly string[];
+    };
+
+    // The strong assertion: available_channels stays exactly ["slack"], proving
+    // the snapshot did not grow when a new channel was added post-attach.
+    expect(res.ok).toBe(false);
+    expect(res.available_channels).toEqual(["slack"]);
+  });
+
+  test("notify uses snapshot — channels removed after attach remain visible", async () => {
+    const provider = createProactiveToolsProvider();
+    const slack = makeStubChannel("slack");
+    const channels = new Map<string, ChannelAdapter>([["slack", slack]]);
+    const agent = makeAgent(createSchedulerStub().component, "agent-1", channels);
+
+    const result = await provider.attach(agent);
+    const map = "components" in result ? result.components : result;
+    const notify = map.get(toolToken("notify") as string) as {
+      execute: (args: JsonObject) => Promise<unknown>;
+    };
+
+    // Remove slack from the agent's component map AFTER attach.
+    (agent.components() as Map<string, unknown>).delete("channel:slack");
+
+    // Snapshot still has it — send succeeds.
+    const res = await notify.execute({ channel: "slack", text: "hi" });
+    expect(res).toEqual({ ok: true });
   });
 });

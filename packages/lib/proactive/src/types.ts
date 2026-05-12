@@ -6,7 +6,15 @@
  * idempotency state.
  */
 
-import type { AgentId, SchedulerComponent } from "@koi/core";
+import type { AgentId, ChannelAdapter, SchedulerComponent } from "@koi/core";
+
+/**
+ * Lookup function returning a `ChannelAdapter` by channel name, or
+ * `undefined` if no channel with that name is attached. The provider
+ * builds this from a snapshot of `channel:*` components taken at attach
+ * time.
+ */
+export type ResolveChannel = (name: string) => ChannelAdapter | undefined;
 
 /** Default wake message dispatched when a caller does not supply one. */
 export const DEFAULT_WAKE_MESSAGE: string = "Wake up — your scheduled timer fired.";
@@ -32,6 +40,18 @@ export interface ProactiveToolsConfig {
   readonly maxSleepMs?: number;
   /** Optional clock for deterministic testing. Defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Lookup function for the `notify` tool. When omitted, `notify` is still
+   * created but every call resolves to "no channels available". The provider
+   * supplies this from a snapshot of the agent's `channel:*` components.
+   */
+  readonly resolveChannel?: ResolveChannel;
+  /**
+   * Returns the currently-attached channel names. Used by `notify` to
+   * populate `available_channels` in error responses. The provider
+   * supplies a callback closing over its `channel:*` snapshot.
+   */
+  readonly channelNames?: () => readonly string[];
 }
 
 /**

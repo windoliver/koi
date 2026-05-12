@@ -25,16 +25,19 @@
  * typically registered once per agent so this rarely matters in practice.
  */
 
-import type { Agent, AttachResult, ComponentProvider, SkippedComponent, Tool } from "@koi/core";
-import { COMPONENT_PRIORITY, SCHEDULER, toolToken } from "@koi/core";
-import { createCancelSleepTool } from "./cancel-sleep-tool.js";
-import {
-  type CronToolState,
-  createCancelScheduleTool,
-  createCronToolState,
-  createScheduleCronTool,
-} from "./cron-tools.js";
-import { createSleepTool, createSleepToolState, type SleepToolState } from "./sleep-tool.js";
+import type {
+  Agent,
+  AttachResult,
+  ChannelAdapter,
+  ComponentProvider,
+  SkippedComponent,
+  Tool,
+} from "@koi/core";
+import { COMPONENT_PRIORITY, channelToken, SCHEDULER, toolToken } from "@koi/core";
+import { assembleProactiveTools } from "./create-proactive-tools.js";
+import { createCronToolState } from "./cron-tools.js";
+import { createMonitorToolState } from "./monitor-tools.js";
+import { createSleepToolState, type SleepToolState } from "./sleep-tool.js";
 import type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types.js";
 
 export function createProactiveToolsProvider(
@@ -50,19 +53,6 @@ export function createProactiveToolsProvider(
     const fresh = createSleepToolState();
     sleepSlots.set(pid, fresh);
     return fresh;
-  }
-
-  function buildTools(
-    toolConfig: ProactiveToolsConfig,
-    sleepState: SleepToolState,
-    cronState: CronToolState,
-  ): readonly Tool[] {
-    return [
-      createSleepTool(toolConfig, sleepState),
-      createCancelSleepTool(toolConfig, sleepState),
-      createScheduleCronTool(toolConfig, cronState),
-      createCancelScheduleTool(toolConfig, cronState),
-    ];
   }
 
   return {
@@ -88,6 +78,17 @@ export function createProactiveToolsProvider(
         };
       }
 
+      // Snapshot channel:* components at attach time. Channels added or
+      // removed after attach are not reflected by `notify` until reattach —
+      // matches the provider's existing per-attach lifecycle.
+      const channelSnapshot = new Map<string, ChannelAdapter>();
+      for (const key of agent.components().keys()) {
+        if (!key.startsWith("channel:")) continue;
+        const name = key.slice("channel:".length);
+        const adapter = agent.component(channelToken(name));
+        if (adapter !== undefined) channelSnapshot.set(name, adapter);
+      }
+
       const toolConfig: ProactiveToolsConfig = {
         scheduler,
         agentId: agent.pid.id,
@@ -96,6 +97,12 @@ export function createProactiveToolsProvider(
           : {}),
         ...(config.maxSleepMs !== undefined ? { maxSleepMs: config.maxSleepMs } : {}),
         ...(config.now !== undefined ? { now: config.now } : {}),
+        ...(channelSnapshot.size > 0
+          ? {
+              resolveChannel: (n: string) => channelSnapshot.get(n),
+              channelNames: () => [...channelSnapshot.keys()],
+            }
+          : {}),
       };
 
       // ProcessId is an object — slot by its `.id` (branded AgentId, a
@@ -108,7 +115,10 @@ export function createProactiveToolsProvider(
       // submissions from a previous attach land on the prior, now-detached
       // state object and have no observable effect on the new attach.
       const cronState = createCronToolState();
-      const tools = buildTools(toolConfig, sleepState, cronState);
+      // Monitor state is also intentionally per-attach: monitor metadata is
+      // process-local and should reset when the agent is reassembled.
+      const monitorState = createMonitorToolState();
+      const tools = assembleProactiveTools(toolConfig, { sleepState, cronState, monitorState });
       const entries: (readonly [string, Tool])[] = tools.map(
         (t) => [toolToken(t.descriptor.name) as string, t] as const,
       );

@@ -19137,9 +19137,18 @@ describe("Golden: @koi/proactive", () => {
       agentId: "golden-proactive" as import("@koi/core").AgentId,
     });
 
-    expect(tools.length).toBe(4);
+    expect(tools.length).toBe(8);
     const names = tools.map((t) => t.descriptor.name);
-    expect(names).toEqual(["sleep", "cancel_sleep", "schedule_cron", "cancel_schedule"]);
+    expect(names).toEqual([
+      "sleep",
+      "cancel_sleep",
+      "schedule_cron",
+      "cancel_schedule",
+      "create_monitor",
+      "list_monitors",
+      "update_monitor",
+      "cancel_monitor",
+    ]);
     for (const tool of tools) expect(tool.origin).toBe("primordial");
 
     await scheduler[Symbol.asyncDispose]();
