@@ -299,6 +299,101 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
       }
     }
 
+    // Approval-zones interception (#1644).
+    // Runs AFTER persistent + session + approval-cache lookups (user grants
+    // win) and BEFORE the user prompt. Zones never override allow/deny;
+    // they only convert ask -> auto-allow or sandbox-preview-then-auto.
+    if (config.zones !== undefined) {
+      const { applyZoneVerdict } = await import("./zones-bridge.js");
+      type ZoneAuditSink = import("./zones-bridge.js").ZoneAuditSink;
+      type ZoneAuditMeta = import("./zones-bridge.js").ZoneAuditMeta;
+      const zoneStartMs = clock();
+      const zoneSink: ZoneAuditSink = {
+        // Emit each zone event as a permission_decision AuditEntry through the
+        // standard AuditSink.log() contract. Mirrors the approval-audit module
+        // so zone decisions land in the same durable channel as grant/deny.
+        record: (event, meta: ZoneAuditMeta): void => {
+          if (auditSink === undefined) return;
+          const entry = {
+            schema_version: 2,
+            timestamp: clock(),
+            sessionId: ctx.session.sessionId as string,
+            agentId: ctx.session.agentId,
+            turnIndex: ctx.turnIndex,
+            kind: "permission_decision" as const,
+            toolName: request.toolId,
+            durationMs: clock() - zoneStartMs,
+            metadata: {
+              permissionEvent: event,
+              principal: ctx.session.userId ?? "__anonymous__",
+              resource,
+              ...meta,
+            } as JsonObject,
+          };
+          void auditSink.log(entry).catch((e: unknown) => {
+            // Log failures are isolated — never affect control flow.
+            void e;
+          });
+        },
+      };
+      // Resolve a filesystem-meaningful resource for the zone query.
+      // The `resource` variable is a permission key (e.g. "read", "bash:git status")
+      // not always a path. Zones use resource for path matching + risk scoring.
+      // Prefer an absolute path from resolveToolPath; for bash, extract the
+      // first path-shaped token from the command so path-based zones (e.g.
+      // `paths: ["/tmp/**"]`) can match ordinary shell commands. Otherwise
+      // accept the enriched resource if it's already an absolute path; final
+      // fallback is the toolId so the matcher can still fire on m.tools alone.
+      const zoneResolvedPath = config.resolveToolPath?.(request.toolId, request.input ?? {});
+      let zoneResource: string;
+      // extraPaths is populated for bash so the matcher can require that
+      // ALL path tokens (not just the first) satisfy the zone's path globs.
+      // Prevents bypass via `ls /tmp/ok /etc/passwd` against a `/tmp/**` zone.
+      let bashExtraPaths: readonly string[] | undefined;
+      if (zoneResolvedPath !== undefined) {
+        zoneResource = zoneResolvedPath;
+      } else if (request.toolId === "bash") {
+        const bashCommand =
+          typeof (request.input as Record<string, unknown>)?.command === "string"
+            ? ((request.input as Record<string, unknown>).command as string)
+            : "";
+        const { extractBashPathTargets } = await import("./zones-bridge.js");
+        const allPaths = extractBashPathTargets(bashCommand);
+        const firstPath = allPaths[0];
+        zoneResource = firstPath ?? (resource.startsWith("/") ? resource : request.toolId);
+        bashExtraPaths = allPaths.length > 1 ? allPaths.slice(1) : undefined;
+      } else if (resource.startsWith("/")) {
+        zoneResource = resource;
+      } else {
+        zoneResource = request.toolId;
+      }
+      // Build query context. extraPaths is merged in for bash so the matcher
+      // can enforce "all paths must match" (prevents single-path bypass).
+      const baseContext: JsonObject =
+        request.input !== undefined ? (request.input as JsonObject) : ({} as JsonObject);
+      const zoneContext: JsonObject =
+        bashExtraPaths !== undefined
+          ? ({ ...baseContext, extraPaths: bashExtraPaths } as JsonObject)
+          : baseContext;
+      const zoneResult = await applyZoneVerdict({
+        query: {
+          principal: ctx.session.userId ?? "__anonymous__",
+          action: request.toolId,
+          resource: zoneResource,
+          context: zoneContext,
+        },
+        evaluator: config.zones.evaluator,
+        sandboxRouter: config.zones.sandboxRouter,
+        auditSink: zoneSink,
+      });
+      if (zoneResult.outcome === "auto-allow") {
+        emitApprovalStep(ctx, request.toolId, { kind: "allow" }, request.input, clock());
+        await dispatchApprovalOutcome?.({ effect: "allow" });
+        return next(request);
+      }
+      // fall-through: continue to existing prompt flow unchanged
+    }
+
     // Build dedup key for in-flight coordination
     const dedupUserId = ctx.session.userId ?? "__anonymous__";
     const dedupCtx = serializeTurnContext(ctx);

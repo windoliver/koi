@@ -2967,6 +2967,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           skillsProgressive: true,
           mcpOAuthChannel: tuiOAuthChannel,
           ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
+          ...((): {
+            readonly zonesProfile?: "read-only" | "edit-test-files" | "scripted-cleanup";
+          } => {
+            const raw = process.env.KOI_ZONES_PROFILE;
+            if (raw === "read-only" || raw === "edit-test-files" || raw === "scripted-cleanup") {
+              return { zonesProfile: raw };
+            }
+            return {};
+          })(),
           ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
             ? { maxSpendUsd: governance.maxSpendUsd }
             : {}),

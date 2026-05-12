@@ -1,0 +1,392 @@
+import { describe, expect, it, mock } from "bun:test";
+import type { RiskScorer } from "@koi/approval-zones";
+import { createZoneEvaluator } from "@koi/approval-zones";
+import type { PermissionQuery } from "@koi/core";
+import { applyZoneVerdict, extractBashPathTargets, type ZoneAuditSink } from "./zones-bridge.js";
+
+describe("extractBashPathTargets", () => {
+  it("returns absolute path tokens from a bash command", () => {
+    expect(extractBashPathTargets("ls /tmp/work")).toEqual(["/tmp/work"]);
+    expect(extractBashPathTargets("rm -rf /tmp/foo /tmp/bar")).toEqual(["/tmp/foo", "/tmp/bar"]);
+  });
+
+  it("returns ~/ tokens (tilde-prefixed paths)", () => {
+    expect(extractBashPathTargets("ls ~/Downloads")).toEqual(["~/Downloads"]);
+  });
+
+  it("returns empty array when command has no path tokens", () => {
+    expect(extractBashPathTargets("echo hello")).toEqual([]);
+    expect(extractBashPathTargets("")).toEqual([]);
+  });
+
+  it("ignores embedded slashes inside identifiers", () => {
+    expect(extractBashPathTargets("foo a/b /c/d")).toEqual(["/c/d"]);
+  });
+});
+
+const scorer: RiskScorer = { score: () => ({ tier: "low", reasons: [] }) };
+
+const baseQuery: PermissionQuery = {
+  principal: "agent:main",
+  action: "read",
+  resource: "/proj/x.ts",
+};
+
+function makeSink(): { events: { event: string; meta: unknown }[]; sink: ZoneAuditSink } {
+  const events: { event: string; meta: unknown }[] = [];
+  return {
+    events,
+    sink: { record: (event, meta) => events.push({ event, meta }) },
+  };
+}
+
+describe("applyZoneVerdict", () => {
+  it("returns 'auto-allow' and emits zone-auto for auto verdict", async () => {
+    const ev = createZoneEvaluator({
+      zones: [{ name: "ro", match: { tools: ["read"] }, action: "auto", maxRisk: "low" }],
+      scorer,
+    });
+    const { events, sink } = makeSink();
+    const result = await applyZoneVerdict({
+      query: baseQuery,
+      evaluator: ev,
+      sandboxRouter: undefined,
+      auditSink: sink,
+    });
+    expect(result.outcome).toBe("auto-allow");
+    expect(events.map((e) => e.event)).toEqual(["zone-auto"]);
+  });
+
+  it("returns 'fall-through' silently when no zone matches", async () => {
+    const ev = createZoneEvaluator({ zones: [], scorer });
+    const { events, sink } = makeSink();
+    const result = await applyZoneVerdict({
+      query: baseQuery,
+      evaluator: ev,
+      sandboxRouter: undefined,
+      auditSink: sink,
+    });
+    expect(result.outcome).toBe("fall-through");
+    expect(events).toHaveLength(0);
+  });
+
+  it("emits zone-ask-passthrough when matched zone exceeds maxRisk", async () => {
+    const ev = createZoneEvaluator({
+      zones: [{ name: "ro", match: { tools: ["read"] }, action: "auto", maxRisk: "low" }],
+      scorer: { score: () => ({ tier: "high", reasons: ["x"] }) },
+    });
+    const { events, sink } = makeSink();
+    const result = await applyZoneVerdict({
+      query: baseQuery,
+      evaluator: ev,
+      sandboxRouter: undefined,
+      auditSink: sink,
+    });
+    expect(result.outcome).toBe("fall-through");
+    expect(events.map((e) => e.event)).toEqual(["zone-ask-passthrough"]);
+  });
+
+  it("runs sandbox preview, on success returns 'auto-allow' and emits sandbox-ok + zone-auto", async () => {
+    const ev = createZoneEvaluator({
+      zones: [
+        {
+          name: "cleanup",
+          match: { tools: ["bash"] },
+          action: "sandbox-then-auto",
+          maxRisk: "medium",
+          sandboxBackendId: "default",
+        },
+      ],
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: "ok",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    const sandboxRouter = {
+      create: mock(async () => ({
+        ok: true as const,
+        value: {
+          instance: {
+            exec,
+            readFile: async () => new Uint8Array(),
+            writeFile: async () => {},
+            destroy,
+          },
+          decision: { selected: { name: "default" } },
+        },
+      })),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const { events, sink } = makeSink();
+    const result = await applyZoneVerdict({
+      query: { ...baseQuery, action: "bash", context: { command: "ls /tmp" } },
+      evaluator: ev,
+      sandboxRouter: sandboxRouter as unknown as Parameters<
+        typeof applyZoneVerdict
+      >[0]["sandboxRouter"],
+      auditSink: sink,
+    });
+    expect(result.outcome).toBe("auto-allow");
+    expect(events.map((e) => e.event)).toEqual([
+      "zone-sandbox-preview",
+      "zone-sandbox-ok",
+      "zone-auto",
+    ]);
+    expect(destroy).toHaveBeenCalled();
+  });
+
+  it("on sandbox failure (non-zero exit), returns 'fall-through' and emits sandbox-failed", async () => {
+    const ev = createZoneEvaluator({
+      zones: [
+        {
+          name: "cleanup",
+          match: { tools: ["bash"] },
+          action: "sandbox-then-auto",
+          maxRisk: "medium",
+          sandboxBackendId: "default",
+        },
+      ],
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: "err",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    const sandboxRouter = {
+      create: mock(async () => ({
+        ok: true as const,
+        value: {
+          instance: {
+            exec,
+            readFile: async () => new Uint8Array(),
+            writeFile: async () => {},
+            destroy,
+          },
+          decision: { selected: { name: "default" } },
+        },
+      })),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const { events, sink } = makeSink();
+    const result = await applyZoneVerdict({
+      query: { ...baseQuery, action: "bash", context: { command: "ls /tmp" } },
+      evaluator: ev,
+      sandboxRouter: sandboxRouter as unknown as Parameters<
+        typeof applyZoneVerdict
+      >[0]["sandboxRouter"],
+      auditSink: sink,
+    });
+    expect(result.outcome).toBe("fall-through");
+    expect(events.map((e) => e.event)).toEqual(["zone-sandbox-preview", "zone-sandbox-failed"]);
+  });
+
+  it("on sandbox verdict without a router configured, falls through with sandbox-failed", async () => {
+    const ev = createZoneEvaluator({
+      zones: [
+        {
+          name: "cleanup",
+          match: { tools: ["bash"] },
+          action: "sandbox-then-auto",
+          maxRisk: "medium",
+          sandboxBackendId: "default",
+        },
+      ],
+      scorer,
+    });
+    const { events, sink } = makeSink();
+    const result = await applyZoneVerdict({
+      query: { ...baseQuery, action: "bash", context: { command: "ls /tmp" } },
+      evaluator: ev,
+      sandboxRouter: undefined,
+      auditSink: sink,
+    });
+    expect(result.outcome).toBe("fall-through");
+    expect(events.map((e) => e.event)).toContain("zone-sandbox-failed");
+  });
+
+  it("fails closed when router selects a backend that does not match the zone's sandboxBackendId", async () => {
+    const ev = createZoneEvaluator({
+      zones: [
+        {
+          name: "cleanup",
+          match: { tools: ["bash"] },
+          action: "sandbox-then-auto",
+          maxRisk: "medium",
+          sandboxBackendId: "strict",
+        },
+      ],
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    const sandboxRouter = {
+      create: mock(async () => ({
+        ok: true as const,
+        value: {
+          instance: {
+            exec,
+            readFile: async () => new Uint8Array(),
+            writeFile: async () => {},
+            destroy,
+          },
+          decision: { selected: { name: "permissive" } },
+        },
+      })),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const { events, sink } = makeSink();
+    const result = await applyZoneVerdict({
+      query: { ...baseQuery, action: "bash", context: { command: "ls /tmp" } },
+      evaluator: ev,
+      sandboxRouter: sandboxRouter as unknown as Parameters<
+        typeof applyZoneVerdict
+      >[0]["sandboxRouter"],
+      auditSink: sink,
+    });
+    expect(result.outcome).toBe("fall-through");
+    expect(exec).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalled();
+    const failed = events.find((e) => e.event === "zone-sandbox-failed");
+    expect(failed).toBeDefined();
+    expect((failed?.meta as { reason?: string })?.reason).toMatch(/^backend-mismatch:/);
+  });
+
+  it("passes a deny-by-default SandboxProfile (no network, closed fs reads) to the router", async () => {
+    const ev = createZoneEvaluator({
+      zones: [
+        {
+          name: "cleanup",
+          match: { tools: ["bash"] },
+          action: "sandbox-then-auto",
+          maxRisk: "medium",
+          sandboxBackendId: "default",
+        },
+      ],
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    let capturedProfile: unknown;
+    const sandboxRouter = {
+      create: mock(async (profile: unknown) => {
+        capturedProfile = profile;
+        return {
+          ok: true as const,
+          value: {
+            instance: {
+              exec,
+              readFile: async () => new Uint8Array(),
+              writeFile: async () => {},
+              destroy,
+            },
+            decision: { selected: { name: "default" } },
+          },
+        };
+      }),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const { sink } = makeSink();
+    await applyZoneVerdict({
+      query: { ...baseQuery, action: "bash", context: { command: "ls /tmp" } },
+      evaluator: ev,
+      sandboxRouter: sandboxRouter as unknown as Parameters<
+        typeof applyZoneVerdict
+      >[0]["sandboxRouter"],
+      auditSink: sink,
+    });
+    const p = capturedProfile as {
+      readonly filesystem: { defaultReadAccess: string };
+      readonly network: { allow: boolean };
+      readonly resources: { timeoutMs?: number };
+    };
+    expect(p.filesystem.defaultReadAccess).toBe("closed");
+    expect(p.network.allow).toBe(false);
+    expect(p.resources.timeoutMs).toBeGreaterThan(0);
+  });
+
+  it("expands SandboxProfile.filesystem.allowRead with paths from the bash command", async () => {
+    const ev = createZoneEvaluator({
+      zones: [
+        {
+          name: "cleanup",
+          match: { tools: ["bash"] },
+          action: "sandbox-then-auto",
+          maxRisk: "medium",
+          sandboxBackendId: "default",
+        },
+      ],
+      scorer,
+    });
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+      oomKilled: false,
+    }));
+    const destroy = mock(async () => {});
+    let capturedProfile: unknown;
+    const sandboxRouter = {
+      create: mock(async (profile: unknown) => {
+        capturedProfile = profile;
+        return {
+          ok: true as const,
+          value: {
+            instance: {
+              exec,
+              readFile: async () => new Uint8Array(),
+              writeFile: async () => {},
+              destroy,
+            },
+            decision: { selected: { name: "default" } },
+          },
+        };
+      }),
+      describe: () => [],
+      shutdown: async () => {},
+    };
+    const { sink } = makeSink();
+    await applyZoneVerdict({
+      query: { ...baseQuery, action: "bash", context: { command: "ls /tmp/foo" } },
+      evaluator: ev,
+      sandboxRouter: sandboxRouter as unknown as Parameters<
+        typeof applyZoneVerdict
+      >[0]["sandboxRouter"],
+      auditSink: sink,
+    });
+    const p = capturedProfile as {
+      readonly filesystem: { allowRead?: readonly string[] };
+    };
+    expect(p.filesystem.allowRead).toContain("/tmp/foo");
+  });
+});

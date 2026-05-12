@@ -469,3 +469,7 @@ The pipe's `.finally()` handler now guards `cancelNotifiers.delete(attemptId)` w
 `if (!stopped)`. When a pipe settles during `drainPipe()` — before `lifecycle.stop()`
 reads the notifier — the guard prevents premature deletion, ensuring `lifecycle.stop()`
 can still consume and await the notifier.
+
+## Changelog
+
+- 2026-05-11: `local-shell.ts` — coerce `Bun.spawnSync` stdout to `Uint8Array` before passing to `TextDecoder.decode`. `Buffer.slice().buffer` is `ArrayBufferLike` (incompatible with `ArrayBuffer` under `@types/bun@1.3.11`); the explicit `new Uint8Array(stdout)` wrap restores a structurally-compatible view. No runtime change.

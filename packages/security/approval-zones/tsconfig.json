@@ -7,9 +7,7 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../../kernel/core" },
-    { "path": "../../lib/errors" },
     { "path": "../../lib/bash-ast" },
-    { "path": "../approval-zones" },
-    { "path": "../../sandbox/sandbox-router" }
+    { "path": "../../lib/bash-classifier" }
   ]
 }

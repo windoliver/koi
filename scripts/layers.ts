@@ -76,6 +76,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/agent-procfs",
   "@koi/agent-runtime",
   "@koi/agent-summary",
+  "@koi/approval-zones",
   "@koi/artifacts",
   "@koi/artifacts-s3",
   "@koi/channel-cli",

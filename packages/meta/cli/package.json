@@ -38,6 +38,7 @@
   ],
   "dependencies": {
     "@koi/agent-runtime": "workspace:*",
+    "@koi/approval-zones": "workspace:*",
     "@koi/agent-summary": "workspace:*",
     "@koi/artifacts": "workspace:*",
     "@koi/auto-harness": "workspace:*",

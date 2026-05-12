@@ -1392,6 +1392,7 @@
         "@koi/ace-types": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
+        "@koi/approval-zones": "workspace:*",
         "@koi/artifacts": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-nexus": "workspace:*",
@@ -1562,6 +1563,7 @@
         "@koi/agent-procfs": "workspace:*",
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
+        "@koi/approval-zones": "workspace:*",
         "@koi/artifacts": "workspace:*",
         "@koi/artifacts-s3": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
@@ -2081,6 +2083,15 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/security/approval-zones": {
+      "name": "@koi/approval-zones",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/bash-ast": "workspace:*",
+        "@koi/bash-classifier": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/security/audit-sink-ndjson": {
       "name": "@koi/audit-sink-ndjson",
       "version": "0.0.0",
@@ -2193,6 +2204,18 @@
         "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/approval-zones": "workspace:*",
+        "@koi/sandbox-router": "workspace:*",
+      },
+      "peerDependencies": {
+        "@koi/approval-zones": "workspace:*",
+        "@koi/sandbox-router": "workspace:*",
+      },
+      "optionalPeers": [
+        "@koi/approval-zones",
+        "@koi/sandbox-router",
+      ],
     },
     "packages/security/nexus-delegation": {
       "name": "@koi/nexus-delegation",
@@ -2702,6 +2725,8 @@
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
     "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
+
+    "@koi/approval-zones": ["@koi/approval-zones@workspace:packages/security/approval-zones"],
 
     "@koi/artifacts": ["@koi/artifacts@workspace:packages/lib/artifacts"],
 

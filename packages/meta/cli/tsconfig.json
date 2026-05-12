@@ -38,6 +38,7 @@
     { "path": "../../lib/middleware-tool-error-formatter" },
     { "path": "../auto-harness" },
     { "path": "../runtime" },
+    { "path": "../../security/approval-zones" },
     { "path": "../../security/governance-approval-tiers" },
     { "path": "../../security/governance-security" },
     { "path": "../../security/audit-sink-nexus" },
