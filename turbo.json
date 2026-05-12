@@ -8,7 +8,12 @@
     },
     "test": {
       "dependsOn": ["^build", "build"],
-      "inputs": ["src/**/*.ts", "tsconfig.json", "../../tsconfig.base.json"],
+      "inputs": [
+        "src/**/*.ts",
+        "tsconfig.json",
+        "../../tsconfig.base.json",
+        "../../../scripts/run-runtime-package-tests.ts"
+      ],
       "outputs": ["coverage/**"]
     },
     "test:api": {
