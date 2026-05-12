@@ -202,7 +202,7 @@
     "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test",
+    "test": "bun ../../../scripts/run-runtime-package-tests.ts",
     "record": "bun scripts/record-cassettes.ts"
   }
 }
