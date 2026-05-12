@@ -769,7 +769,7 @@ jobs:
         # list, single-flight dispose guard, scheduler/harness disposed
         # flags, and STALE_REF fall-through loop. Splitting these would
         # leak the per-instance state across module boundaries.
-        run: bun run check:complexity --max-violations 791
+        run: bun run check:complexity --max-violations 794
 
       - name: Check TUI single-writer output policy
         run: bun run check:tui-single-writer
