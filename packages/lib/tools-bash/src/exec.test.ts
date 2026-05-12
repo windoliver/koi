@@ -23,6 +23,22 @@ describe("drainStream", () => {
     expect(result.text).toBe("\uFFFD");
     expect(chunks.join("")).toBe("\uFFFD");
   });
+
+  test("does not append replacement char when capture budget truncates mid-codepoint", async () => {
+    const chunks: string[] = [];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([0xe2, 0x82, 0xac]));
+        controller.close();
+      },
+    });
+
+    const result = await drainStream(stream, { remaining: 2 }, (chunk) => chunks.push(chunk));
+
+    expect(result.truncated).toBe(true);
+    expect(result.text).toBe("");
+    expect(chunks.join("")).toBe("€");
+  });
 });
 
 describe("spawnBash — streaming callbacks", () => {

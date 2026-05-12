@@ -186,9 +186,11 @@ export async function drainStream(
       }
     }
 
-    const capturedTrailing = captureDecoder.decode();
-    if (capturedTrailing.length > 0) {
-      text += capturedTrailing;
+    if (!truncated) {
+      const capturedTrailing = captureDecoder.decode();
+      if (capturedTrailing.length > 0) {
+        text += capturedTrailing;
+      }
     }
   } finally {
     reader.releaseLock();
