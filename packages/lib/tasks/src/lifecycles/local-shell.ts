@@ -64,7 +64,7 @@ function resolveSetsid(): string | null {
   if (setsidPath !== undefined) return setsidPath;
   try {
     const result = Bun.spawnSync(["which", "setsid"], { stdout: "pipe", stderr: "ignore" });
-    const path = new TextDecoder().decode(result.stdout).trim();
+    const path = new TextDecoder().decode(new Uint8Array(result.stdout)).trim();
     setsidPath = result.exitCode === 0 && path.length > 0 ? path : null;
   } catch {
     setsidPath = null;
