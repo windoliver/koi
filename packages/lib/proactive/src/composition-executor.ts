@@ -16,6 +16,10 @@ import {
   preCommitRejection,
   type SchedulerComponent,
 } from "@koi/core";
+import type {
+  CheckpointSnapshot,
+  CompositionCheckpointStore,
+} from "./composition-checkpoint-store.js";
 import {
   type CompositionGovernance,
   defaultPatternKey,
@@ -213,6 +217,61 @@ export interface CompositionExecutionContext {
   readonly outcomeRecorder?: OutcomeRecorder | undefined;
   /** Clock override; defaults to `Date.now`. Used for CompositionGap timestamps. */
   readonly now?: (() => number) | undefined;
+  /**
+   * Optional checkpoint store for per-plan progress observability. When
+   * wired together with `executionId`, the executor emits a snapshot after
+   * each successful step, deletes on terminal success, and persists a
+   * `phase: "failed"` snapshot on terminal failure / unsupported. Snapshots
+   * are observability-only — store failures are swallowed and the
+   * executionLog remains the correctness source of truth for did-this-side-
+   * effect-already-commit. Hosts use the snapshot stream to enumerate
+   * in-flight executions on restart; the actual resume mechanism is the
+   * mandatory executionLog's claim/record/release contract.
+   */
+  readonly checkpointStore?: CompositionCheckpointStore | undefined;
+  /**
+   * Stable per-execution identifier. Required when `checkpointStore` is
+   * provided. Hosts typically derive this from
+   * `${agentId}:${trigger.id}:${trigger.emittedAt}` or from a workflow ID
+   * for Temporal-backed deployments. Without `checkpointStore`, this field
+   * is ignored. With `checkpointStore` and missing/empty `executionId`,
+   * execute() returns INVALID_PLAN immediately.
+   */
+  readonly executionId?: string | undefined;
+  /**
+   * Plan-stable hash override. Defaults to a SHA-256 of the canonicalized
+   * plan (field-order independent). Used as the `planHash` field of every
+   * emitted snapshot so hosts can detect plan drift between attempts.
+   */
+  readonly hashPlan?: ((plan: CompositionPlan) => string) | undefined;
+  /**
+   * Per-call timeout (ms) for `checkpointStore.save` and `.delete`.
+   * Defaults to 5_000. Checkpoint writes are observability-only and must
+   * never block the executor's structured result — a stalled SQLite lock,
+   * slow network-backed store, or Promise that never settles would
+   * otherwise strand `execute()` after side effects have already
+   * committed. On timeout the operation is abandoned and treated as a
+   * swallowed observability failure. Set to `0` or negative to disable
+   * the timeout (await indefinitely — only safe for in-memory stores).
+   */
+  readonly checkpointStoreTimeoutMs?: number | undefined;
+  /**
+   * Override for the seq-aware capability advertised by
+   * `checkpointStore.seqAware`. Almost no host needs this — built-in
+   * stores set their own flag, and custom stores SHOULD too. Provided
+   * for the rare case where a host wraps a built-in store in a
+   * decorator that erases or fakes the property. `undefined` (default)
+   * = trust the store's own flag.
+   */
+  readonly checkpointStoreSeqAware?: boolean | undefined;
+}
+
+const DEFAULT_CHECKPOINT_STORE_TIMEOUT_MS = 5_000;
+
+function defaultPlanHash(plan: CompositionPlan): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalize(plan)))
+    .digest("hex");
 }
 
 const DEFAULT_ALLOWED_NOTIFY_CHANNELS: readonly string[] = ["inbox"];
@@ -458,6 +517,361 @@ export function createCompositionExecutor(
 ): CompositionExecutor {
   const now = context.now ?? Date.now;
   const recorder = context.outcomeRecorder;
+  const checkpointStore = context.checkpointStore;
+  const executionId = context.executionId;
+  const hashPlan = context.hashPlan ?? defaultPlanHash;
+  const checkpointStoreTimeoutMs =
+    context.checkpointStoreTimeoutMs ?? DEFAULT_CHECKPOINT_STORE_TIMEOUT_MS;
+  // Capability is owned by the store; context flag is an explicit
+  // override for hosts that wrap a built-in in a decorator that hides
+  // the property.
+  const checkpointStoreSeqAware =
+    context.checkpointStoreSeqAware ?? checkpointStore?.seqAware === true;
+  // A host wiring `checkpointStore` without `executionId` is a
+  // misconfiguration. Checkpointing is observability-only — the
+  // executionLog is the correctness source of truth — so we DEGRADE
+  // here instead of failing the plan: every checkpoint-touching
+  // helper short-circuits on `executionId === undefined || ""`, so
+  // saves/deletes silently become no-ops. We emit a one-shot warning
+  // through the gap recorder (best-effort observability) when this
+  // condition holds so operators can spot the wiring bug without
+  // taking down composition execution entirely.
+  if (checkpointStore !== undefined && (executionId === undefined || executionId === "")) {
+    // Best-effort warning, never throws — recorder may be absent or fail.
+    try {
+      recorder?.recordGap?.({
+        triggerId: "",
+        agentId: context.agentId,
+        kind: "configuration_warning",
+        detail: "checkpointStore wired without executionId — checkpoint writes disabled",
+        occurredAt: now(),
+      } as never);
+    } catch {
+      /* observability-only */
+    }
+  }
+
+  // Serialize all store ops per executor instance. Necessary because
+  // withTimeout abandons the executor's view of a stalled op via
+  // Promise.race, but the underlying save/delete keeps running. Without
+  // serialization a slow save() that the executor gave up on could
+  // commit AFTER a later delete(), resurrecting a stale snapshot for an
+  // execution that already finished — or overwriting a newer terminal
+  // `failed` row with an older `in_progress` payload. Chaining every op
+  // onto a single per-executor promise enforces store-side ordering even
+  // when the executor stops awaiting individual ops.
+  let storeOpQueue: Promise<void> = Promise.resolve();
+
+  // Strictly-increasing per-executor seq stamped onto every emitted
+  // snapshot's `seq` field. Backends that honor seq (shipped in-memory
+  // and SQLite stores) refuse stale writes whose seq is not greater than
+  // the row's current seq — so even when the in-process queue is reset
+  // after a timeout, an abandoned old write cannot overtake newer state
+  // at the backend.
+  //
+  // CRITICAL: seq must remain monotonic across executor recreations for
+  // the same `executionId`, otherwise a restart/retry would start at 0
+  // and have its writes rejected by the stored higher watermark.
+  //
+  // Strategy: wall-clock seed (covers cross-process collisions) PLUS a
+  // durable bump from the stored prior snapshot's `seq` on first use.
+  // The store-side watermark is the authoritative monotonic anchor —
+  // wall-clock alone is unsafe across NTP rollbacks / VM time-warp
+  // events / clock-skewed hosts. Probing `load(executionId)` once at
+  // first save/delete and lifting storeOpSeq above the stored value
+  // means a backwards clock jump cannot brick checkpoint progress.
+  let storeOpSeq = now();
+  let seqSeededDurably = false; // clean successful probe
+  let seqSeededOnce = false; // any probe attempt (success or timeout/throw)
+  async function ensureSeqSeeded(durable: boolean = false): Promise<void> {
+    // Step-loop callers pass durable=false → skip after the first
+    // attempt so a degraded backend cannot re-pay the timeout cost
+    // per step. Terminal callers pass durable=true → re-probe if we
+    // haven't yet confirmed a clean watermark seed, so the final
+    // failed/delete writes have a chance to anchor above the durable
+    // watermark and survive the seq-aware backend's guard.
+    if (seqSeededDurably) return;
+    if (!durable && seqSeededOnce) return;
+    if (checkpointStore === undefined || executionId === undefined || executionId === "") {
+      seqSeededDurably = true; // no store to probe — done forever
+      seqSeededOnce = true;
+      return;
+    }
+    // Bound the probe with the same observability-only timeout used
+    // for save/delete. A hung custom store must NOT strand execute()
+    // — even though seeding runs before the first store-op chain hop,
+    // it's still on the structured-completion critical path. Race the
+    // probe against a setTimeout. On success (incl. undefined result)
+    // mark seeded; on timeout/throw, leave `seqSeeded` false so the
+    // NEXT save/delete retries the probe — a one-shot failure must
+    // not permanently brick checkpointing.
+    //
+    // Prefer `getWatermark(id)` over `load(id)`: it surfaces tombstone
+    // watermarks too, so a reused executionId after a versioned delete
+    // still picks up the prior monotonic anchor. `load(id)` hides
+    // tombstones (by contract) and would falsely report "no prior",
+    // letting the seq counter start below the tombstone seq and have
+    // every later save dropped by the backend guard.
+    const id = executionId;
+    const store = checkpointStore;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutSentinel = Symbol("seq-seed-timeout");
+    try {
+      const probe: Promise<number | undefined> = Promise.resolve().then(async () => {
+        if (typeof store.getWatermark === "function") {
+          const w = store.getWatermark(id);
+          return w instanceof Promise ? await w : w;
+        }
+        const loaded = store.load(id);
+        const value = loaded instanceof Promise ? await loaded : loaded;
+        return value?.seq;
+      });
+      const result = await Promise.race([
+        probe,
+        new Promise<typeof timeoutSentinel>((resolve) => {
+          if (checkpointStoreTimeoutMs <= 0) return; // opt-out — never resolve
+          timer = setTimeout(() => resolve(timeoutSentinel), checkpointStoreTimeoutMs);
+        }),
+      ]);
+      if (result === timeoutSentinel) {
+        // Probe hung. Mark seeded ONCE so subsequent step saves do
+        // not re-pay the timeout cost — the goal of fire-and-forget
+        // step saves is that a degraded backend adds AT MOST one
+        // bounded wait per plan, not one per step. Leave durable=false
+        // so terminal cleanup gets one more probe attempt: terminal
+        // writes are where stale-seq drops actually break recovery
+        // (missing failed snapshot or missing delete), so it's worth
+        // one extra bounded wait per plan to anchor the counter
+        // durably if the backend has recovered.
+        seqSeededOnce = true;
+        return;
+      }
+      if (typeof result === "number" && result >= storeOpSeq) {
+        storeOpSeq = result + 1;
+      }
+      seqSeededDurably = true;
+      seqSeededOnce = true;
+    } catch {
+      // Probe throw — one-shot for step loop, but terminal cleanup
+      // gets another chance (same rationale as timeout above).
+      seqSeededOnce = true;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+  function nextSeq(): number {
+    const t = now();
+    storeOpSeq = t > storeOpSeq ? t : storeOpSeq + 1;
+    return storeOpSeq;
+  }
+
+  // Bound observability-only store I/O so a stalled/hung backend cannot
+  // strand execute() after side effects have already committed. Treats
+  // timeout as a swallowed failure (matches the "checkpoints are
+  // observability-only" contract). `timeoutMs <= 0` opts out — only safe
+  // for synchronous in-memory stores where awaiting cannot stall.
+  async function withTimeout<T>(
+    op: () => Promise<T> | T,
+    timeoutMs: number,
+    skipChain: boolean = false,
+  ): Promise<void> {
+    // Seq-aware stores order by `seq` at the backend, so chain
+    // ordering is redundant — and harmful for terminal cleanup, which
+    // could otherwise queue behind a hung fire-and-forget step save
+    // and never reach the backend even after its own timeout (the
+    // chain-reset condition is checked against the queue head, and
+    // the terminal op typically isn't the head once chained). When
+    // skipChain=true on a seq-aware store, run the op independently
+    // so terminal delete is unblockable.
+    if (skipChain) {
+      if (timeoutMs <= 0) {
+        try {
+          await op();
+        } catch {
+          /* observability-only */
+        }
+        return;
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const tSentinel = Symbol("checkpoint-store-timeout-direct");
+      const tPromise = new Promise<typeof tSentinel>((resolve) => {
+        timer = setTimeout(() => resolve(tSentinel), timeoutMs);
+      });
+      try {
+        await Promise.race([
+          Promise.resolve()
+            .then(() => op())
+            .catch(() => {}),
+          tPromise,
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      return;
+    }
+
+    // Chain this op behind any already-queued op so the backend sees
+    // saves and the terminal delete in issue order. Swallow failures so
+    // one bad op cannot poison the chain.
+    const queued = storeOpQueue.then(async () => {
+      try {
+        await op();
+      } catch {
+        // observability-only
+      }
+    });
+    storeOpQueue = queued;
+    if (timeoutMs <= 0) {
+      await queued;
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutSentinel = Symbol("checkpoint-store-timeout");
+    const timeoutPromise = new Promise<typeof timeoutSentinel>((resolve) => {
+      timer = setTimeout(() => resolve(timeoutSentinel), timeoutMs);
+    });
+    try {
+      const winner = await Promise.race([queued.then(() => "ok" as const), timeoutPromise]);
+      if (winner === timeoutSentinel && checkpointStoreSeqAware) {
+        // The head op did not settle within the budget. Reset the chain
+        // so later save/delete calls on this executor are not blocked
+        // behind a permanently pending promise. The abandoned op still
+        // runs to completion in the background and may commit out of
+        // order with subsequent ops — that liveness/ordering trade is
+        // only safe when the store rejects stale writes via the `seq`
+        // watermark (`checkpointStoreSeqAware: true`). Without that
+        // guarantee a timed-out save could land AFTER a terminal
+        // delete() and resurrect an `in_progress` checkpoint, breaking
+        // restart safety. Hosts wiring a non-seq-aware custom store
+        // must leave `checkpointStoreSeqAware` false — the chain is
+        // then NOT reset, every later op also times out, and no
+        // resurrection is possible because no later op runs.
+        //
+        // Reassign only if no even-newer op has already replaced the
+        // queue — otherwise we would clobber an in-flight chain head.
+        if (storeOpQueue === queued) {
+          storeOpQueue = Promise.resolve();
+        }
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  async function saveProgress(
+    plan: CompositionPlan,
+    stepResults: readonly ExecutedStepResult[],
+    phase: "in_progress" | "failed",
+    wait: boolean = true,
+  ): Promise<void> {
+    if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    // Build the snapshot synchronously so hashPlan / output mapping
+    // failures are caught by withTimeout's sync-throw handler instead of
+    // turning into an uncaught rejection.
+    // Terminal blocking saves (wait=true: failed/preflight cleanup) are
+    // worth re-probing the watermark on if the first probe timed out —
+    // they're the writes that actually matter for recovery state.
+    // Step-loop fire-and-forget saves pass durable=false → skip if the
+    // first probe already happened.
+    await ensureSeqSeeded(wait);
+    const seq = nextSeq();
+    // Terminal saves (wait=true: failed-phase or preflight cleanup)
+    // bypass the chain on seq-aware stores so a hung fire-and-forget
+    // step save cannot strand the terminal write. The backend's seq
+    // guard handles ordering for us. Non-seq-aware stores keep
+    // chained writes — they have no out-of-order protection so
+    // chain ordering is the only ordering guarantee available.
+    const skipChain = wait && checkpointStoreSeqAware;
+    const op = withTimeout(
+      () =>
+        checkpointStore.save({
+          executionId,
+          planHash: hashPlan(plan),
+          nextStepIndex: stepResults.length,
+          stepResults: stepResults.map((r) => r.output),
+          phase,
+          savedAt: now(),
+          seq,
+        }),
+      checkpointStoreTimeoutMs,
+      skipChain,
+    );
+    if (wait) {
+      await op;
+      return;
+    }
+    // Fire-and-forget: in-progress saves during the step loop must NOT
+    // stretch a successful plan's wall time by `timeout * stepCount`
+    // on a degraded backend. The op is still chained behind any prior
+    // store op via storeOpQueue, so ordering is preserved at the
+    // backend. Swallow the orphan promise's rejection so the runtime
+    // doesn't emit an unhandledRejection event.
+    op.catch(() => {});
+  }
+
+  // Re-save a previously loaded snapshot with phase=failed, preserving
+  // nextStepIndex / stepResults / planHash so the record of what
+  // actually executed survives a zero-step preflight failure on a
+  // stale-plan retry. A fresh seq is stamped so the watermark advances.
+  async function savePriorAsFailed(prior: CheckpointSnapshot): Promise<void> {
+    if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    // Terminal write — durable re-probe is worth one extra bounded wait.
+    await ensureSeqSeeded(true);
+    const seq = nextSeq();
+    await withTimeout(
+      () =>
+        checkpointStore.save({
+          executionId,
+          planHash: prior.planHash,
+          nextStepIndex: prior.nextStepIndex,
+          stepResults: prior.stepResults,
+          phase: "failed",
+          savedAt: now(),
+          seq,
+        }),
+      checkpointStoreTimeoutMs,
+      checkpointStoreSeqAware, // skip chain on seq-aware backends
+    );
+  }
+
+  // Bounded `load()` probe used by the zero-step preflight cleanup path.
+  // Returns `undefined` on hang, throw, or genuine absence — all three
+  // collapse into "treat as no prior snapshot" so a degraded async
+  // backend cannot strand execute().
+  async function loadProgressBounded(
+    store: CompositionCheckpointStore,
+    id: string,
+  ): Promise<CheckpointSnapshot | undefined> {
+    let resolved: CheckpointSnapshot | undefined;
+    await withTimeout(async () => {
+      try {
+        const loaded = store.load(id);
+        const value = loaded instanceof Promise ? await loaded : loaded;
+        resolved = value ?? undefined;
+      } catch {
+        resolved = undefined;
+      }
+    }, checkpointStoreTimeoutMs);
+    return resolved;
+  }
+
+  async function deleteProgress(): Promise<void> {
+    if (checkpointStore === undefined || executionId === undefined || executionId === "") return;
+    // Seq is monotonic across restarts: ensureSeqSeeded lifts the
+    // counter above any prior watermark before stamping. Backend
+    // records the tombstone at this seq. Terminal write — durable
+    // re-probe is worth one extra bounded wait.
+    await ensureSeqSeeded(true);
+    const seq = nextSeq();
+    // Terminal delete bypasses the chain on seq-aware stores so a
+    // hung fire-and-forget step save cannot strand it. Backend seq
+    // guard rejects any abandoned save that lands after this.
+    await withTimeout(
+      () => checkpointStore.delete(executionId, seq),
+      checkpointStoreTimeoutMs,
+      checkpointStoreSeqAware,
+    );
+  }
 
   async function emitGap(trigger: CompositionTrigger, step: CompositionStep): Promise<void> {
     if (recorder?.recordGap === undefined) return;
@@ -1066,6 +1480,20 @@ export function createCompositionExecutor(
         }
         return failedResult(trigger.id, stepResults, stepFailed(step, cause));
       }
+      // Step pushed successfully (failures return early above) — snapshot
+      // progress so a host watching the checkpoint store sees the plan
+      // advancing step-by-step.
+      //
+      // Fire-and-forget ONLY for seq-aware stores: a hung step save can
+      // be safely abandoned because the backend's seq guard rejects any
+      // late commit that lands after a terminal delete. For non-seq-aware
+      // stores, fire-and-forget would let the terminal delete queue
+      // behind a hung save and never reach the backend — a completed
+      // execution would be left looking in_progress forever, breaking
+      // restart sweepers. Block on those stores to ensure terminal
+      // cleanup is reachable, accepting the N×timeout latency cost on
+      // a degraded backend (better than incorrect recovery state).
+      await saveProgress(plan, stepResults, "in_progress", !checkpointStoreSeqAware);
     }
 
     return {
@@ -1081,8 +1509,77 @@ export function createCompositionExecutor(
       trigger: CompositionTrigger,
       plan: CompositionPlan,
     ): Promise<CompositionExecutionResult> {
+      // checkpointStore wired without executionId degrades silently
+      // (warning emitted at construction; all checkpoint helpers short-
+      // circuit). executionLog remains the correctness source of truth.
       const state = { committedNewWork: false, acquiredSessionSlot: false };
       const result = await runPlan(trigger, plan, state);
+      // Terminal snapshot housekeeping. Pure success deletes the snapshot
+      // (no in-flight execution to resume). `failed` / `unsupported`
+      // persist a `phase: "failed"` snapshot so hosts can enumerate
+      // executions that stopped short.
+      //
+      // `requires_approval` is intentionally NOT collapsed into "failed":
+      // the plan ran zero steps, committed nothing, and is awaiting an
+      // external decision tracked through the host's approval channel —
+      // not through the checkpoint store. Persisting a "failed" snapshot
+      // here would cause restart-watchdog flows to confuse "pending
+      // human approval" with "execution actually failed" and auto-retry
+      // or page operators on an approval-gated plan. Skip the snapshot
+      // and let the existing approval signal contract own that state.
+      if (result.status === "executed") {
+        await deleteProgress();
+      } else if (result.status !== "requires_approval") {
+        // Cast widening: result.stepResults narrows differently per status
+        // (failed/unsupported include the final non-executed step). Snapshot
+        // only the executed prefix to match `nextStepIndex` semantics.
+        const executedPrefix: ExecutedStepResult[] = [];
+        for (const r of result.stepResults) {
+          if (r.status === "executed") executedPrefix.push(r);
+          else break;
+        }
+        if (executedPrefix.length > 0) {
+          // At least one step committed in this attempt — record terminal
+          // failure so hosts can reconcile.
+          await saveProgress(plan, executedPrefix, "failed");
+        } else if (
+          checkpointStore !== undefined &&
+          executionId !== undefined &&
+          executionId !== ""
+        ) {
+          // Zero-step preflight failure (stale plan, trigger mismatch,
+          // INVALID_PLAN before any claim, etc). Two cases:
+          //
+          // 1. No prior snapshot exists → skip; persisting a poison row
+          //    for a brand-new failed-preflight execution would let
+          //    restart watchdogs loop retries on never-runnable plans.
+          //
+          // 2. Prior snapshot exists from an earlier attempt that DID
+          //    execute steps → flip phase=failed while PRESERVING the
+          //    prior nextStepIndex / stepResults / planHash. Overwriting
+          //    with the current (zero-step, current-plan-hash) payload
+          //    would destroy the only record of what already executed,
+          //    breaking restart reconciliation and hiding committed side
+          //    effects from operators.
+          // Probe with the same observability-only timeout as save/delete.
+          // A degraded async backend on the preflight-failure path must
+          // not strand execute() — drop to "treat as no prior" on timeout
+          // or any throw.
+          const prior = await loadProgressBounded(checkpointStore, executionId);
+          // Identity guard: only mutate the prior snapshot if its
+          // planHash matches the current attempt's plan. If a host has
+          // accidentally reused this executionId across unrelated plans
+          // (or two concurrent attempts collided), the stored snapshot
+          // belongs to OTHER work — flipping it to phase=failed would
+          // poison the live execution's checkpoint and mislead restart
+          // recovery into treating healthy work as failed. Leave it
+          // untouched and let the mismatched preflight finish without
+          // side effects on durable state.
+          if (prior !== undefined && prior.planHash === hashPlan(plan)) {
+            await savePriorAsFailed(prior);
+          }
+        }
+      }
       return finalize(trigger, plan, result, state.committedNewWork, state.acquiredSessionSlot);
     },
   };

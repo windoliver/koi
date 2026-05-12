@@ -10,6 +10,20 @@ export {
   DEFAULT_COMPOSITION_APPROVAL_POLICY,
 } from "./composition-approval.js";
 export {
+  type CheckpointEncoder,
+  type CheckpointPhase,
+  type CheckpointSnapshot,
+  type CheckpointValue,
+  type CompositionCheckpointStore,
+  createInMemoryCheckpointStore,
+  type InMemoryCheckpointStoreConfig,
+  safeJsonEncoder,
+} from "./composition-checkpoint-store.js";
+export {
+  type SqliteCheckpointStoreConfig,
+  sqliteCompositionCheckpointStore,
+} from "./composition-checkpoint-store-sqlite.js";
+export {
   type SqliteDatabaseLike,
   type SqliteStatementLike,
   sqliteCompositionExecutionLog,
@@ -45,12 +59,23 @@ export {
 } from "./composition-governance.js";
 export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
+export type { InboxEnvelope, InboxSink } from "./inbox-sink.js";
 export {
   type CompositionPlannerAdapter,
   type CompositionPlannerAdapterInput,
   createLlmCompositionPlanner,
   type LlmCompositionPlannerConfig,
 } from "./llm-composition-planner.js";
+export {
+  createProactiveDelivery,
+  type DeliveryFailure,
+  type DeliveryPreferences,
+  type DeliveryPriority,
+  type DeliveryResult,
+  type ProactiveDelivery,
+  type ProactiveDeliveryConfig,
+  type ProactiveNotification,
+} from "./proactive-delivery.js";
 export { createProactiveToolsProvider } from "./provider.js";
 export {
   createRuleBasedCompositionPlanner,

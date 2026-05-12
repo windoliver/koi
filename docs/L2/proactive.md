@@ -409,6 +409,43 @@ provided) and never break the source loop. Subscriptions are idempotent —
 honors the L0 `SystemSignalSourceOptions` contract (`sampleRateMs`,
 `replay`, `onError`, `onDisconnect`).
 
+## Composition checkpoints (#1301 Part 2 foundation)
+
+`createInMemoryCheckpointStore` is the foundation contract for durable
+composition execution. It models **per-plan progress** — distinct from
+`CompositionExecutionLog` which models per-side-effect dedupe. The two
+coexist: the execution log keeps step-level idempotency; the checkpoint
+store enables coarse-grained plan resume.
+
+```typescript
+import { createInMemoryCheckpointStore, type CheckpointSnapshot } from "@koi/proactive";
+
+const store = createInMemoryCheckpointStore();
+
+// After step k completes, before moving to k+1:
+await store.save({
+  executionId: "comp-42",
+  planHash: hashPlan(plan),
+  nextStepIndex: k + 1,
+  stepResults: [...resultsSoFar, latestResult],
+  phase: "in_progress",
+  savedAt: now(),
+});
+
+// On restart, before the step loop:
+const snap = await store.load("comp-42");
+const start = snap !== undefined && snap.planHash === hashPlan(plan) ? snap.nextStepIndex : 0;
+```
+
+`save` validates invariants synchronously and throws on caller bugs:
+empty `executionId`/`planHash`, negative or non-integer
+`nextStepIndex`, or `stepResults.length !== nextStepIndex`.
+
+The interface returns `void | Promise<void>` and `CheckpointSnapshot
+| undefined | Promise<...>` so durable backends (Temporal, SQLite,
+Redis) implement the same contract. Executor wiring and a Temporal-backed
+implementation are tracked as separate slices of #1301 Part 2.
+
 ## Future Phases (out of scope here)
 
 Phase 3a tracker (this issue): sleep / wake / cron tools.
@@ -424,3 +461,206 @@ Phase 3a tracker (this issue): sleep / wake / cron tools.
 
 `brief` / `notify` / `monitor` tools are blocked on channel + webhook restoration and
 are deliberately not included here.
+
+## Proactive delivery — `createProactiveDelivery`
+
+Routes a `ProactiveNotification` to one or more attached `ChannelAdapter`s
+based on priority. Phase 3 surface; quiet hours, multi-channel fallback,
+and inbox routing for `low` priority are deferred to Phase 4.
+
+```typescript
+import { createProactiveDelivery } from "@koi/proactive";
+
+const delivery = createProactiveDelivery({
+  channels: new Map([
+    ["slack", slackAdapter],
+    ["email", emailAdapter],
+  ]),
+  preferences: {
+    preferredChannel: "slack",
+    maxNotificationsPerHour: 30,
+  },
+});
+
+const result = await delivery.send({
+  priority: "high",
+  content: [{ kind: "text", text: "Composition completed: dispatched diagnostic agent." }],
+});
+```
+
+Routing rules:
+
+| Priority | Routes to | Rate-limited | Quiet-hours gated |
+|---|---|---|---|
+| `urgent` | every channel in parallel; success if at least one delivered | no — bypasses cap and does not consume window capacity | no |
+| `high` | preferred channel first; on failure, walks remaining channels in Map insertion order; first success wins | yes — exactly 1 slot per send call regardless of attempts | no |
+| `normal` | `preferredChannel` if configured, else first channel by Map insertion order; single attempt (no fallback) | yes | yes — see Quiet hours below |
+| `low` | `inbox.enqueue` if `inbox` configured (delivered=`["inbox"]`); else `preferredChannel` or first by insertion order, single attempt | only when falling through to channel; inbox writes do NOT consume the cap | no |
+
+Failures are wrapped: an adapter `send` rejection becomes `{ ok: false,
+reason: "all_failed", failures: [{ channel, error }] }`. Adapter
+exceptions never propagate. Failed deliveries refund their rate-limit
+slot. Concurrent sends at cap-1 cannot both pass — the gate reserves
+its slot synchronously before any `await`.
+
+### Quiet hours (Phase 4)
+
+Set `quietHoursStart`, `quietHoursEnd`, and optional `timezone` (IANA,
+default `"UTC"`) on `DeliveryPreferences` to suppress `normal`-priority
+sends within the window. `high` and `urgent` always pass; `low` is
+unaffected (inbox routing is a separate Phase 4 follow-up).
+
+```typescript
+const delivery = createProactiveDelivery({
+  channels,
+  preferences: {
+    quietHoursStart: 22,        // suppress from 22:00
+    quietHoursEnd: 6,           // through 05:59
+    timezone: "America/New_York",
+    preferredChannel: "slack",
+  },
+});
+```
+
+Window is `[start, end)` in the configured timezone; cross-midnight
+windows are supported (e.g. 22→6). Suppressed sends return
+`{ ok: false, reason: "quiet_hours" }` and **do not** consume the rate
+limit window. Validation runs at factory construction — partial config
+(only one bound set), out-of-range hours, or invalid IANA timezones
+throw immediately.
+
+### High fallback (Phase 4)
+
+`high` priority survives a single-channel failure. Delivery walks
+channels sequentially — preferred first if configured, then remaining
+channels in Map insertion order. The first adapter that resolves
+without throwing wins; later channels are not attempted. If every
+channel throws, the result is `{ ok: false, reason: "all_failed",
+failures: [...] }` with failures listed in attempt order.
+
+Rate limit: exactly one slot is consumed per `send()` call regardless
+of how many adapters the fallback walks. The slot is refunded if every
+attempt fails (Phase 3 invariant).
+
+`normal` and `low` retain single-attempt routing — there is no
+fallback for those priorities.
+
+### Inbox routing (Phase 4)
+
+Set `inbox: InboxSink` on `ProactiveDeliveryConfig` to redirect
+`low`-priority sends to a host-supplied sink (memory queue, persistent
+store, scratchpad, etc.) instead of waking a channel. The sink is
+called with an `InboxEnvelope` carrying the original `content`,
+`threadId`, `metadata`, plus `enqueuedAt` (from the injected `now()`).
+
+```typescript
+import type { InboxSink } from "@koi/proactive";
+
+const inbox: InboxSink = {
+  enqueue: (envelope) => {
+    queue.push(envelope);
+  },
+};
+
+const delivery = createProactiveDelivery({ channels, inbox });
+```
+
+Successful inbox writes return `{ ok: true, delivered: ["inbox"] }`.
+A sync throw or async rejection wraps into
+`{ ok: false, reason: "all_failed", failures: [{ channel: "inbox", error }] }`
+— there is no automatic fallback to channels because the caller
+explicitly chose inbox routing.
+
+Inbox writes do **not** consume the rate-limit window: an inbox write
+is not a user-facing dispatch until the agent reads it. With no inbox
+configured, `low` retains Phase-3 single-channel routing including the
+rate-limit slot.
+
+If `channels` is empty but `inbox` is set, `low` still succeeds via
+the inbox — the `no_channels` early-return only applies when the
+priority requires a channel.
+
+### Per-send timeout (Phase 4)
+
+`createProactiveDelivery({ sendTimeoutMs })` bounds every adapter
+`send()` call for **`normal`, `low`, and `urgent` priorities only**.
+Defaults to `undefined` (no timeout — Phase-3 behavior). When set,
+an adapter that does not resolve within `sendTimeoutMs` is treated
+as a failed attempt for that channel; the underlying promise is
+abandoned, not awaited.
+
+**`high` priority is NOT covered by `sendTimeoutMs`.** Because
+adapters have no abort signal, a timed-out send may still complete
+in the background. If timeouts applied to `high`, a stuck preferred
+channel would short-circuit the fallback walk — falling through to a
+different transport risks double-delivery, and `idempotencyKey` is
+metadata-only (no cross-transport dedupe ledger). To preserve
+high-priority redundancy, `sendTimeoutMs` is therefore scoped to
+non-`high` priorities by default.
+
+**`highSendTimeoutMs` (opt-in):** Hosts that explicitly want
+timeout-bounded behavior for `high` set this separately. When set,
+the first timed-out attempt becomes terminal — `reason: "timed_out"`
+is returned with the in-flight rate-limit slot still consumed.
+Choose this only when (a) you accept that a stuck preferred channel
+will short-circuit fallback, or (b) the underlying adapter rejects
+(rather than hangs) within the budget. A future `ChannelAdapter`
+revision with `AbortSignal` support will make timeout-after-fallback
+safe; until then, leave `highSendTimeoutMs` unset.
+
+**New `DeliveryResult` failure reason — `"timed_out"`:**
+
+```ts
+| { ok: false; reason: "timed_out"; failures: readonly { channel: string; error: Error }[] }
+```
+
+Emitted when **every** attempt (including any `high`-fallback walk)
+exceeded `sendTimeoutMs`. Mixed outcomes — some channels timed out,
+at least one succeeded — return `ok: true` with the new
+`partialFailures` field carrying the timed-out channels (see below).
+
+Downstream callers performing an exhaustive switch on
+`DeliveryResult.reason` MUST add a `"timed_out"` arm or the upgrade
+becomes a `noImplicitReturns`/`switch`-exhaustiveness break. Callers
+that only inspect `ok` continue to work but lose visibility into
+timeout-only failures.
+
+### Partial-success surface (Phase 4)
+
+`urgent` (parallel-fan-out) and `high` (sequential-fallback) sends can
+now succeed *and* report per-channel failures in the same result:
+
+```ts
+| { ok: true; delivered: readonly string[]; partialFailures?: readonly { channel: string; error: Error }[] }
+```
+
+`partialFailures` is **omitted** (not `[]`) when every attempted
+channel succeeded — existing `ok: true` consumers that ignore the new
+field keep working unchanged. Hosts that want to alert on
+partial-degradation should check `partialFailures !== undefined`.
+
+### Idempotency key (Phase 4)
+
+`ProactiveNotification.idempotencyKey?: string` is forwarded into the
+outbound message metadata (`OutboundMessage.metadata.idempotencyKey`)
+and onto the `InboxEnvelope.metadata` for inbox routing. This is a
+**metadata pass-through only** — the current `ChannelAdapter` contract
+has no idempotency field, so an adapter receives the key only if it
+chooses to inspect `metadata` and honor it independently.
+
+The delivery layer does NOT dedupe on the caller's behalf. Treat the
+key as observability/integration-grade plumbing for adapters that
+already have transport-side dedupe (e.g. Slack `client_msg_id`), not
+as a contract guarantee for retry safety. Until `ChannelAdapter`
+grows an explicit idempotency field, retrying after a `timed_out`
+delivery is **not** dedupe-safe even if you pass an `idempotencyKey`.
+
+### Migration notes
+
+| Change | Type | Action for consumers |
+|---|---|---|
+| `DeliveryResult.reason` adds `"timed_out"` | additive enum widening | extend exhaustive switches |
+| `DeliveryResult.partialFailures` (ok-arm) | optional field, omitted when empty | no action unless you want timeout/failure observability on partial success |
+| `ProactiveNotification.idempotencyKey` | optional input | no action; pass through if your adapter supports it |
+| `ProactiveDeliveryConfig.sendTimeoutMs` | optional input, default unset, applies to normal/low/urgent only | no action; opt in per host |
+| `ProactiveDeliveryConfig.highSendTimeoutMs` | optional input, default unset, high-priority only | leave unset to preserve high fallback under hung preferred channel |

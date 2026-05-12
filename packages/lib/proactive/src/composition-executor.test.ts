@@ -8,10 +8,31 @@ import {
   taskId,
 } from "../../../kernel/core/src/index.js";
 import {
+  type CheckpointSnapshot,
+  type CompositionCheckpointStore,
+  createInMemoryCheckpointStore,
+} from "./composition-checkpoint-store.js";
+import {
   createCompositionExecutor,
   isPreCommitRejection,
   preCommitRejection,
 } from "./composition-executor.js";
+
+function recordingCheckpointStore() {
+  const saves: CheckpointSnapshot[] = [];
+  const deletes: string[] = [];
+  const store: CompositionCheckpointStore = {
+    save: (snapshot) => {
+      saves.push(snapshot);
+    },
+    load: () => undefined,
+    delete: (id) => {
+      deletes.push(id);
+    },
+    list: () => [],
+  };
+  return { store, saves, deletes };
+}
 
 function trigger(): CompositionTrigger {
   return {
@@ -1715,4 +1736,1074 @@ describe("createCompositionExecutor", () => {
     expect(isPreCommitRejection("brand")).toBe(false);
     expect(isPreCommitRejection(42)).toBe(false);
   });
+});
+
+describe("createCompositionExecutor — checkpoint store wiring", () => {
+  function twoStepPlan(): CompositionPlan {
+    return {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        { kind: "notify_user", channel: "inbox", message: "first", priority: "normal" },
+        { kind: "notify_user", channel: "inbox", message: "second", priority: "normal" },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+  }
+
+  test("saves a snapshot after each successful step and deletes on terminal success", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-1",
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("executed");
+    expect(saves).toHaveLength(2);
+    expect(saves[0]).toMatchObject({
+      executionId: "exec-1",
+      nextStepIndex: 1,
+      phase: "in_progress",
+    });
+    expect(saves[0]?.stepResults).toEqual([{ delivered: true }]);
+    expect(saves[1]).toMatchObject({
+      executionId: "exec-1",
+      nextStepIndex: 2,
+      phase: "in_progress",
+    });
+    expect(saves[1]?.stepResults).toEqual([{ delivered: true }, { delivered: true }]);
+    // Same planHash across both snapshots.
+    expect(saves[0]?.planHash).toBe(saves[1]?.planHash ?? "");
+    expect(deletes).toEqual(["exec-1"]);
+  });
+
+  test("saves phase=failed snapshot on terminal failure (mid-plan throw)", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    let count = 0;
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => {
+        count += 1;
+        if (count === 2) throw new Error("transient");
+        return { delivered: true };
+      },
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-2",
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("failed");
+    // One in_progress (step 1) + one failed (terminal).
+    expect(saves).toHaveLength(2);
+    expect(saves[0]).toMatchObject({ nextStepIndex: 1, phase: "in_progress" });
+    expect(saves[1]).toMatchObject({ nextStepIndex: 1, phase: "failed" });
+    expect(deletes).toHaveLength(0);
+  });
+
+  test("saves phase=failed snapshot on unsupported terminal", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-3",
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        { kind: "notify_user", channel: "inbox", message: "first", priority: "normal" },
+        { kind: "tool_call", toolName: "missing", input: {} },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("unsupported");
+    expect(saves).toHaveLength(2);
+    expect(saves[0]).toMatchObject({ nextStepIndex: 1, phase: "in_progress" });
+    expect(saves[1]).toMatchObject({ nextStepIndex: 1, phase: "failed" });
+    expect(deletes).toHaveLength(0);
+  });
+
+  test(
+    "checkpointStore wired without executionId DEGRADES (execution proceeds; " +
+      "checkpoint writes disabled)",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const { store, saves, deletes } = recordingCheckpointStore();
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+      });
+
+      const result = await executor.execute(trigger(), twoStepPlan());
+
+      // Misconfiguration must not take down execution — checkpoint is
+      // observability-only and executionLog is the correctness source
+      // of truth. All checkpoint helpers no-op silently.
+      expect(result.status).toBe("executed");
+      expect(saves).toHaveLength(0);
+      expect(deletes).toHaveLength(0);
+    },
+  );
+
+  test("checkpointStore wired with executionId='' DEGRADES (no INVALID_PLAN)", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "",
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("executed");
+    expect(saves).toHaveLength(0);
+  });
+
+  test("save failures are swallowed; executor still returns structured success", async () => {
+    const { scheduler } = schedulerStub();
+    const throwingStore: CompositionCheckpointStore = {
+      save: () => {
+        throw new Error("backend down");
+      },
+      load: () => undefined,
+      delete: () => {
+        throw new Error("backend down");
+      },
+      list: () => {
+        throw new Error("backend down");
+      },
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: throwingStore,
+      executionId: "exec-throw",
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("executed");
+    expect(result.executedCount).toBe(2);
+  });
+
+  test("default planHash is stable across logically equivalent plans", async () => {
+    const { scheduler } = schedulerStub();
+    const { store: storeA, saves: savesA } = recordingCheckpointStore();
+    const { store: storeB, saves: savesB } = recordingCheckpointStore();
+
+    const planA: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+    // Same logical plan; the canonicalizer should produce identical JSON.
+    const planB: CompositionPlan = {
+      requiresApproval: false,
+      estimatedCost: 1,
+      triggerEmittedAt: 1,
+      steps: [{ priority: "normal", message: "x", channel: "inbox", kind: "notify_user" }],
+      triggerId: "trigger-1",
+    };
+
+    const execA = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: storeA,
+      executionId: "a",
+    });
+    const execB = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: storeB,
+      executionId: "b",
+    });
+
+    await execA.execute(trigger(), planA);
+    await execB.execute(trigger(), planB);
+
+    expect(savesA[0]?.planHash).toBe(savesB[0]?.planHash ?? "");
+  });
+
+  test("custom hashPlan override is respected", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-custom",
+      hashPlan: () => "fixed-hash",
+    });
+
+    await executor.execute(trigger(), twoStepPlan());
+
+    expect(saves[0]?.planHash).toBe("fixed-hash");
+    expect(saves[1]?.planHash).toBe("fixed-hash");
+  });
+
+  test(
+    "executor seq remains monotonic across recreations for the same executionId " +
+      "(wall-clock anchored; restart-safe)",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const saves: CheckpointSnapshot[] = [];
+      const store: CompositionCheckpointStore = {
+        save: (snap) => {
+          saves.push(snap);
+        },
+        delete: () => {},
+        load: () => undefined,
+        list: () => [],
+      };
+      // Mock clock so first executor's seq starts at T1, second at T2 (later).
+      let t = 1_000_000;
+      const advancingNow = () => t++;
+      const exec1 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-shared",
+        now: advancingNow,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      await exec1.execute(trigger(), plan);
+      const seq1 = saves[saves.length - 1]?.seq;
+      expect(seq1).toBeDefined();
+
+      // Fresh executor for the SAME executionId — wall-clock has advanced.
+      t = 2_000_000;
+      const exec2 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-shared",
+        now: advancingNow,
+      });
+      await exec2.execute(trigger(), plan);
+      const seq2 = saves[saves.length - 1]?.seq;
+      expect(seq2).toBeDefined();
+      // Strict monotonicity across executor recreations.
+      expect(seq2!).toBeGreaterThan(seq1!);
+    },
+  );
+
+  test("preflight failure does not hang on a never-settling async load() — bounded by timeout", async () => {
+    const { scheduler } = schedulerStub();
+    const hangingStore: CompositionCheckpointStore = {
+      save: () => {},
+      delete: () => {},
+      load: () => new Promise(() => {}),
+      list: () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: hangingStore,
+      executionId: "exec-hang-load",
+      checkpointStoreTimeoutMs: 25,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-other", // preflight mismatch
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+    const start = Date.now();
+    const result = await executor.execute(trigger(), plan);
+    const elapsed = Date.now() - start;
+    expect(result.status).toBe("failed");
+    // Bounded load() probe lets execute() return well within margin of the 25ms cap.
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  test("zero-step preflight failure overwrites a prior in_progress snapshot (no phantom recovery)", async () => {
+    const { scheduler } = schedulerStub();
+    const saves: CheckpointSnapshot[] = [];
+    // Backend with a pre-existing snapshot from a prior attempt.
+    let stored: CheckpointSnapshot | undefined = {
+      executionId: "exec-stale",
+      planHash: "old-hash",
+      nextStepIndex: 3,
+      stepResults: ["a", "b", "c"],
+      phase: "in_progress",
+      savedAt: 100,
+      seq: 100,
+    };
+    const store: CompositionCheckpointStore = {
+      save: (snap) => {
+        saves.push(snap);
+        stored = snap;
+      },
+      load: () => stored,
+      delete: () => {
+        stored = undefined;
+      },
+      list: () => (stored === undefined ? [] : [stored]),
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-stale",
+      // Match the stored prior's planHash so the identity guard
+      // allows the preserve-and-flip path. The test's premise is
+      // "same plan, stale attempt" — i.e. a retry of the same plan
+      // whose preflight now fails due to trigger mismatch.
+      hashPlan: () => "old-hash",
+    });
+    // Trigger-id mismatch → INVALID_PLAN before any step runs.
+    const plan: CompositionPlan = {
+      triggerId: "trigger-other",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    // Prior snapshot existed AND its planHash matches the current
+    // plan → preflight failure flips phase=failed WHILE preserving
+    // planHash / nextStepIndex / stepResults from the prior payload.
+    // Overwriting with the current zero-step current-plan-hash payload
+    // would erase recovery state and hide committed side effects.
+    expect(saves.length).toBeGreaterThan(0);
+    const last = saves[saves.length - 1];
+    expect(last?.phase).toBe("failed");
+    expect(last?.planHash).toBe("old-hash");
+    expect(last?.nextStepIndex).toBe(3);
+    expect(last?.stepResults).toEqual(["a", "b", "c"]);
+  });
+
+  test(
+    "zero-step preflight failure with planHash MISMATCH leaves the stored " +
+      "snapshot UNTOUCHED (no cross-plan poisoning)",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const saves: CheckpointSnapshot[] = [];
+      const original: CheckpointSnapshot = {
+        executionId: "exec-collision",
+        planHash: "other-work-hash",
+        nextStepIndex: 2,
+        stepResults: ["o1", "o2"],
+        phase: "in_progress",
+        savedAt: 100,
+        seq: 100,
+      };
+      const store: CompositionCheckpointStore = {
+        save: (snap) => {
+          saves.push(snap);
+        },
+        load: () => original,
+        delete: () => {},
+        list: () => [original],
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-collision",
+        // Current plan hashes to DIFFERENT value than the stored prior
+        // — i.e. accidental executionId reuse across unrelated plans.
+        hashPlan: () => "my-different-plan-hash",
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-other",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      const result = await executor.execute(trigger(), plan);
+      expect(result.status).toBe("failed");
+      // No save happened — the live execution's snapshot is intact.
+      expect(saves).toHaveLength(0);
+    },
+  );
+
+  test("preflight failure with zero executed steps does NOT persist a failed snapshot", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-preflight",
+    });
+    // Trigger-id mismatch → returns INVALID_PLAN before any step runs.
+    const plan: CompositionPlan = {
+      triggerId: "trigger-other",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    expect(result.executedCount).toBe(0);
+    // Zero side effects committed, plan is non-resumable. Persisting a
+    // checkpoint would let a restart watchdog sweep `list()` and loop
+    // retries on a poison plan or page operators indefinitely.
+    expect(saves).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
+  });
+
+  test("requires_approval does NOT persist a failed snapshot", async () => {
+    const { scheduler } = schedulerStub();
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: store,
+      executionId: "exec-approval",
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+      estimatedCost: 1,
+      // plan-level approval gate — runs zero steps and returns requires_approval.
+      requiresApproval: true,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("requires_approval");
+    // No snapshot writes: approval-pending is tracked through the approval
+    // signal contract, not the checkpoint store. Persisting "failed" here
+    // would cause restart watchdogs to confuse pending-approval with true
+    // failure and trigger the wrong remediation.
+    expect(saves).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
+  });
+
+  test(
+    "checkpoint store ops are serialized per executor when ops complete in time " +
+      "(in-order save → delete observed on the store side)",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const observed: ("save" | "delete")[] = [];
+      const store: CompositionCheckpointStore = {
+        save: async () => {
+          // Yield once to introduce async ordering pressure.
+          await Promise.resolve();
+          observed.push("save");
+        },
+        delete: async () => {
+          await Promise.resolve();
+          observed.push("delete");
+        },
+        load: () => undefined,
+        list: () => [],
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-serialize",
+        checkpointStoreTimeoutMs: 5_000,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+
+      const result = await executor.execute(trigger(), plan);
+      expect(result.status).toBe("executed");
+      // Drain microtasks so chained ops settle.
+      await new Promise<void>((r) => setTimeout(r, 10));
+      expect(observed).toEqual(["save", "delete"]);
+    },
+  );
+
+  test(
+    "hung getWatermark() probe: timeout is paid AT MOST TWICE per executor " +
+      "(step-loop seed + terminal re-probe), not per step",
+    async () => {
+      const { scheduler } = schedulerStub();
+      let watermarkCalls = 0;
+      const store: CompositionCheckpointStore = {
+        save: () => {},
+        delete: () => {},
+        load: () => undefined,
+        list: () => [],
+        seqAware: true,
+        getWatermark: () => {
+          watermarkCalls += 1;
+          return new Promise(() => {}); // hang
+        },
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-hung-watermark",
+        checkpointStoreTimeoutMs: 30,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: Array.from({ length: 5 }, () => ({
+          kind: "notify_user" as const,
+          channel: "inbox",
+          message: "x",
+          priority: "normal" as const,
+        })),
+        estimatedCost: 5,
+        requiresApproval: false,
+      };
+      const start = Date.now();
+      const result = await executor.execute(trigger(), plan);
+      const elapsed = Date.now() - start;
+      expect(result.status).toBe("executed");
+      // Pre-fix, every step+delete re-paid the 30ms probe timeout
+      // (5 steps + 1 delete = 6 × 30ms = 180ms+). Post-fix, the step
+      // loop pays the seed probe ONCE, then terminal cleanup gets one
+      // more attempt (so terminal writes have a chance to anchor
+      // durably if the backend recovered). That's at most 2 probe
+      // attempts, never N.
+      expect(watermarkCalls).toBeLessThanOrEqual(2);
+      // Total elapsed: ≤ 2 × probe timeout + terminal delete timeout.
+      expect(elapsed).toBeLessThan(150);
+    },
+  );
+
+  test(
+    "seq-aware store: terminal delete reaches backend even when a prior " +
+      "fire-and-forget step save is hung",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const observed: string[] = [];
+      const store: CompositionCheckpointStore = {
+        save: () => new Promise(() => {}),
+        delete: () => {
+          observed.push("delete-applied");
+        },
+        load: () => undefined,
+        list: () => [],
+        seqAware: true,
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-terminal-unblocked",
+        checkpointStoreTimeoutMs: 30,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      const result = await executor.execute(trigger(), plan);
+      expect(result.status).toBe("executed");
+      // Pre-fix the terminal delete chained behind the hung step save
+      // and never reached the backend. Post-fix it bypasses the chain
+      // on seq-aware stores and lands directly.
+      await new Promise<void>((r) => setTimeout(r, 50));
+      expect(observed).toContain("delete-applied");
+    },
+  );
+
+  test(
+    "fire-and-forget in_progress saves: execute() latency does NOT scale with " +
+      "step count on a degraded backend",
+    async () => {
+      const { scheduler } = schedulerStub();
+      let saveCalls = 0;
+      const store: CompositionCheckpointStore = {
+        save: () => {
+          saveCalls += 1;
+          // Every step-save hangs. Pre-fix, each step's `await
+          // saveProgress` waited for the per-call timeout (25ms) →
+          // 5 steps × 25ms = 125ms+ added per plan. Post-fix only
+          // the terminal delete blocks on its single timeout.
+          return new Promise<void>(() => {});
+        },
+        delete: () => {},
+        load: () => undefined,
+        list: () => [],
+        seqAware: true,
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-multi-step-hung",
+        checkpointStoreTimeoutMs: 30,
+      });
+      const FIVE_STEPS = 5;
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: Array.from({ length: FIVE_STEPS }, () => ({
+          kind: "notify_user" as const,
+          channel: "inbox",
+          message: "x",
+          priority: "normal" as const,
+        })),
+        estimatedCost: FIVE_STEPS,
+        requiresApproval: false,
+      };
+      const start = Date.now();
+      const result = await executor.execute(trigger(), plan);
+      const elapsed = Date.now() - start;
+      expect(result.status).toBe("executed");
+      expect(saveCalls).toBeGreaterThan(0);
+      // 5 steps × 30ms timeout would be ≥150ms; terminal delete adds
+      // another 30ms. With fire-and-forget step saves the only bounded
+      // wait is terminal cleanup. Allow generous headroom for test
+      // scheduler noise but well under the multiplicative bound.
+      expect(elapsed).toBeLessThan(120);
+    },
+  );
+
+  test(
+    "non-seq-aware store: chain is NOT reset on timeout — terminal delete " +
+      "stays queued behind hung save so a late save cannot land after delete",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const observed: ("save-applied" | "delete-applied")[] = [];
+      const store: CompositionCheckpointStore = {
+        save: () => {
+          // Hang forever — simulates a backend that never resolves.
+          return new Promise<void>(() => {});
+        },
+        delete: () => {
+          observed.push("delete-applied");
+        },
+        load: () => undefined,
+        list: () => [],
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-noreset",
+        checkpointStoreTimeoutMs: 25,
+        // checkpointStoreSeqAware omitted → defaults to false. Without
+        // seq guarantees, resetting the chain would let an abandoned
+        // save commit AFTER the terminal delete and resurrect state.
+        // The executor must keep the chain serialized so delete waits
+        // (and itself times out as a no-op) rather than firing while
+        // the hung save lurks in the background.
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      const result = await executor.execute(trigger(), plan);
+      expect(result.status).toBe("executed");
+      await new Promise<void>((r) => setTimeout(r, 60));
+      // Delete must NOT have run — it timed out waiting behind the
+      // hung save. Pre-fix the chain reset let it fire and a late save
+      // could then resurrect the (already-completed) execution.
+      expect(observed).not.toContain("delete-applied");
+    },
+  );
+
+  test(
+    "hung store op does not permanently block later ops: chain resets " +
+      "after timeout so subsequent executions can progress",
+    async () => {
+      const { scheduler } = schedulerStub();
+      // First save hangs forever. With strict chaining, the terminal
+      // delete would queue behind it indefinitely. With chain reset on
+      // timeout, the second executor's save should still complete.
+      let saveCount = 0;
+      const observed: ("save-applied" | "delete-applied")[] = [];
+      const store: CompositionCheckpointStore = {
+        save: () => {
+          saveCount += 1;
+          if (saveCount === 1) return new Promise<void>(() => {}); // hung
+          observed.push("save-applied");
+        },
+        delete: () => {
+          observed.push("delete-applied");
+        },
+        load: () => undefined,
+        list: () => [],
+      };
+      const executor1 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-hung-1",
+        checkpointStoreTimeoutMs: 25,
+        // Chain reset on timeout is now gated behind seq-awareness so a
+        // non-versioned custom store cannot resurrect terminal state via
+        // a delayed save landing after a delete. This store does not
+        // honor seq, but the test exercises the reset path itself.
+        checkpointStoreSeqAware: true,
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+
+      const result1 = await executor1.execute(trigger(), plan);
+      expect(result1.status).toBe("executed");
+      // Step-save is now fire-and-forget so the terminal delete chains
+      // behind the hung save; both ops time out (the inner store.delete()
+      // never runs against a hung backend). What we DO assert: execute()
+      // returned promptly (the await already proved this) and the chain
+      // reset on each timeout means a brand-new executor on the SAME
+      // store can proceed.
+      await new Promise<void>((r) => setTimeout(r, 40));
+
+      // Second executor on the SAME store: its save must run (saveCount >= 2)
+      // because the chain reset prevented the hung first save from
+      // blocking it. Each executor has its own storeOpQueue closure, so
+      // executor2 starts with a fresh chain regardless.
+      const executor2 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-hung-2",
+        checkpointStoreTimeoutMs: 25,
+      });
+      await executor2.execute(trigger(), plan);
+      await new Promise<void>((r) => setTimeout(r, 40));
+      expect(observed).toContain("save-applied");
+    },
+  );
+
+  test("never-settling checkpoint store does not block step progression or final return", async () => {
+    const { scheduler } = schedulerStub();
+    // Build a store whose save/delete Promises never resolve. Without the
+    // bounded timeout, awaiting these would strand execute() forever
+    // after side effects had already committed.
+    const hungStore: CompositionCheckpointStore = {
+      save: () => new Promise<void>(() => {}),
+      delete: () => new Promise<void>(() => {}),
+      load: () => undefined,
+      list: () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      checkpointStore: hungStore,
+      executionId: "exec-hung",
+      checkpointStoreTimeoutMs: 25,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const start = Date.now();
+    const result = await executor.execute(trigger(), plan);
+    const elapsed = Date.now() - start;
+
+    expect(result.status).toBe("executed");
+    expect(result.executedCount).toBe(1);
+    // Two store ops (in_progress save + final delete) each capped at 25ms.
+    // Generous upper bound to absorb event-loop jitter in CI.
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  test("without checkpointStore, no snapshot calls occur (behavior unchanged)", async () => {
+    const { scheduler } = schedulerStub();
+    // No store wired — but recording one to prove it stays untouched.
+    const { store, saves, deletes } = recordingCheckpointStore();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+      // intentionally NOT wiring checkpointStore
+    });
+
+    const result = await executor.execute(trigger(), twoStepPlan());
+
+    expect(result.status).toBe("executed");
+    // Sanity: the unused store recorded nothing.
+    expect(saves).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
+    void store;
+  });
+
+  test(
+    "hung checkpointStore.load() during seq seeding does NOT strand execute() — " +
+      "bounded by checkpointStoreTimeoutMs",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const saves: CheckpointSnapshot[] = [];
+      // load() hangs forever. Pre-fix, ensureSeqSeeded awaited it
+      // unbounded, so the first post-step saveProgress never reached
+      // the timeout-protected withTimeout path and execute() hung.
+      const store: CompositionCheckpointStore = {
+        save: (snap) => {
+          saves.push(snap);
+        },
+        load: () => new Promise(() => {}),
+        delete: () => {},
+        list: () => [],
+        seqAware: true,
+      };
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-hang-seed",
+        checkpointStoreTimeoutMs: 30,
+      });
+      const start = Date.now();
+      const result = await executor.execute(trigger(), {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      });
+      const elapsed = Date.now() - start;
+      expect(result.status).toBe("executed");
+      // Bounded by ~timeout + per-step work; well under 500ms.
+      expect(elapsed).toBeLessThan(500);
+    },
+  );
+
+  test(
+    "seq seeds from tombstone watermark: reused executionId after versioned " +
+      "delete with clock-rollback still persists checkpoints",
+    async () => {
+      const { scheduler } = schedulerStub();
+      // Real in-memory store; first executor completes (writes a save
+      // then a versioned delete that tombstones the watermark).
+      const realStore = createInMemoryCheckpointStore();
+      const executor1 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: realStore,
+        executionId: "exec-reuse",
+        now: () => 9_000_000_000_000, // very high
+      });
+      const plan: CompositionPlan = {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      };
+      const r1 = await executor1.execute(trigger(), plan);
+      expect(r1.status).toBe("executed");
+      // Successful execute() leaves a tombstone watermark; load() shows nothing.
+      expect(await realStore.load("exec-reuse")).toBeUndefined();
+      expect(realStore.getWatermark?.("exec-reuse")).toBeGreaterThan(9_000_000_000_000);
+
+      // Second executor reuses the same executionId. Clock rolled back to
+      // a small value (1000). Pre-fix, ensureSeqSeeded called load() which
+      // returned undefined (tombstone hidden), so seq counter started from
+      // now()=1000 — every save dropped by the backend guard, leaving
+      // recovery state empty after a real successful execution.
+      const executor2 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: realStore,
+        executionId: "exec-reuse",
+        now: () => 1_000,
+      });
+      const r2 = await executor2.execute(trigger(), plan);
+      expect(r2.status).toBe("executed");
+      // Post-fix, the tombstone watermark advanced from the new run's
+      // ops — it must be strictly higher than the original watermark.
+      const wAfter = realStore.getWatermark?.("exec-reuse");
+      expect(wAfter).toBeDefined();
+      expect(wAfter ?? 0).toBeGreaterThan(9_000_000_000_000);
+    },
+  );
+
+  test(
+    "seq survives wall-clock rollback: new executor seeds from stored watermark, " +
+      "not from now()",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const saves: CheckpointSnapshot[] = [];
+      // Prior executor instance left a snapshot at a high seq (e.g. it
+      // ran when the system clock was ahead, or seeded from durable
+      // counter). Simulate clock rollback by giving the new executor a
+      // `now()` that returns a value LOWER than the stored seq.
+      const HIGH_PRIOR_SEQ = 9_000_000_000_000; // very high
+      const stored: CheckpointSnapshot = {
+        executionId: "exec-rollback",
+        planHash: "old-h",
+        nextStepIndex: 1,
+        stepResults: ["a"],
+        phase: "in_progress",
+        savedAt: HIGH_PRIOR_SEQ,
+        seq: HIGH_PRIOR_SEQ,
+      };
+      const store: CompositionCheckpointStore = {
+        save: (snap) => {
+          saves.push(snap);
+        },
+        load: () => stored,
+        delete: () => {},
+        list: () => [stored],
+        seqAware: true,
+      };
+      // Wall clock is BEHIND the durable watermark by years.
+      const wallClockBehind = 1_000;
+      const executor = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: async () => ({ delivered: true }),
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-rollback",
+        now: () => wallClockBehind,
+      });
+      await executor.execute(trigger(), {
+        triggerId: "trigger-1",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }],
+        estimatedCost: 1,
+        requiresApproval: false,
+      });
+      // Every emitted seq must be > the prior watermark; otherwise the
+      // store guard would silently drop the save and recovery state
+      // would freeze. Pre-fix, seq was seeded from now()=1000 and got
+      // dropped by the seq guard.
+      expect(saves.length).toBeGreaterThan(0);
+      for (const s of saves) {
+        expect(s.seq).toBeDefined();
+        expect((s.seq ?? 0) > HIGH_PRIOR_SEQ).toBe(true);
+      }
+    },
+  );
+
+  test(
+    "restart visibility: a partial-failure run leaves a phase=failed snapshot " +
+      "in the store that a second executor instance can inspect via list()",
+    async () => {
+      const { scheduler } = schedulerStub();
+      const store = createInMemoryCheckpointStore();
+      // notify() fails on the SECOND step, so the executor commits step 1
+      // then writes a phase=failed snapshot reflecting executedPrefix=[step1].
+      let notifyCalls = 0;
+      const failingNotify = async () => {
+        notifyCalls += 1;
+        if (notifyCalls === 2) throw new Error("simulated channel outage");
+        return { delivered: true };
+      };
+      const executor1 = createCompositionExecutor({
+        agentId: agentId("agent-1"),
+        scheduler,
+        notify: failingNotify,
+        executionLog: inMemoryExecutionLog().log,
+        checkpointStore: store,
+        executionId: "exec-restart",
+      });
+      const r1 = await executor1.execute(trigger(), twoStepPlan());
+      expect(r1.status).toBe("failed");
+
+      // Restart visibility: a fresh executor on the same store + executionId
+      // can enumerate the failed run for operator reconciliation.
+      const inflight = (await store.list?.()) ?? [];
+      expect(inflight).toHaveLength(1);
+      expect(inflight[0]?.executionId).toBe("exec-restart");
+      expect(inflight[0]?.phase).toBe("failed");
+      expect(inflight[0]?.nextStepIndex).toBe(1);
+      // seq must be present and non-trivial — proves the durable seq path
+      // ran (not just last-writer-wins legacy mode).
+      expect(typeof inflight[0]?.seq).toBe("number");
+      expect((inflight[0]?.seq ?? 0) > 0).toBe(true);
+    },
+  );
 });
