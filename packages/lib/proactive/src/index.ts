@@ -6,6 +6,16 @@
  */
 
 export {
+  type BriefRecord,
+  type BriefToolState,
+  createBriefToolState,
+  createCancelBriefTool,
+  createCreateBriefTool,
+  createListBriefsTool,
+  createUpdateBriefTool,
+  formatBriefWakeMessage,
+} from "./brief-tools.js";
+export {
   computeCompositionApproval,
   DEFAULT_COMPOSITION_APPROVAL_POLICY,
 } from "./composition-approval.js";

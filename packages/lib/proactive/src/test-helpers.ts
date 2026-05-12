@@ -51,6 +51,12 @@ export interface SchedulerStubOptions {
   readonly unscheduleResult?: boolean;
   /** Boolean returned by cancel. Defaults to true. */
   readonly cancelResult?: boolean;
+  /**
+   * When provided, overrides the default unschedule behavior. Takes precedence
+   * over `unscheduleResult`. Use to model thrown errors (timeout / transport
+   * failure) so tests can exercise the catch path.
+   */
+  readonly unscheduleImpl?: (id: ScheduleId) => Promise<boolean> | boolean;
 }
 
 export function createSchedulerStub(options: SchedulerStubOptions = {}): SchedulerStub {
@@ -105,8 +111,11 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
       counter += 1;
       return scheduleId(`sched-${counter}`);
     },
-    unschedule(id: ScheduleId): boolean {
+    unschedule(id: ScheduleId): boolean | Promise<boolean> {
       unscheduleCalls.push(id);
+      if (options.unscheduleImpl !== undefined) {
+        return options.unscheduleImpl(id);
+      }
       return options.unscheduleResult ?? true;
     },
     pause(): boolean {

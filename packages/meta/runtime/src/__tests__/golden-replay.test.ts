@@ -19113,7 +19113,7 @@ describe("Golden: @koi/proactive", () => {
     }
   });
 
-  test("createProactiveTools returns the 4 expected agent-callable tools", async () => {
+  test("createProactiveTools returns the 8 expected agent-callable tools when no resolveChannel is configured", async () => {
     const { Database } = await import("bun:sqlite");
     const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
       "@koi/scheduler"

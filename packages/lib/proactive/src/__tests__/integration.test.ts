@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import type {
   Agent,
   AgentId,
+  ChannelAdapter,
   EngineInput,
   SchedulerComponent,
   ScheduleStore,
@@ -102,9 +103,36 @@ function buildHarness(): Harness {
   };
 }
 
-function makeAgent(scheduler: SchedulerComponent, aid: AgentId): Agent {
+function makeStubChannel(name: string): ChannelAdapter {
+  return {
+    name,
+    capabilities: {
+      text: true,
+      images: false,
+      files: false,
+      buttons: false,
+      audio: false,
+      video: false,
+      threads: true,
+      supportsA2ui: false,
+    },
+    connect: async () => {},
+    disconnect: async () => {},
+    send: async () => {},
+    onMessage: () => () => {},
+  };
+}
+
+function makeAgent(
+  scheduler: SchedulerComponent,
+  aid: AgentId,
+  channels: ReadonlyMap<string, ChannelAdapter> = new Map([["slack", makeStubChannel("slack")]]),
+): Agent {
   const map = new Map<string, unknown>();
   map.set(SCHEDULER as string, scheduler);
+  for (const [name, adapter] of channels) {
+    map.set(`channel:${name}`, adapter);
+  }
   return {
     pid: {
       id: aid,
@@ -145,6 +173,10 @@ interface ToolMap {
   readonly listMonitors: { execute: (a: object) => Promise<unknown> };
   readonly updateMonitor: { execute: (a: object) => Promise<unknown> };
   readonly cancelMonitor: { execute: (a: object) => Promise<unknown> };
+  readonly createBrief: { execute: (a: object) => Promise<unknown> };
+  readonly listBriefs: { execute: (a: object) => Promise<unknown> };
+  readonly updateBrief: { execute: (a: object) => Promise<unknown> };
+  readonly cancelBrief: { execute: (a: object) => Promise<unknown> };
 }
 
 async function attachTools(scheduler: SchedulerComponent, aid: AgentId): Promise<ToolMap> {
@@ -165,7 +197,35 @@ async function attachTools(scheduler: SchedulerComponent, aid: AgentId): Promise
     listMonitors: get("list_monitors"),
     updateMonitor: get("update_monitor"),
     cancelMonitor: get("cancel_monitor"),
+    createBrief: get("create_brief"),
+    listBriefs: get("list_briefs"),
+    updateBrief: get("update_brief"),
+    cancelBrief: get("cancel_brief"),
   };
+}
+
+function expectedBriefWakeText(args: {
+  readonly name: string;
+  readonly topic: string;
+  readonly window: string;
+  readonly channel: string;
+  readonly contextHint?: string;
+}): string {
+  const lines = [
+    `Brief: ${args.name}`,
+    `Topic: ${args.topic}`,
+    `Window: ${args.window}`,
+    `Deliver to: ${args.channel}`,
+  ];
+  if (args.contextHint !== undefined) {
+    lines.push(`Context: ${args.contextHint}`);
+  }
+  lines.push(
+    "",
+    "Synthesize a concise digest covering the topic over the window.",
+    "Use the notify tool to deliver the digest to the channel above.",
+  );
+  return lines.join("\n");
 }
 
 // Drain any clock-scheduled microtasks the scheduler queued.
@@ -596,6 +656,281 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
 
     await drain(h.clock, 2_000);
     expect(h.dispatched).toHaveLength(2);
+  });
+
+  test("13. create_brief dispatches the synthesized brief wake text and lists its summary", async () => {
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const expression = futureCronExpression(3_000);
+    const wakeText = expectedBriefWakeText({
+      name: "morning-digest",
+      topic: "open PRs and CI failures",
+      window: "last 24h",
+      channel: "slack",
+      contextHint: "Focus on user-impacting regressions first.",
+    });
+    const created = (await tools.createBrief.execute({
+      name: "morning-digest",
+      topic: "open PRs and CI failures",
+      window: "last 24h",
+      channel: "slack",
+      expression,
+      context_hint: "Focus on user-impacting regressions first.",
+    })) as { ok: boolean; brief_id: string; schedule_id: string };
+
+    expect(created.ok).toBe(true);
+
+    const listed = (await tools.listBriefs.execute({})) as {
+      ok: boolean;
+      briefs: {
+        brief_id: string;
+        schedule_id: string;
+        name: string;
+        topic: string;
+        window: string;
+        channel: string;
+        expression: string;
+        context_hint?: string;
+      }[];
+    };
+    expect(listed.ok).toBe(true);
+    expect(listed.briefs).toEqual([
+      {
+        brief_id: created.brief_id,
+        schedule_id: created.schedule_id,
+        name: "morning-digest",
+        topic: "open PRs and CI failures",
+        window: "last 24h",
+        channel: "slack",
+        expression,
+        context_hint: "Focus on user-impacting regressions first.",
+      },
+    ]);
+
+    const live = await h.scheduler.querySchedules(h.aid);
+    expect(live).toHaveLength(1);
+    expect(live[0]).toEqual({
+      id: scheduleId(created.schedule_id),
+      agentId: h.aid,
+      expression,
+      input: { kind: "text", text: wakeText },
+      mode: "dispatch",
+      paused: false,
+    });
+
+    await waitForMonitorDispatch(h, 1, 6_000);
+    expect(h.dispatched).toEqual([{ kind: "text", text: wakeText }]);
+  });
+
+  test("14. update_brief rotates the live schedule and later dispatches only the updated brief text", async () => {
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const initialExpression = futureCronExpression(5_000);
+    const initialWakeText = expectedBriefWakeText({
+      name: "morning-digest",
+      topic: "open PRs",
+      window: "last 24h",
+      channel: "slack",
+    });
+    const created = (await tools.createBrief.execute({
+      name: "morning-digest",
+      topic: "open PRs",
+      window: "last 24h",
+      channel: "slack",
+      expression: initialExpression,
+    })) as { brief_id: string; schedule_id: string };
+
+    const updatedExpression = futureCronExpression(3_000);
+    const updatedWakeText = expectedBriefWakeText({
+      name: "morning-digest",
+      topic: "CI failures and flaky tests",
+      window: "last 48h",
+      channel: "slack",
+      contextHint: "Group by package.",
+    });
+    const updated = (await tools.updateBrief.execute({
+      brief_id: created.brief_id,
+      topic: "CI failures and flaky tests",
+      window: "last 48h",
+      channel: "slack",
+      expression: updatedExpression,
+      context_hint: "Group by package.",
+    })) as { ok: boolean; brief_id: string; schedule_id: string };
+
+    expect(updated.ok).toBe(true);
+    expect(updated.brief_id).toBe(created.brief_id);
+    expect(updated.schedule_id).not.toBe(created.schedule_id);
+
+    const live = await h.scheduler.querySchedules(h.aid);
+    expect(live).toHaveLength(1);
+    expect(live[0]).toEqual({
+      id: scheduleId(updated.schedule_id),
+      agentId: h.aid,
+      expression: updatedExpression,
+      input: { kind: "text", text: updatedWakeText },
+      mode: "dispatch",
+      paused: false,
+    });
+    expect(live[0]?.input).not.toEqual({ kind: "text", text: initialWakeText });
+
+    await waitForMonitorDispatch(h, 1, 6_000);
+    expect(h.dispatched).toEqual([{ kind: "text", text: updatedWakeText }]);
+
+    await waitForMonitorDispatch(h, 2, 4_500);
+    expect(h.dispatched).toHaveLength(1);
+  });
+
+  test("15. cancel_brief removes the listed brief and suppresses future brief dispatches", async () => {
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const expression = futureCronExpression(2_000);
+    const wakeText = expectedBriefWakeText({
+      name: "morning-digest",
+      topic: "open PRs",
+      window: "last 24h",
+      channel: "slack",
+    });
+    const created = (await tools.createBrief.execute({
+      name: "morning-digest",
+      topic: "open PRs",
+      window: "last 24h",
+      channel: "slack",
+      expression,
+    })) as { brief_id: string; schedule_id: string };
+
+    const cancelled = (await tools.cancelBrief.execute({
+      brief_id: created.brief_id,
+    })) as { ok: boolean; removed: boolean };
+
+    expect(cancelled).toEqual({ ok: true, removed: true });
+
+    const listed = (await tools.listBriefs.execute({})) as { briefs: unknown[] };
+    expect(listed.briefs).toHaveLength(0);
+
+    const live = await h.scheduler.querySchedules(h.aid);
+    expect(live).toHaveLength(0);
+
+    await waitForMonitorDispatch(h, 1, 3_500);
+    expect(h.dispatched).toHaveLength(0);
+    expect(h.dispatched).not.toContainEqual({ kind: "text", text: wakeText });
+  });
+
+  test("16. brief tools are absent on an agent with no channel adapter", async () => {
+    // Channel gate: createProactiveToolsProvider snapshots channel:*
+    // components at attach time. With none present, resolveChannel is
+    // unset → assembleProactiveTools must NOT install create_brief and
+    // friends. A brief that fires has no notify tool to deliver with,
+    // so accepting them would set up silent persistent delivery failures.
+    const provider = createProactiveToolsProvider();
+    const agent = makeAgent(h.schedulerComponent, h.aid, new Map());
+    const result = await provider.attach(agent);
+    const components = "components" in result ? result.components : result;
+    const keys = [...components.keys()];
+
+    // 8 base tools, no brief, no notify.
+    expect(keys).not.toContain(toolToken("create_brief") as string);
+    expect(keys).not.toContain(toolToken("list_briefs") as string);
+    expect(keys).not.toContain(toolToken("update_brief") as string);
+    expect(keys).not.toContain(toolToken("cancel_brief") as string);
+    expect(keys).not.toContain(toolToken("notify") as string);
+    expect(keys).toContain(toolToken("create_monitor") as string);
+    expect(keys).toContain(toolToken("sleep") as string);
+  });
+
+  test("17. cancel_brief with release_key:true recovers from real scheduler returning false (race)", async () => {
+    // Race: a concurrent path already unscheduled the cron entry, so
+    // when cancel_brief calls scheduler.unschedule the real scheduler
+    // returns false (the cron job is already gone). Without release_key,
+    // the brief record stays put — same-key recreate would silently
+    // dedupe to a dead schedule. With release_key:true, local state is
+    // cleared and the recreate lands fresh.
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const expression = futureCronExpression(60_000); // never fires in test
+    const created = (await tools.createBrief.execute({
+      name: "race",
+      topic: "anything",
+      window: "last 24h",
+      channel: "slack",
+      expression,
+      idempotency_key: "race-key",
+    })) as { brief_id: string; schedule_id: string };
+
+    // Simulate the race: independently unschedule the cron entry behind
+    // the brief tool's back. The next cancel_brief call will see the
+    // scheduler return false.
+    const wiped = await h.scheduler.unschedule(scheduleId(created.schedule_id));
+    expect(wiped).toBe(true);
+
+    // Default cancel_brief: real scheduler reports removed:false, so
+    // local state is preserved.
+    const stale = (await tools.cancelBrief.execute({ brief_id: created.brief_id })) as {
+      ok: boolean;
+      removed: boolean;
+    };
+    expect(stale).toEqual({ ok: true, removed: false });
+
+    const stillListed = (await tools.listBriefs.execute({})) as { briefs: unknown[] };
+    expect(stillListed.briefs).toHaveLength(1);
+
+    // Same-key recreate must fail closed (different fields) — proves
+    // the idempotency entry is genuinely still bound to the original.
+    const dedupe = (await tools.createBrief.execute({
+      name: "race",
+      topic: "anything",
+      window: "last 24h",
+      channel: "slack",
+      expression,
+      idempotency_key: "race-key",
+    })) as { ok: boolean; brief_id?: string; deduped?: boolean };
+    expect(dedupe.ok).toBe(true);
+    expect(dedupe.brief_id).toBe(created.brief_id);
+    expect(dedupe.deduped).toBe(true);
+
+    // Now use the escape hatch: caller has independent confirmation the
+    // schedule is gone (they just unscheduled it).
+    const released = (await tools.cancelBrief.execute({
+      brief_id: created.brief_id,
+      release_key: true,
+    })) as { ok: boolean; removed: boolean };
+    expect(released).toEqual({ ok: true, removed: false });
+
+    const emptied = (await tools.listBriefs.execute({})) as { briefs: unknown[] };
+    expect(emptied.briefs).toHaveLength(0);
+
+    // Same-key recreate now succeeds with a fresh brief_id.
+    const recreated = (await tools.createBrief.execute({
+      name: "race",
+      topic: "anything",
+      window: "last 24h",
+      channel: "slack",
+      expression,
+      idempotency_key: "race-key",
+    })) as { brief_id: string; deduped?: boolean };
+    expect(recreated.brief_id).not.toBe(created.brief_id);
+    expect(recreated.deduped).toBeUndefined();
+  });
+
+  test("18. create_brief rejects unknown channel against the real attach-time snapshot", async () => {
+    // Provider only knows the channels that existed at attach. A brief
+    // targeting an unknown name must fail closed pre-schedule rather
+    // than landing a recurring wake that can never deliver.
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const expression = futureCronExpression(60_000);
+    const result = (await tools.createBrief.execute({
+      name: "n",
+      topic: "t",
+      window: "w",
+      channel: "email", // not in default snapshot (only "slack")
+      expression,
+    })) as { ok: boolean; error?: string; available_channels?: readonly string[] };
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("unknown channel");
+    expect(result.available_channels).toEqual(["slack"]);
+
+    // Verify no schedule was created.
+    const live = await h.scheduler.querySchedules(h.aid);
+    expect(live).toHaveLength(0);
+
+    const listed = (await tools.listBriefs.execute({})) as { briefs: unknown[] };
+    expect(listed.briefs).toHaveLength(0);
   });
 
   test("12. idempotency_key NOT forwarded to scheduler.submit (process-local only)", async () => {

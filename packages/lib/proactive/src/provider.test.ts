@@ -86,7 +86,7 @@ describe("createProactiveToolsProvider", () => {
     expect(provider.priority).toBe(999);
   });
 
-  test("attach resolves SCHEDULER from the agent and registers eight tools", async () => {
+  test("attach resolves SCHEDULER from the agent and registers eight tools when no channel is attached", async () => {
     const stub = createSchedulerStub();
     const agent = makeAgent(stub.component);
     const provider = createProactiveToolsProvider();

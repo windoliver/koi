@@ -34,6 +34,7 @@ import type {
   Tool,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, channelToken, SCHEDULER, toolToken } from "@koi/core";
+import { createBriefToolState } from "./brief-tools.js";
 import { assembleProactiveTools } from "./create-proactive-tools.js";
 import { createCronToolState } from "./cron-tools.js";
 import { createMonitorToolState } from "./monitor-tools.js";
@@ -118,7 +119,14 @@ export function createProactiveToolsProvider(
       // Monitor state is also intentionally per-attach: monitor metadata is
       // process-local and should reset when the agent is reassembled.
       const monitorState = createMonitorToolState();
-      const tools = assembleProactiveTools(toolConfig, { sleepState, cronState, monitorState });
+      // Brief state mirrors monitor — per-attach process-local metadata.
+      const briefState = createBriefToolState();
+      const tools = assembleProactiveTools(toolConfig, {
+        sleepState,
+        cronState,
+        monitorState,
+        briefState,
+      });
       const entries: (readonly [string, Tool])[] = tools.map(
         (t) => [toolToken(t.descriptor.name) as string, t] as const,
       );
