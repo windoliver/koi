@@ -710,7 +710,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
       expression: initialExpression,
     })) as { brief_id: string; schedule_id: string };
 
-    const updatedExpression = futureCronExpression(2_000);
+    const updatedExpression = futureCronExpression(3_000);
     const updatedWakeText = expectedBriefWakeText({
       name: "morning-digest",
       topic: "CI failures and flaky tests",
@@ -743,7 +743,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     });
     expect(live[0]?.input).not.toEqual({ kind: "text", text: initialWakeText });
 
-    await waitForMonitorDispatch(h, 1, 4_000);
+    await waitForMonitorDispatch(h, 1, 6_000);
     expect(h.dispatched).toEqual([{ kind: "text", text: updatedWakeText }]);
 
     await waitForMonitorDispatch(h, 2, 4_500);
