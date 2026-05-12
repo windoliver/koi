@@ -812,6 +812,127 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     expect(h.dispatched).not.toContainEqual({ kind: "text", text: wakeText });
   });
 
+  test("16. brief tools are absent on an agent with no channel adapter", async () => {
+    // Channel gate: createProactiveToolsProvider snapshots channel:*
+    // components at attach time. With none present, resolveChannel is
+    // unset → assembleProactiveTools must NOT install create_brief and
+    // friends. A brief that fires has no notify tool to deliver with,
+    // so accepting them would set up silent persistent delivery failures.
+    const provider = createProactiveToolsProvider();
+    const agent = makeAgent(h.schedulerComponent, h.aid, new Map());
+    const result = await provider.attach(agent);
+    const components = "components" in result ? result.components : result;
+    const keys = [...components.keys()];
+
+    // 8 base tools, no brief, no notify.
+    expect(keys).not.toContain(toolToken("create_brief") as string);
+    expect(keys).not.toContain(toolToken("list_briefs") as string);
+    expect(keys).not.toContain(toolToken("update_brief") as string);
+    expect(keys).not.toContain(toolToken("cancel_brief") as string);
+    expect(keys).not.toContain(toolToken("notify") as string);
+    expect(keys).toContain(toolToken("create_monitor") as string);
+    expect(keys).toContain(toolToken("sleep") as string);
+  });
+
+  test("17. cancel_brief with release_key:true recovers from real scheduler returning false (race)", async () => {
+    // Race: a concurrent path already unscheduled the cron entry, so
+    // when cancel_brief calls scheduler.unschedule the real scheduler
+    // returns false (the cron job is already gone). Without release_key,
+    // the brief record stays put — same-key recreate would silently
+    // dedupe to a dead schedule. With release_key:true, local state is
+    // cleared and the recreate lands fresh.
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const expression = futureCronExpression(60_000); // never fires in test
+    const created = (await tools.createBrief.execute({
+      name: "race",
+      topic: "anything",
+      window: "last 24h",
+      channel: "slack",
+      expression,
+      idempotency_key: "race-key",
+    })) as { brief_id: string; schedule_id: string };
+
+    // Simulate the race: independently unschedule the cron entry behind
+    // the brief tool's back. The next cancel_brief call will see the
+    // scheduler return false.
+    const wiped = await h.scheduler.unschedule(scheduleId(created.schedule_id));
+    expect(wiped).toBe(true);
+
+    // Default cancel_brief: real scheduler reports removed:false, so
+    // local state is preserved.
+    const stale = (await tools.cancelBrief.execute({ brief_id: created.brief_id })) as {
+      ok: boolean;
+      removed: boolean;
+    };
+    expect(stale).toEqual({ ok: true, removed: false });
+
+    const stillListed = (await tools.listBriefs.execute({})) as { briefs: unknown[] };
+    expect(stillListed.briefs).toHaveLength(1);
+
+    // Same-key recreate must fail closed (different fields) — proves
+    // the idempotency entry is genuinely still bound to the original.
+    const dedupe = (await tools.createBrief.execute({
+      name: "race",
+      topic: "anything",
+      window: "last 24h",
+      channel: "slack",
+      expression,
+      idempotency_key: "race-key",
+    })) as { ok: boolean; brief_id?: string; deduped?: boolean };
+    expect(dedupe.ok).toBe(true);
+    expect(dedupe.brief_id).toBe(created.brief_id);
+    expect(dedupe.deduped).toBe(true);
+
+    // Now use the escape hatch: caller has independent confirmation the
+    // schedule is gone (they just unscheduled it).
+    const released = (await tools.cancelBrief.execute({
+      brief_id: created.brief_id,
+      release_key: true,
+    })) as { ok: boolean; removed: boolean };
+    expect(released).toEqual({ ok: true, removed: false });
+
+    const emptied = (await tools.listBriefs.execute({})) as { briefs: unknown[] };
+    expect(emptied.briefs).toHaveLength(0);
+
+    // Same-key recreate now succeeds with a fresh brief_id.
+    const recreated = (await tools.createBrief.execute({
+      name: "race",
+      topic: "anything",
+      window: "last 24h",
+      channel: "slack",
+      expression,
+      idempotency_key: "race-key",
+    })) as { brief_id: string; deduped?: boolean };
+    expect(recreated.brief_id).not.toBe(created.brief_id);
+    expect(recreated.deduped).toBeUndefined();
+  });
+
+  test("18. create_brief rejects unknown channel against the real attach-time snapshot", async () => {
+    // Provider only knows the channels that existed at attach. A brief
+    // targeting an unknown name must fail closed pre-schedule rather
+    // than landing a recurring wake that can never deliver.
+    const tools = await attachTools(h.schedulerComponent, h.aid);
+    const expression = futureCronExpression(60_000);
+    const result = (await tools.createBrief.execute({
+      name: "n",
+      topic: "t",
+      window: "w",
+      channel: "email", // not in default snapshot (only "slack")
+      expression,
+    })) as { ok: boolean; error?: string; available_channels?: readonly string[] };
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("unknown channel");
+    expect(result.available_channels).toEqual(["slack"]);
+
+    // Verify no schedule was created.
+    const live = await h.scheduler.querySchedules(h.aid);
+    expect(live).toHaveLength(0);
+
+    const listed = (await tools.listBriefs.execute({})) as { briefs: unknown[] };
+    expect(listed.briefs).toHaveLength(0);
+  });
+
   test("12. idempotency_key NOT forwarded to scheduler.submit (process-local only)", async () => {
     // Capture submissions by querying the scheduler directly. The internal
     // ScheduledTask record exposes metadata but not idempotencyKey directly,
