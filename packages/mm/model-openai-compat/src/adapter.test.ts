@@ -495,19 +495,18 @@ describe("adapter: [DONE] without finish_reason", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Config validation: vision override rejected
+// Config validation: vision override accepted once serialization is supported
 // ---------------------------------------------------------------------------
 
 describe("adapter: config validation", () => {
-  test("rejects vision: true in capabilities override", () => {
-    expect(() =>
-      createOpenAICompatAdapter({
-        apiKey: "test-key",
-        baseUrl: `${baseUrl}/v1`,
-        model: "test-model",
-        capabilities: { vision: true },
-      }),
-    ).toThrow("vision");
+  test("accepts vision: true in capabilities override", () => {
+    const adapter = createOpenAICompatAdapter({
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      capabilities: { vision: true },
+    });
+    expect(adapter.capabilities.vision).toBe(true);
   });
 });
 

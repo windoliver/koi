@@ -12,6 +12,16 @@ Implements the `ModelAdapter` contract from `@koi/core` for providers using the
 OpenAI Chat Completions API shape. Works with OpenAI-compatible, direct OpenAI, Groq,
 xAI, and any compatible endpoint.
 
+## Recent updates
+
+- Vision-capable adapters can now serialize user image blocks to Chat Completions
+  `image_url` parts when `capabilities.vision` is true. Text-only messages keep the
+  legacy string content shape, and non-image rich blocks are preserved as textual
+  placeholders when a role cannot carry rich parts.
+- Image requests fail closed when `capabilities.vision` is false, preventing silent
+  loss of image content. Prompt-cache control also handles array content by tagging
+  the last non-empty text part when present.
+
 ## Public Surface
 
 ```typescript

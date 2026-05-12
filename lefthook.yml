@@ -17,7 +17,7 @@ pre-commit:
         - rebase
 
 pre-push:
-  parallel: true
+  parallel: false
   commands:
     build:
       # Only build directly changed packages (no transitive dependents).

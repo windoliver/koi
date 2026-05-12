@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSubprocessExecutor } from "./subprocess-executor.js";
+import { createSubprocessExecutor, protocolStreamFromExtraPipe } from "./subprocess-executor.js";
 
 /**
  * setsid is Linux-only (not available on macOS / Windows). Tests that are not
@@ -11,6 +11,22 @@ import { createSubprocessExecutor } from "./subprocess-executor.js";
  * resolveSetsid so they are platform-agnostic.
  */
 const NO_PGI = { requireProcessGroupIsolation: false } as const;
+
+describe("protocolStreamFromExtraPipe", () => {
+  test("accepts Bun stdio extra pipes exposed as ReadableStream objects", () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("ok"));
+        controller.close();
+      },
+    });
+    expect(protocolStreamFromExtraPipe(stream)).toBe(stream);
+  });
+
+  test("returns undefined when fd 3 is absent", () => {
+    expect(protocolStreamFromExtraPipe(undefined)).toBeUndefined();
+  });
+});
 
 describe("createSubprocessExecutor", () => {
   test("runs simple code and returns output", async () => {

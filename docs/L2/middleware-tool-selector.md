@@ -23,6 +23,7 @@ Without this package, every agent with a large tool surface would reimplement to
 ## Recent additions
 
 - **Session-end cleanup for unfinished turns (#2139)**: `createToolSelectorMiddleware()` now records the owning `SessionId` for retained turn snapshots, per-call allowlists, and bounded evicted-turn tombstones. `onAfterTurn` remains the normal fast cleanup path, and `onSessionEnd` now clears any retained state for the ended session so interrupted runs or session teardown cannot leave raw Maps/Sets alive until the local retention caps are hit. Tombstones remain fail-closed while retained, but they are also removed at session end.
+- **Tombstone refresh safety**: when a fresh selector snapshot is recorded for a turn id, any older evicted-turn tombstone for that id is cleared first. This keeps fail-closed eviction semantics for genuinely stale tool calls while preventing a reused turn id from inheriting a stale denial after the selector has run again.
 
 ---
 

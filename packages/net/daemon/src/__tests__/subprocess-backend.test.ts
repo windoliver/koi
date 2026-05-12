@@ -5,6 +5,22 @@ import { join } from "node:path";
 import { agentId, workerId } from "@koi/core";
 import { createSubprocessBackend } from "../subprocess-backend.js";
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function waitForAlive(
+  backend: ReturnType<typeof createSubprocessBackend>,
+  id: Parameters<ReturnType<typeof createSubprocessBackend>["isAlive"]>[0],
+  expected: boolean,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await backend.isAlive(id)) === expected) return;
+    await sleep(25);
+  }
+  expect(await backend.isAlive(id)).toBe(expected);
+}
+
 describe("subprocess backend", () => {
   it("spawns a subprocess that runs to completion", async () => {
     const backend = createSubprocessBackend();
@@ -17,9 +33,7 @@ describe("subprocess backend", () => {
     expect(spawned.ok).toBe(true);
     if (!spawned.ok) return;
     expect(spawned.value.backendKind).toBe("subprocess");
-    // Wait briefly for process to exit
-    await new Promise((r) => setTimeout(r, 200));
-    expect(await backend.isAlive(workerId("sub1"))).toBe(false);
+    await waitForAlive(backend, workerId("sub1"), false);
   });
 });
 
@@ -33,8 +47,7 @@ describe("subprocess terminate/kill", () => {
     });
     expect(spawned.ok).toBe(true);
     await backend.terminate(workerId("sub2"), "test");
-    await new Promise((r) => setTimeout(r, 200));
-    expect(await backend.isAlive(workerId("sub2"))).toBe(false);
+    await waitForAlive(backend, workerId("sub2"), false);
   });
 
   it("emits crashed on non-zero exit", async () => {
@@ -88,6 +101,63 @@ describe("subprocess terminate/kill", () => {
     }
   });
 
+  it("does not leak arbitrary host env vars into subprocess workers", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "koi-subproc-env-"));
+    const previous = process.env.KOI_DAEMON_SECRET;
+    process.env.KOI_DAEMON_SECRET = "must-not-leak";
+    try {
+      const outPath = join(dir, "env.txt");
+      const backend = createSubprocessBackend();
+      const spawned = await backend.spawn({
+        workerId: workerId("env-scrub-1"),
+        agentId: agentId("agent-env-scrub-1"),
+        command: [
+          "bun",
+          "-e",
+          `await Bun.write(${JSON.stringify(outPath)}, process.env.KOI_DAEMON_SECRET ?? "");`,
+        ],
+      });
+      expect(spawned.ok).toBe(true);
+
+      for await (const ev of backend.watch(workerId("env-scrub-1"))) {
+        if (ev.kind === "exited" || ev.kind === "crashed") break;
+      }
+
+      expect(await readFile(outPath, "utf8")).toBe("");
+    } finally {
+      if (previous === undefined) delete process.env.KOI_DAEMON_SECRET;
+      else process.env.KOI_DAEMON_SECRET = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes explicit request env to subprocess workers", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "koi-subproc-env-explicit-"));
+    try {
+      const outPath = join(dir, "env.txt");
+      const backend = createSubprocessBackend();
+      const spawned = await backend.spawn({
+        workerId: workerId("env-explicit-1"),
+        agentId: agentId("agent-env-explicit-1"),
+        command: [
+          "bun",
+          "-e",
+          `await Bun.write(${JSON.stringify(outPath)}, process.env.KOI_ALLOWED ?? "");`,
+        ],
+        env: { KOI_ALLOWED: "allowed" },
+      });
+      expect(spawned.ok).toBe(true);
+
+      for await (const ev of backend.watch(workerId("env-explicit-1"))) {
+        if (ev.kind === "exited" || ev.kind === "crashed") break;
+      }
+
+      expect(await readFile(outPath, "utf8")).toBe("allowed");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("prune timer is generation-safe — same-id respawn survives stale prune fire", async () => {
     // Regression guard: when the supervisor aborts a watch before the
     // terminal event is drained, `terminalDelivered` stays false and the
@@ -106,10 +176,9 @@ describe("subprocess terminate/kill", () => {
       command: ["bun", "-e", "process.exit(0)"],
     });
     expect(first.ok).toBe(true);
-    // Let the child exit so the prune timer is armed.
-    await new Promise((r) => setTimeout(r, 100));
-    // Verify first generation is dead (state retained, prune not yet fired).
-    expect(await backend.isAlive(id)).toBe(false);
+    // Let the child exit so the prune timer is armed, then verify first
+    // generation is dead (state retained, prune not yet fired).
+    await waitForAlive(backend, id, false);
 
     // Spawn #2 — same id, long-running. This REPLACES workers[id] with a
     // fresh state. The stale prune timer from spawn #1 is still armed.
@@ -127,8 +196,7 @@ describe("subprocess terminate/kill", () => {
     // would have deleted the new entry. Identity-check keeps it alive.
     // (We sanity-check by terminating the second generation cleanly.)
     await backend.kill(id);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(await backend.isAlive(id)).toBe(false);
+    await waitForAlive(backend, id, false);
   });
 
   it("watch() returns when the AbortSignal fires mid-iteration", async () => {
@@ -183,8 +251,9 @@ describe("subprocess terminate/kill", () => {
         command: ["bun", "-e", "process.exit(0)"],
       });
     }
-    // Wait for all to exit.
-    await new Promise((r) => setTimeout(r, 300));
+    for (let i = 0; i < 5; i++) {
+      await waitForAlive(backend, workerId(`churn-${i}`), false);
+    }
 
     // First watch() must deliver the buffered started+terminal events even
     // though the subprocess already exited. THEN the worker state is pruned.

@@ -7,7 +7,7 @@
  * Protocol:
  *   argv[2] = absolute path to code file (temp or entry from context)
  *   argv[3] = JSON-encoded input
- *   stderr  = __KOI_RESULT__\n<json>\n  (framed protocol output)
+ *   fd 3    = __KOI_RESULT__\n<json>\n  (framed protocol output)
  *
  * Isolation note (fail-closed, explicit-deny):
  *   This executor uses EXPLICIT-DENY semantics for network and resource isolation.
@@ -293,6 +293,12 @@ async function readBoundedText(
   return { text: buf, truncated, tail: tailBuf };
 }
 
+export function protocolStreamFromExtraPipe(raw: unknown): ReadableStream<Uint8Array> | undefined {
+  if (typeof raw === "number") return Bun.file(raw).stream();
+  if (raw instanceof ReadableStream) return raw as ReadableStream<Uint8Array>;
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Process-group kill (Fix 2)
 //
@@ -476,12 +482,11 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         // value; 256 KB is generous and prevents pathological growth from
         // infecting parent memory.
         const FD3_MAX_BYTES = 256 * 1024;
-        // Bun returns fd=3 as a raw number on `proc.stdio[3]`. Wrap via
-        // `Bun.file(fd).stream()` to get a ReadableStream the bounded reader
-        // can consume. If fd=3 is missing for any reason, the parser falls
-        // back to scanning stderr (legacy path).
+        // Bun may expose fd=3 either as a raw fd number or as a ReadableStream,
+        // depending on runtime version. Coerce either shape to one stream; if
+        // fd=3 is missing, the parser falls back to scanning stderr.
         const fd3Raw = (proc as unknown as { readonly stdio?: readonly unknown[] }).stdio?.[3];
-        const fd3Stream = typeof fd3Raw === "number" ? Bun.file(fd3Raw).stream() : undefined;
+        const fd3Stream = protocolStreamFromExtraPipe(fd3Raw);
         const fd3P =
           fd3Stream !== undefined
             ? readBoundedText(fd3Stream, FD3_MAX_BYTES)

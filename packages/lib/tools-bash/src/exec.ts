@@ -174,6 +174,24 @@ export async function drainStream(
         truncated = true;
       }
     }
+
+    if (onChunk !== undefined) {
+      const trailing = callbackDecoder.decode();
+      if (trailing.length > 0) {
+        try {
+          onChunk(trailing);
+        } catch {
+          // Consumer errors must not break the drain loop — swallowed intentionally.
+        }
+      }
+    }
+
+    if (!truncated) {
+      const capturedTrailing = captureDecoder.decode();
+      if (capturedTrailing.length > 0) {
+        text += capturedTrailing;
+      }
+    }
   } finally {
     reader.releaseLock();
   }

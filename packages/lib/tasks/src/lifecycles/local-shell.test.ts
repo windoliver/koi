@@ -149,6 +149,27 @@ describe("createLocalShellLifecycle", () => {
     expect(combined).toContain("hello-from-test");
   });
 
+  test("host env vars are not inherited by default", async () => {
+    const output = createOutputStream();
+    const previous = process.env.KOI_LOCAL_SHELL_SECRET;
+    process.env.KOI_LOCAL_SHELL_SECRET = "must-not-leak";
+    try {
+      const task = await lifecycle.start(taskItemId("task_env_scrub"), output, {
+        command: 'printf "%s" "$' + '{KOI_LOCAL_SHELL_SECRET:-}"',
+      });
+      runningTasks.push(task);
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    } finally {
+      if (previous === undefined) delete process.env.KOI_LOCAL_SHELL_SECRET;
+      else process.env.KOI_LOCAL_SHELL_SECRET = previous;
+    }
+
+    const chunks = output.read(0);
+    const combined = chunks.map((c) => c.content).join("");
+    expect(combined).not.toContain("must-not-leak");
+  });
+
   test("stop() actually terminates the process (not just a no-op)", async () => {
     const output = createOutputStream();
     const config: LocalShellConfig = { command: "sleep 60" };

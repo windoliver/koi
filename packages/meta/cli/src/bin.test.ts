@@ -57,13 +57,23 @@ describe("bin.ts", () => {
       expect(r.stdout).toContain("--help");
     });
 
-    test("--help labels planned lifecycle commands and lists wired commands", async () => {
+    test("--help labels only init as planned and lists wired lifecycle commands", async () => {
       const r = await runBin(["--help"]);
       expect(r.exitCode).toBe(0);
-      for (const cmd of ["init", "serve", "logs", "status", "stop", "deploy"]) {
+      expect(r.stdout).toContain("init [directory]");
+      expect(r.stdout).toContain("planned");
+      for (const cmd of ["serve", "logs", "status", "stop", "deploy"]) {
         expect(r.stdout).toContain(`${cmd}`);
-        expect(r.stdout).toContain("planned");
       }
+      expect(r.stdout).not.toContain(
+        "serve [manifest]       Run agent headless HTTP service (planned",
+      );
+      expect(r.stdout).not.toContain("logs [manifest]        View service logs (planned");
+      expect(r.stdout).not.toContain("status [manifest]      Check service status (planned");
+      expect(r.stdout).not.toContain("stop [manifest]        Stop the service (planned");
+      expect(r.stdout).not.toContain(
+        "deploy [manifest]      Install/uninstall OS service (planned",
+      );
       expect(r.stdout).toContain("dream");
       expect(r.stdout).toContain("mcp <subcommand>");
     });

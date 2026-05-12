@@ -24,6 +24,7 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -141,7 +142,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       if (oldest === undefined || oldest === currentTurnId) break;
       evictTurn(oldest, currentSessionId);
     }
-    // Bound the tombstone set itself. Set iteration order is
+    // Bound the tombstone map itself. Map iteration order is
     // insertion order, so we drop the oldest tombstones first. A
     // tool call arriving for a turn whose tombstone is also gone
     // can no longer be distinguished from "never ran" — but at that
@@ -175,6 +176,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
 
   function recordSnapshot(ctx: TurnContext, allowed: ReadonlySet<string>): void {
     turnSessions.set(ctx.turnId, ctx.session.sessionId);
+    evictedTurns.delete(ctx.turnId);
     const list = turnSnapshots.get(ctx.turnId);
     if (list === undefined) {
       turnSnapshots.set(ctx.turnId, [allowed]);
@@ -427,7 +429,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     async onAfterTurn(ctx: TurnContext): Promise<void> {
       clearTurn(ctx.turnId);
     },
-    async onSessionEnd(ctx): Promise<void> {
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
       for (const [turnId, sessionId] of turnSessions) {
         if (sessionId === ctx.sessionId) {
           clearTurn(turnId);

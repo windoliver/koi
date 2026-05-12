@@ -8,6 +8,15 @@ Provides a `createBashTool()` factory that returns an L0 `Tool` capable of
 executing bash commands. Security is enforced via `@koi/bash-security`
 classifiers before every execution.
 
+## Recent updates
+
+- `drainStream()` now flushes the final streaming `TextDecoder` state for both
+  captured output and streaming callbacks. Complete trailing UTF-8 codepoints are no
+  longer dropped at end-of-stream, while capture truncation still avoids appending a
+  synthetic replacement character for a byte-budgeted partial codepoint. Streaming
+  callbacks continue to observe the full drained stream even after capture budget
+  exhaustion so watch-pattern matching does not stop at the truncation boundary.
+
 ## Usage
 
 ```typescript

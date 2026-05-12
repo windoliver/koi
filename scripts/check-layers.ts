@@ -18,7 +18,14 @@
  */
 
 import { readdir } from "node:fs/promises";
-import { L0_PACKAGES, L0U_PACKAGES, L1_PACKAGES, L3_PACKAGES, L4_PACKAGES } from "./layers.js";
+import {
+  L0_PACKAGES,
+  L0U_PACKAGES,
+  L1_PACKAGES,
+  L2_PACKAGES,
+  L3_PACKAGES,
+  L4_PACKAGES,
+} from "./layers.js";
 
 const PACKAGES_DIR = new URL("../packages/", import.meta.url).pathname;
 
@@ -30,6 +37,18 @@ const TRANSPILER = new Bun.Transpiler({ loader: "ts" });
 interface Violation {
   readonly pkg: string;
   readonly message: string;
+}
+
+export type PackageLayer = "L0" | "L0u" | "L1" | "L2" | "L3" | "L4" | "unknown";
+
+export function classifyPackageLayer(pkgName: string): PackageLayer {
+  if (L0_PACKAGES.has(pkgName)) return "L0";
+  if (L0U_PACKAGES.has(pkgName)) return "L0u";
+  if (L1_PACKAGES.has(pkgName)) return "L1";
+  if (L2_PACKAGES.has(pkgName)) return "L2";
+  if (L3_PACKAGES.has(pkgName)) return "L3";
+  if (L4_PACKAGES.has(pkgName)) return "L4";
+  return "unknown";
 }
 
 // --- L0 runtime code allowlist ---
@@ -502,8 +521,20 @@ async function main(): Promise<void> {
       const koiDevDeps = getKoiDeps(pkg.devDependencies);
       const allKoiDeps = [...koiDeps, ...koiDevDeps];
 
+      const layer = classifyPackageLayer(pkg.name);
+
+      if (layer === "unknown") {
+        return [
+          {
+            pkg: pkg.name,
+            message:
+              "Package is not listed in scripts/layers.ts; add it to the explicit layer set before it can pass architecture checks",
+          },
+        ];
+      }
+
       // --- L0: must have ZERO @koi/* deps ---
-      if (L0_PACKAGES.has(pkg.name)) {
+      if (layer === "L0") {
         if (allKoiDeps.length > 0) {
           return [
             {
@@ -516,7 +547,7 @@ async function main(): Promise<void> {
       }
 
       // --- L0u: may depend on L0 + peer L0u ---
-      if (L0U_PACKAGES.has(pkg.name)) {
+      if (layer === "L0u") {
         const allowedL0u = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
         const badDeps = koiDeps.filter((d) => !allowedL0u.has(d));
         if (badDeps.length > 0) {
@@ -531,7 +562,7 @@ async function main(): Promise<void> {
       }
 
       // --- L1: may depend on L0 + L0u + L1 (Turborepo catches cycles) ---
-      if (L1_PACKAGES.has(pkg.name)) {
+      if (layer === "L1") {
         const allowedL1 = new Set([...L0_PACKAGES, ...L0U_PACKAGES, ...L1_PACKAGES]);
         const badDeps = koiDeps.filter((d) => !allowedL1.has(d));
         if (badDeps.length > 0) {
@@ -546,11 +577,12 @@ async function main(): Promise<void> {
       }
 
       // --- L3/L4: may depend on any layer (meta-package / orchestrator / distribution) ---
-      if (L3_PACKAGES.has(pkg.name) || L4_PACKAGES.has(pkg.name)) {
+      if (layer === "L3" || layer === "L4") {
         return [];
       }
 
       // --- L2: runtime deps on L0 + L0u only; devDeps may include L1 + L2 (for tests) ---
+      if (layer !== "L2") return [];
       const allowedRuntime = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
       const badDeps = koiDeps.filter((d) => !allowedRuntime.has(d));
       if (badDeps.length > 0) {
@@ -617,15 +649,8 @@ async function main(): Promise<void> {
       if (!(await file.exists())) return [];
       const pkg = (await file.json()) as { name: string };
 
-      // Only L2 source is constrained — skip L0, L0u, L1, L3, and L4
-      if (
-        L0_PACKAGES.has(pkg.name) ||
-        L0U_PACKAGES.has(pkg.name) ||
-        L1_PACKAGES.has(pkg.name) ||
-        L3_PACKAGES.has(pkg.name) ||
-        L4_PACKAGES.has(pkg.name)
-      )
-        return [];
+      // Only explicitly classified L2 source is constrained here.
+      if (classifyPackageLayer(pkg.name) !== "L2") return [];
 
       const srcDir = `${dir.path}/src`;
       return scanFilesForViolations(
