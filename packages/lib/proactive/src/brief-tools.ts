@@ -66,6 +66,17 @@ const updateBriefSchema = z.object({
 
 const cancelBriefSchema = z.object({
   brief_id: z.string().min(1, "brief_id is required").describe("Brief identifier to cancel."),
+  release_key: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, also drop the local brief record and idempotency mapping even " +
+        "if the scheduler returns `removed: false`. Use when you have independent " +
+        "confirmation the underlying schedule is gone (e.g. you observed the " +
+        "agent stop firing). Default false: preserves local state on `removed: false` " +
+        "so a retry can still cancel the schedule and a same-key recreate won't " +
+        "silently dedupe to a dead schedule.",
+    ),
 });
 
 const listBriefsSchema = z.object({});
@@ -540,6 +551,7 @@ export function createCancelBriefTool(config: ProactiveToolsConfig, state: Brief
         return { ok: true, removed: false };
       }
 
+      const releaseKey = parsed.data.release_key === true;
       let removed: boolean;
       try {
         removed = await scheduler.unschedule(scheduleId(record.scheduleId));
@@ -550,23 +562,24 @@ export function createCancelBriefTool(config: ProactiveToolsConfig, state: Brief
         };
       }
 
-      // If the scheduler reports the schedule was not removed (e.g., the
-      // backing entry was already gone, or a durable backend rejected the
-      // unschedule), preserve local state so the caller can retry or
-      // inspect the orphan. Dropping the record here would leave a brief
-      // potentially still firing on the scheduler with no brief_id left
-      // to cancel — a silent delivery/cost leak.
-      if (!removed) {
-        return { ok: true, removed: false };
+      // Clear local state when the scheduler confirmed removal, OR when
+      // the caller explicitly opted in via release_key. A bare
+      // `removed: false` may mean either "remote cancel failed" or "the
+      // schedule was already gone"; the scheduler boolean cannot
+      // distinguish them, so by default we preserve local state. Keeping
+      // the record lets the caller retry cancel (if remote failed) and
+      // prevents a same-`idempotency_key` create from silently deduping
+      // to a now-dead schedule. Callers that know the schedule is gone
+      // pass `release_key: true` to recover.
+      if (removed || releaseKey) {
+        state.briefsById.delete(record.briefId);
+        if (record.idempotencyKey !== undefined) {
+          state.briefIdByIdempotencyKey.delete(record.idempotencyKey);
+          state.createEntryByIdempotencyKey.delete(record.idempotencyKey);
+        }
       }
 
-      state.briefsById.delete(record.briefId);
-      if (record.idempotencyKey !== undefined) {
-        state.briefIdByIdempotencyKey.delete(record.idempotencyKey);
-        state.createEntryByIdempotencyKey.delete(record.idempotencyKey);
-      }
-
-      return { ok: true, removed: true };
+      return { ok: true, removed };
     },
   };
 }

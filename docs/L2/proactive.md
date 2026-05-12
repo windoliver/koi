@@ -174,22 +174,27 @@ fields and includes the explicit `notify`-this-channel directive.
 the same patch + replace-then-retire semantics as `update_monitor`. `cancel_brief`
 removes the brief record and unschedules the backing cron entry.
 
-**Channel validation:** brief tools are only installed when the provider has at
-least one channel adapter attached (same gate as `notify`). On agents with no
-channel adapter, `create_brief`/`list_briefs`/`update_brief`/`cancel_brief` are
+**Channel availability gate:** brief tools are only installed when the provider
+has at least one **actually resolvable** channel adapter attached (same gate as
+`notify`). The check is `resolveChannel !== undefined && channelNames().length
+> 0` — a resolver alone is not enough, since one that returns `undefined` for
+every name provides no delivery path. On agents with no channel adapter (or an
+empty snapshot), `create_brief`/`list_briefs`/`update_brief`/`cancel_brief` are
 absent from the tool list — registering them would let the model schedule
-recurring wakes that can never deliver. When the resolver is present,
+recurring wakes that can never deliver. When channels are present,
 `create_brief` and `update_brief` validate the channel name eagerly against the
 attach-time snapshot and return `{ ok: false, error: "unknown channel: <name>",
 available_channels: [...] }` for unknown channels.
 
 **Cancel semantics:** `cancel_brief` honors the boolean returned by
-`SchedulerComponent.unschedule`. If the scheduler reports `removed: false`
-(e.g., a durable backend rejected the unschedule or the entry was already
-gone), the brief record and idempotency mapping are **preserved** so the
-caller can retry. Returning `removed: true` and dropping local state in that
-case would orphan a potentially still-firing brief with no `brief_id` left to
-cancel.
+`SchedulerComponent.unschedule`. On `removed: true`, local state is cleared.
+On `removed: false` (which the scheduler boolean cannot distinguish between
+"remote cancel failed" and "schedule was already gone"), local state is
+**preserved** by default so a retry can complete the cancel and a same-key
+`create_brief` cannot silently dedupe to a now-dead schedule. Callers that
+have independent confirmation the schedule is gone can pass
+`release_key: true` to force-clear the local record + idempotency mapping —
+matches the same opt-in escape hatch used by `cancel_sleep.release_key`.
 
 **State limits and idempotency scope:** identical to the monitor tools — in-memory,
 process-local, attach-local. Same-process dedupe by `idempotency_key`; no

@@ -476,6 +476,47 @@ describe("brief tools", () => {
     expect(result).toEqual({ ok: true, removed: false });
   });
 
+  test("cancel_brief with release_key:true clears local state even when unschedule returns false", async () => {
+    // Caller has independent confirmation the schedule is already gone
+    // (e.g. observed the agent stop firing) and wants to clean up local
+    // state so a same-key recreate doesn't dedupe to the dead schedule.
+    const stub = createSchedulerStub({ unscheduleResult: false });
+    const state = createBriefToolState();
+    const createBrief = createCreateBriefTool({ scheduler: stub.component }, state);
+    const cancelBrief = createCancelBriefTool({ scheduler: stub.component }, state);
+
+    const created = (await createBrief.execute({
+      name: "n",
+      topic: "t",
+      window: "w",
+      channel: "slack",
+      expression: "0 9 * * 1",
+      idempotency_key: "key-rk",
+    })) as { brief_id: string };
+
+    const result = await cancelBrief.execute({
+      brief_id: created.brief_id,
+      release_key: true,
+    });
+    expect(result).toEqual({ ok: true, removed: false });
+
+    // Local record + idempotency mapping must now be cleared so a
+    // same-key recreate yields a fresh brief_id (not a deduped reuse).
+    const listBrief = createListBriefsTool(state);
+    const listed = (await listBrief.execute({})) as { briefs: unknown[] };
+    expect(listed.briefs).toHaveLength(0);
+
+    const recreated = (await createBrief.execute({
+      name: "n",
+      topic: "t",
+      window: "w",
+      channel: "slack",
+      expression: "0 9 * * 1",
+      idempotency_key: "key-rk",
+    })) as { brief_id: string };
+    expect(recreated.brief_id).not.toBe(created.brief_id);
+  });
+
   test("cancel_brief preserves local state when scheduler.unschedule returns false", async () => {
     // If the scheduler reports the schedule was not removed, dropping the
     // local record would orphan a potentially still-live brief with no ID

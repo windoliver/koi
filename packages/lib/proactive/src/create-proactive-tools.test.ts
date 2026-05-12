@@ -42,6 +42,28 @@ describe("createProactiveTools", () => {
     ]);
   });
 
+  test("omits brief tools and notify when resolveChannel is supplied but channelNames is empty", () => {
+    // A resolver that can never resolve any name provides no delivery
+    // path. Registering brief/notify in this case would let the model
+    // schedule recurring wakes that can never deliver — silent failure.
+    const stub = createSchedulerStub();
+    const tools = createProactiveTools({
+      scheduler: stub.component,
+      resolveChannel: () => undefined,
+      channelNames: () => [],
+    });
+    expect(tools.map((t) => t.descriptor.name)).toEqual([
+      "sleep",
+      "cancel_sleep",
+      "schedule_cron",
+      "cancel_schedule",
+      "create_monitor",
+      "list_monitors",
+      "update_monitor",
+      "cancel_monitor",
+    ]);
+  });
+
   test("all tools share the primordial origin", () => {
     const stub = createSchedulerStub();
     const tools = createProactiveTools({ scheduler: stub.component });
