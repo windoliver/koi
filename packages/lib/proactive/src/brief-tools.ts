@@ -552,10 +552,27 @@ export function createCancelBriefTool(config: ProactiveToolsConfig, state: Brief
       }
 
       const releaseKey = parsed.data.release_key === true;
+      const clearLocal = (): void => {
+        state.briefsById.delete(record.briefId);
+        if (record.idempotencyKey !== undefined) {
+          state.briefIdByIdempotencyKey.delete(record.idempotencyKey);
+          state.createEntryByIdempotencyKey.delete(record.idempotencyKey);
+        }
+      };
+
       let removed: boolean;
       try {
         removed = await scheduler.unschedule(scheduleId(record.scheduleId));
       } catch (e: unknown) {
+        // `release_key: true` is the caller's assertion that the remote
+        // schedule is gone (e.g. observed via independent confirmation).
+        // Honor it even when `unschedule` throws (timeout/transport
+        // failure after the backend already processed the cancel) — the
+        // whole point of the escape hatch is to recover local state
+        // during degraded scheduler behavior.
+        if (releaseKey) {
+          clearLocal();
+        }
         return {
           ok: false,
           error: e instanceof Error ? e.message : "Failed to cancel brief",
@@ -572,11 +589,7 @@ export function createCancelBriefTool(config: ProactiveToolsConfig, state: Brief
       // to a now-dead schedule. Callers that know the schedule is gone
       // pass `release_key: true` to recover.
       if (removed || releaseKey) {
-        state.briefsById.delete(record.briefId);
-        if (record.idempotencyKey !== undefined) {
-          state.briefIdByIdempotencyKey.delete(record.idempotencyKey);
-          state.createEntryByIdempotencyKey.delete(record.idempotencyKey);
-        }
+        clearLocal();
       }
 
       return { ok: true, removed };

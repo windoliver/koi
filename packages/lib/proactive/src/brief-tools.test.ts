@@ -476,6 +476,59 @@ describe("brief tools", () => {
     expect(result).toEqual({ ok: true, removed: false });
   });
 
+  test("cancel_brief with release_key:true clears local state even when unschedule throws", async () => {
+    // Degraded scheduler (timeout / transport failure after the backend
+    // already processed the cancel): the unschedule promise rejects.
+    // Without release_key honored in the catch, the caller is stuck
+    // with a stale local record blocking same-key recreation. The
+    // escape hatch must apply in the throw path too.
+    let scheduleStub = createSchedulerStub();
+    const state = createBriefToolState();
+    const createBrief = createCreateBriefTool({ scheduler: scheduleStub.component }, state);
+
+    const created = (await createBrief.execute({
+      name: "n",
+      topic: "t",
+      window: "w",
+      channel: "slack",
+      expression: "0 9 * * 1",
+      idempotency_key: "key-throw",
+    })) as { brief_id: string };
+
+    // Swap to a stub whose unschedule throws.
+    scheduleStub = createSchedulerStub({
+      unscheduleImpl: async () => {
+        throw new Error("scheduler timeout");
+      },
+    });
+    const cancelBrief = createCancelBriefTool({ scheduler: scheduleStub.component }, state);
+
+    const result = (await cancelBrief.execute({
+      brief_id: created.brief_id,
+      release_key: true,
+    })) as { ok: boolean; error?: string };
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("scheduler timeout");
+
+    // Local record + idempotency must be cleared so same-key recreate
+    // can land cleanly even though the cancel reported failure.
+    const listBrief = createListBriefsTool(state);
+    const listed = (await listBrief.execute({})) as { briefs: unknown[] };
+    expect(listed.briefs).toHaveLength(0);
+
+    const reCreateStub = createSchedulerStub();
+    const reCreate = createCreateBriefTool({ scheduler: reCreateStub.component }, state);
+    const recreated = (await reCreate.execute({
+      name: "n",
+      topic: "t",
+      window: "w",
+      channel: "slack",
+      expression: "0 9 * * 1",
+      idempotency_key: "key-throw",
+    })) as { brief_id: string };
+    expect(recreated.brief_id).not.toBe(created.brief_id);
+  });
+
   test("cancel_brief with release_key:true clears local state even when unschedule returns false", async () => {
     // Caller has independent confirmation the schedule is already gone
     // (e.g. observed the agent stop firing) and wants to clean up local

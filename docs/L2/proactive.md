@@ -174,14 +174,13 @@ fields and includes the explicit `notify`-this-channel directive.
 the same patch + replace-then-retire semantics as `update_monitor`. `cancel_brief`
 removes the brief record and unschedules the backing cron entry.
 
-**Channel availability gate:** brief tools are only installed when the provider
-has at least one **actually resolvable** channel adapter attached (same gate as
-`notify`). The check is `resolveChannel !== undefined && channelNames().length
-> 0` — a resolver alone is not enough, since one that returns `undefined` for
-every name provides no delivery path. On agents with no channel adapter (or an
-empty snapshot), `create_brief`/`list_briefs`/`update_brief`/`cancel_brief` are
-absent from the tool list — registering them would let the model schedule
-recurring wakes that can never deliver. When channels are present,
+**Channel availability gate:** brief tools are installed together with `notify`,
+both gated on `resolveChannel !== undefined`. The provider only populates
+`resolveChannel` when it snapshots at least one `channel:*` adapter from the
+agent, so the provider path is self-consistent — no channels means no brief
+or notify. Direct callers of `createProactiveTools({ resolveChannel })` are
+responsible for ensuring the resolver actually resolves names; a resolver
+that returns `undefined` for every name is a caller-side contract violation. When channels are present,
 `create_brief` and `update_brief` validate the channel name eagerly against the
 attach-time snapshot and return `{ ok: false, error: "unknown channel: <name>",
 available_channels: [...] }` for unknown channels.
@@ -195,6 +194,11 @@ On `removed: false` (which the scheduler boolean cannot distinguish between
 have independent confirmation the schedule is gone can pass
 `release_key: true` to force-clear the local record + idempotency mapping —
 matches the same opt-in escape hatch used by `cancel_sleep.release_key`.
+`release_key: true` also applies in the throw path: if `unschedule` rejects
+(timeout / transport failure after the backend already processed the cancel),
+local state is still cleared so the caller can recover during degraded
+scheduler behavior. The tool returns `{ ok: false, error }` in that case so
+the failure is still surfaced.
 
 **State limits and idempotency scope:** identical to the monitor tools — in-memory,
 process-local, attach-local. Same-process dedupe by `idempotency_key`; no

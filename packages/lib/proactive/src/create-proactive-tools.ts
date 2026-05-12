@@ -58,15 +58,17 @@ export function assembleProactiveTools(
   states: ProactiveToolStates,
 ): readonly Tool[] {
   const { sleepState, cronState, monitorState, briefState } = states;
-  const { resolveChannel, channelNames } = config;
-  // Channel gating: brief and notify are only useful when at least one
-  // channel adapter is actually attached. A resolver that returns
-  // undefined for every name (or an empty channel set) provides no
-  // delivery path, so registering these tools would let the model
-  // schedule recurring wakes that can never deliver. Check both that
-  // the resolver exists AND that the attach-time snapshot reports a
-  // non-empty channel list.
-  const hasDeliveryChannel = resolveChannel !== undefined && (channelNames?.() ?? []).length > 0;
+  const { resolveChannel } = config;
+  // Channel gating: brief and notify are installed together. Both
+  // require a `resolveChannel` resolver — without one, a brief's wake
+  // text (which tells the agent to call `notify`) targets a tool that
+  // does not exist. The provider only populates `resolveChannel` when
+  // it snapshots at least one `channel:*` adapter from the agent, so
+  // the provider path is self-consistent. Direct callers of
+  // `createProactiveTools({ resolveChannel })` are responsible for
+  // ensuring the resolver actually resolves names; passing a resolver
+  // that returns `undefined` for every name is a caller-side contract
+  // violation, not a registration concern.
   return [
     createSleepTool(config, sleepState),
     createCancelSleepTool(config, sleepState),
@@ -76,7 +78,7 @@ export function assembleProactiveTools(
     createListMonitorsTool(monitorState),
     createUpdateMonitorTool(config, monitorState),
     createCancelMonitorTool(config, monitorState),
-    ...(hasDeliveryChannel
+    ...(resolveChannel !== undefined
       ? [
           createCreateBriefTool(config, briefState),
           createListBriefsTool(briefState),

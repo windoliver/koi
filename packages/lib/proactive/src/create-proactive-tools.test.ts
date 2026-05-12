@@ -42,15 +42,15 @@ describe("createProactiveTools", () => {
     ]);
   });
 
-  test("omits brief tools and notify when resolveChannel is supplied but channelNames is empty", () => {
-    // A resolver that can never resolve any name provides no delivery
-    // path. Registering brief/notify in this case would let the model
-    // schedule recurring wakes that can never deliver — silent failure.
+  test("installs brief tools and notify when only resolveChannel is supplied (no channelNames)", () => {
+    // Direct callers of createProactiveTools may pass `resolveChannel`
+    // alone; they assert their resolver can resolve channels. The
+    // optional `channelNames` is purely for error-formatting metadata
+    // (available_channels listings) and must not gate registration.
     const stub = createSchedulerStub();
     const tools = createProactiveTools({
       scheduler: stub.component,
       resolveChannel: () => undefined,
-      channelNames: () => [],
     });
     expect(tools.map((t) => t.descriptor.name)).toEqual([
       "sleep",
@@ -61,6 +61,11 @@ describe("createProactiveTools", () => {
       "list_monitors",
       "update_monitor",
       "cancel_monitor",
+      "create_brief",
+      "list_briefs",
+      "update_brief",
+      "cancel_brief",
+      "notify",
     ]);
   });
 
