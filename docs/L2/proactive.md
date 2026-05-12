@@ -174,12 +174,22 @@ fields and includes the explicit `notify`-this-channel directive.
 the same patch + replace-then-retire semantics as `update_monitor`. `cancel_brief`
 removes the brief record and unschedules the backing cron entry.
 
-**Channel validation:** when the provider has a `resolveChannel` resolver attached,
-`create_brief` and `update_brief` validate the channel name eagerly and return
-`{ ok: false, error: "unknown channel: <name>", available_channels: [...] }` for
-unknown channels. Without a resolver (no channel adapters wired) the channel
-field is accepted as-is — the eventual `notify` call inside the woken turn is
-what will fail closed.
+**Channel validation:** brief tools are only installed when the provider has at
+least one channel adapter attached (same gate as `notify`). On agents with no
+channel adapter, `create_brief`/`list_briefs`/`update_brief`/`cancel_brief` are
+absent from the tool list — registering them would let the model schedule
+recurring wakes that can never deliver. When the resolver is present,
+`create_brief` and `update_brief` validate the channel name eagerly against the
+attach-time snapshot and return `{ ok: false, error: "unknown channel: <name>",
+available_channels: [...] }` for unknown channels.
+
+**Cancel semantics:** `cancel_brief` honors the boolean returned by
+`SchedulerComponent.unschedule`. If the scheduler reports `removed: false`
+(e.g., a durable backend rejected the unschedule or the entry was already
+gone), the brief record and idempotency mapping are **preserved** so the
+caller can retry. Returning `removed: true` and dropping local state in that
+case would orphan a potentially still-firing brief with no `brief_id` left to
+cancel.
 
 **State limits and idempotency scope:** identical to the monitor tools — in-memory,
 process-local, attach-local. Same-process dedupe by `idempotency_key`; no

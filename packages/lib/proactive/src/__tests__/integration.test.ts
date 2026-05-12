@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import type {
   Agent,
   AgentId,
+  ChannelAdapter,
   EngineInput,
   SchedulerComponent,
   ScheduleStore,
@@ -102,9 +103,36 @@ function buildHarness(): Harness {
   };
 }
 
-function makeAgent(scheduler: SchedulerComponent, aid: AgentId): Agent {
+function makeStubChannel(name: string): ChannelAdapter {
+  return {
+    name,
+    capabilities: {
+      text: true,
+      images: false,
+      files: false,
+      buttons: false,
+      audio: false,
+      video: false,
+      threads: true,
+      supportsA2ui: false,
+    },
+    connect: async () => {},
+    disconnect: async () => {},
+    send: async () => {},
+    onMessage: () => () => {},
+  };
+}
+
+function makeAgent(
+  scheduler: SchedulerComponent,
+  aid: AgentId,
+  channels: ReadonlyMap<string, ChannelAdapter> = new Map([["slack", makeStubChannel("slack")]]),
+): Agent {
   const map = new Map<string, unknown>();
   map.set(SCHEDULER as string, scheduler);
+  for (const [name, adapter] of channels) {
+    map.set(`channel:${name}`, adapter);
+  }
   return {
     pid: {
       id: aid,
@@ -715,14 +743,14 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
       name: "morning-digest",
       topic: "CI failures and flaky tests",
       window: "last 48h",
-      channel: "email",
+      channel: "slack",
       contextHint: "Group by package.",
     });
     const updated = (await tools.updateBrief.execute({
       brief_id: created.brief_id,
       topic: "CI failures and flaky tests",
       window: "last 48h",
-      channel: "email",
+      channel: "slack",
       expression: updatedExpression,
       context_hint: "Group by package.",
     })) as { ok: boolean; brief_id: string; schedule_id: string };

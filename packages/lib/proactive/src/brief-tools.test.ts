@@ -476,6 +476,39 @@ describe("brief tools", () => {
     expect(result).toEqual({ ok: true, removed: false });
   });
 
+  test("cancel_brief preserves local state when scheduler.unschedule returns false", async () => {
+    // If the scheduler reports the schedule was not removed, dropping the
+    // local record would orphan a potentially still-live brief with no ID
+    // left to cancel — a silent delivery leak. Keep local state so the
+    // caller can retry or inspect.
+    const stub = createSchedulerStub({ unscheduleResult: false });
+    const state = createBriefToolState();
+    const createBrief = createCreateBriefTool({ scheduler: stub.component }, state);
+    const cancelBrief = createCancelBriefTool({ scheduler: stub.component }, state);
+
+    const created = (await createBrief.execute({
+      name: "n",
+      topic: "t",
+      window: "w",
+      channel: "slack",
+      expression: "0 9 * * 1",
+      idempotency_key: "key-1",
+    })) as { brief_id: string };
+
+    const result = await cancelBrief.execute({ brief_id: created.brief_id });
+    expect(result).toEqual({ ok: true, removed: false });
+
+    // Local record + idempotency mapping must still be present.
+    const listBrief = createListBriefsTool(state);
+    const listed = (await listBrief.execute({})) as { briefs: unknown[] };
+    expect(listed.briefs).toHaveLength(1);
+
+    // Retrying cancel with the same id is still possible because the
+    // record was not cleared.
+    const retry = await cancelBrief.execute({ brief_id: created.brief_id });
+    expect(retry).toEqual({ ok: true, removed: false });
+  });
+
   test("formatBriefWakeMessage renders deterministic multi-line text with all fields", () => {
     expect(
       formatBriefWakeMessage({

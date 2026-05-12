@@ -68,12 +68,17 @@ export function assembleProactiveTools(
     createListMonitorsTool(monitorState),
     createUpdateMonitorTool(config, monitorState),
     createCancelMonitorTool(config, monitorState),
-    createCreateBriefTool(config, briefState),
-    createListBriefsTool(briefState),
-    createUpdateBriefTool(config, briefState),
-    createCancelBriefTool(config, briefState),
+    // Brief tools are gated on channel availability: every brief fires a
+    // wake that instructs the agent to deliver via `notify`. Installing
+    // briefs on an agent with no `notify` tool would let the model
+    // schedule recurring wakes that can never deliver — a silent failure
+    // mode that keeps waking the agent until someone cancels.
     ...(resolveChannel !== undefined
       ? [
+          createCreateBriefTool(config, briefState),
+          createListBriefsTool(briefState),
+          createUpdateBriefTool(config, briefState),
+          createCancelBriefTool(config, briefState),
           createNotifyTool({
             resolveChannel,
             names: () => config.channelNames?.() ?? [],

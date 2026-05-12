@@ -540,13 +540,24 @@ export function createCancelBriefTool(config: ProactiveToolsConfig, state: Brief
         return { ok: true, removed: false };
       }
 
+      let removed: boolean;
       try {
-        await scheduler.unschedule(scheduleId(record.scheduleId));
+        removed = await scheduler.unschedule(scheduleId(record.scheduleId));
       } catch (e: unknown) {
         return {
           ok: false,
           error: e instanceof Error ? e.message : "Failed to cancel brief",
         };
+      }
+
+      // If the scheduler reports the schedule was not removed (e.g., the
+      // backing entry was already gone, or a durable backend rejected the
+      // unschedule), preserve local state so the caller can retry or
+      // inspect the orphan. Dropping the record here would leave a brief
+      // potentially still firing on the scheduler with no brief_id left
+      // to cancel — a silent delivery/cost leak.
+      if (!removed) {
+        return { ok: true, removed: false };
       }
 
       state.briefsById.delete(record.briefId);
