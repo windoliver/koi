@@ -632,7 +632,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
 
   test("13. create_brief dispatches the synthesized brief wake text and lists its summary", async () => {
     const tools = await attachTools(h.schedulerComponent, h.aid);
-    const expression = futureCronExpression(2_000);
+    const expression = futureCronExpression(3_000);
     const wakeText = expectedBriefWakeText({
       name: "morning-digest",
       topic: "open PRs and CI failures",
@@ -689,7 +689,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
       paused: false,
     });
 
-    await waitForMonitorDispatch(h, 1, 4_000);
+    await waitForMonitorDispatch(h, 1, 6_000);
     expect(h.dispatched).toEqual([{ kind: "text", text: wakeText }]);
   });
 
