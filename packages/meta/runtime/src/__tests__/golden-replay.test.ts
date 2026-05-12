@@ -12581,6 +12581,128 @@ describe("Golden: @koi/daemon", () => {
 
     await supervisorResult.value.shutdown("test");
   });
+
+  test("remote backend — spawn issues workers.spawn over the transport", async () => {
+    const { createRemoteBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const backend = createRemoteBackend({
+      transport: {
+        kind: "http",
+        call: async <T>(
+          method: string,
+          params: Record<string, unknown>,
+        ): Promise<{ ok: true; value: T } | { ok: false; error: never }> => {
+          calls.push({ method, params });
+          if (method === "workers.spawn") {
+            return {
+              ok: true,
+              value: {
+                startedAt: 100,
+                pid: 4242,
+                cursor: 0,
+                events: [],
+              } as unknown as T,
+            };
+          }
+          if (method === "workers.events") {
+            return {
+              ok: true,
+              value: { events: [], nextCursor: 0, alive: true } as unknown as T,
+            };
+          }
+          return { ok: true, value: undefined as unknown as T };
+        },
+        close: () => {},
+      },
+    });
+
+    const spawned = await backend.spawn({
+      workerId: workerId("remote-golden-1"),
+      agentId: agentId("agent-remote-golden-1"),
+      command: ["bun", "--version"],
+    });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) return;
+    expect(spawned.value.backendKind).toBe("remote");
+    expect(spawned.value.startedAt).toBe(100);
+    expect(calls.map((c) => c.method)).toEqual(["workers.spawn"]);
+  });
+
+  test("remote backend — drops cross-worker events from polled batches", async () => {
+    const { createRemoteBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    let pollCount = 0;
+    const backend = createRemoteBackend({
+      transport: {
+        kind: "http",
+        call: async <T>(
+          method: string,
+        ): Promise<{ ok: true; value: T } | { ok: false; error: never }> => {
+          if (method === "workers.spawn") {
+            return {
+              ok: true,
+              value: { startedAt: 1, cursor: 0, events: [] } as unknown as T,
+            };
+          }
+          if (method === "workers.events") {
+            pollCount += 1;
+            if (pollCount === 1) {
+              return {
+                ok: true,
+                value: {
+                  events: [
+                    {
+                      kind: "exited",
+                      workerId: "OTHER-WORKER",
+                      at: 50,
+                      code: 0,
+                      state: "terminated",
+                    },
+                    {
+                      kind: "exited",
+                      workerId: "remote-golden-2",
+                      at: 60,
+                      code: 0,
+                      state: "terminated",
+                    },
+                  ],
+                  nextCursor: 1,
+                  alive: false,
+                } as unknown as T,
+              };
+            }
+            return {
+              ok: true,
+              value: { events: [], nextCursor: 1, alive: true } as unknown as T,
+            };
+          }
+          return { ok: true, value: undefined as unknown as T };
+        },
+        close: () => {},
+      },
+      pollIntervalMs: 1,
+    });
+
+    const id = workerId("remote-golden-2");
+    const spawned = await backend.spawn({
+      workerId: id,
+      agentId: agentId("agent-remote-golden-2"),
+      command: ["bun", "--version"],
+    });
+    expect(spawned.ok).toBe(true);
+
+    const kinds: string[] = [];
+    const ids: string[] = [];
+    for await (const ev of backend.watch(id)) {
+      kinds.push(ev.kind);
+      ids.push(ev.workerId);
+    }
+    expect(ids.every((wid) => wid === "remote-golden-2")).toBe(true);
+    expect(kinds).toContain("exited");
+  });
 });
 
 describe("Golden: @koi/middleware-strict-agentic", () => {
@@ -14207,6 +14329,7 @@ describe("Golden: @koi/temporal", () => {
       workflow: {
         start: mock(async () => ({ workflowId })),
         signal: mock(async () => {}),
+        signalWithStart: mock(async () => ({ workflowId })),
         cancel: cancelMock,
         getResult: mock(async () => undefined),
       },
@@ -14447,7 +14570,7 @@ describe("Golden: @koi/scheduler-nexus", () => {
   test("creates Nexus scheduler backends with distributed queue methods", async () => {
     const { createNexusSchedulerBackends } = await import("@koi/scheduler-nexus");
 
-    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const fetch = (async (input: string | URL | Request, _init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("/api/nfs/")) {
         const method = decodeURIComponent(url.split("/api/nfs/")[1] ?? "");
@@ -15960,6 +16083,124 @@ describe("Golden: @koi/audit-sink-nexus", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/registry-nexus (standalone — no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/registry-nexus", () => {
+  test("createNexusRegistry warms projection from list_agents", async () => {
+    const { createNexusRegistry } = await import("@koi/registry-nexus");
+
+    const calls: string[] = [];
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string) => {
+        calls.push(method);
+        if (method === "list_agents") {
+          return {
+            ok: true,
+            value: [{ agent_id: "a-golden", state: "CONNECTED", generation: 0 }],
+          };
+        }
+        if (method === "get_agent") {
+          return {
+            ok: true,
+            value: {
+              agent_id: "a-golden",
+              state: "CONNECTED",
+              generation: 0,
+              metadata: { agentType: "worker", priority: 10, registeredAt: 1 },
+            },
+          };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    expect(calls).toContain("list_agents");
+    expect(calls).toContain("get_agent");
+    const all = await registry.list();
+    expect(all.length).toBe(1);
+    expect(String(all[0]?.agentId)).toBe("a-golden");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("validateNexusRegistryConfig rejects negative pollIntervalMs", async () => {
+    const { validateNexusRegistryConfig } = await import("@koi/registry-nexus");
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async () => ({
+        ok: true,
+        value: undefined,
+      })) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+    const result = validateNexusRegistryConfig({ transport, pollIntervalMs: -1 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/search-nexus (standalone — no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/search-nexus", () => {
+  test("retrieve maps Nexus hits into SearchPage", async () => {
+    const { createNexusSearch } = await import("@koi/search-nexus");
+
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string) => {
+        if (method === "search_retrieve") {
+          return {
+            ok: true,
+            value: {
+              hits: [{ id: "doc-golden", score: 0.95, content: "hello", metadata: { tag: "g" } }],
+              total: 1,
+            },
+          };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const search = createNexusSearch({ transport, indexName: "g-idx" });
+    const result = await search.retrieve({ text: "hello", limit: 5 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.results.length).toBe(1);
+      expect(result.value.results[0]?.id).toBe("doc-golden");
+      expect(result.value.results[0]?.source).toBe("g-idx");
+      expect(result.value.hasMore).toBe(false);
+    }
+  });
+
+  test("index batches and propagates first failure", async () => {
+    const { createNexusSearch } = await import("@koi/search-nexus");
+
+    let calls = 0;
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async () => {
+        calls++;
+        return {
+          ok: false,
+          error: { code: "EXTERNAL" as const, message: "fail", retryable: true },
+        };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const search = createNexusSearch({ transport, maxBatchSize: 1 });
+    const result = await search.index([
+      { id: "1", content: "a" },
+      { id: "2", content: "b" },
+    ]);
+    expect(result.ok).toBe(false);
+    expect(calls).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/nexus-delegation (standalone — no LLM required)
 // ---------------------------------------------------------------------------
 
@@ -16629,6 +16870,54 @@ describe("Golden: @koi/sandbox-executor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/code-executor (2 queries)
+//
+// Standalone — no cassette replay. Validates that the execute_script tool
+// builds correctly, transpiles TypeScript before forwarding to the injected
+// SandboxExecutor, and surfaces sandbox failures as typed ScriptError values.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/code-executor", () => {
+  test("createCodeExecutorProvider attaches execute_script under toolToken", async () => {
+    const { createCodeExecutorProvider } = await import("@koi/code-executor");
+    const { toolToken } = await import("@koi/core");
+
+    const noopExecutor = {
+      execute: async () => ({ ok: true as const, value: { output: 42, durationMs: 1 } }),
+    };
+    const provider = createCodeExecutorProvider({ executor: noopExecutor });
+    const result = await provider.attach({} as never);
+    const components =
+      result instanceof Map
+        ? result
+        : (result as { readonly components: ReadonlyMap<string, unknown> }).components;
+    const tool = components.get(toolToken("execute_script") as string);
+    expect(tool).toBeDefined();
+  });
+
+  test("executeScript transpiles TypeScript and forwards through the injected executor", async () => {
+    const { executeScript } = await import("@koi/code-executor");
+
+    const captured: { code?: string } = {};
+    const result = await executeScript({
+      code: "const x: number = 1; return x;",
+      language: "typescript",
+      executor: {
+        execute: async (code, _input, _timeoutMs) => {
+          captured.code = code;
+          return { ok: true as const, value: { output: 1, durationMs: 1 } };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.result).toBe(1);
+    expect(captured.code).toContain("const x = 1");
+    expect(captured.code).not.toContain(": number");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/agent-procfs (2 queries)
 //
 // Standalone — no cassette replay. Validates createProcFs TTL caching and
@@ -17142,6 +17431,191 @@ describe("Golden: @koi/middleware-ace", () => {
     expect(addCall?.function_name).toBe("add_numbers");
     expect(toolSteps[0]?.outcome).toBe("success");
   });
+
+  // -------------------------------------------------------------------------
+  // AGP promotion-gate wiring (#1715): propose -> evaluate -> commit/reject.
+  // No LLM — stub reflector/curator/evaluator. Drives onSessionEnd through
+  // the real sqlite stores so head version, lineage, and audit are all
+  // observable end-to-end.
+  // -------------------------------------------------------------------------
+
+  test("AGP pipeline: successful promotion advances structured-playbook head + records lineage", async () => {
+    const { createAceMiddleware } = await import("@koi/middleware-ace");
+    const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      const PB_ID = "spb-golden-agp-ok";
+      await store.structuredPlaybooks.save({
+        id: PB_ID,
+        title: "v1",
+        sections: [
+          {
+            name: "Existing",
+            slug: "existing",
+            bullets: [
+              {
+                id: "b1",
+                content: "first",
+                helpful: 1,
+                harmful: 0,
+                createdAt: 0,
+                updatedAt: 0,
+              },
+            ],
+          },
+        ],
+        tags: [],
+        source: "curated",
+        createdAt: 0,
+        updatedAt: 0,
+        sessionCount: 0,
+        version: 1,
+      });
+
+      let nextId = 0;
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PB_ID,
+          reflector: async () => ({
+            rootCause: "rc",
+            keyInsight: "ki",
+            bulletTags: [{ id: "b1", tag: "helpful" }],
+          }),
+          curator: async () => [
+            { kind: "add", section: "Existing", content: "shorten retry backoff" },
+          ],
+          evaluator: async ({ proposal }) => ({
+            id: `eval-${proposal.id}`,
+            proposalId: proposal.id,
+            verdict: "promote",
+            metrics: { helpfulRate: 0.9, harmfulRate: 0.0, trials: 5 },
+            evaluatedAt: 1,
+          }),
+          thresholds: {
+            minHelpfulRate: 0.5,
+            maxHarmfulRate: 0.5,
+            minTrials: 1,
+          },
+          idGenerator: () => `agp-id-${++nextId}`,
+        },
+      });
+
+      const ctx = {
+        agentId: "ace-agp",
+        sessionId: sessionId("ace-agp-promote"),
+        runId: runId("r-agp"),
+        metadata: {} as JsonObject,
+      };
+      await mw.onSessionStart?.(ctx);
+      await mw.wrapToolCall?.(
+        {
+          session: ctx,
+          turnIndex: 0,
+          turnId: `${runId("r-agp")}-0` as TurnContext["turnId"],
+          messages: [],
+          metadata: {},
+        },
+        { toolId: "fs.read", input: {} },
+        async () => ({ output: "ok" }),
+      );
+      await mw.onSessionEnd?.(ctx);
+
+      const head = await store.structuredPlaybooks.get(PB_ID);
+      expect(head?.version).toBe(2);
+      expect(head?.provenance?.proposalId).toBe("agp-id-1");
+      const persistedProposal = await store.proposals.getProposal("agp-id-1");
+      expect(persistedProposal?.id).toBe("agp-id-1");
+      expect(persistedProposal?.baseVersion).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("AGP pipeline: rejected proposal does NOT advance head, audit lineage still recorded", async () => {
+    const { createAceMiddleware } = await import("@koi/middleware-ace");
+    const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      const PB_ID = "spb-golden-agp-reject";
+      await store.structuredPlaybooks.save({
+        id: PB_ID,
+        title: "v1",
+        sections: [],
+        tags: [],
+        source: "curated",
+        createdAt: 0,
+        updatedAt: 0,
+        sessionCount: 0,
+        version: 1,
+      });
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 2000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PB_ID,
+          reflector: async () => ({
+            rootCause: "rc",
+            keyInsight: "ki",
+            bulletTags: [],
+          }),
+          curator: async () => [
+            { kind: "add", section: "Existing", content: "low-evidence delta" },
+          ],
+          // verdict=reject — gate must persist evaluation but skip head save.
+          evaluator: async ({ proposal }) => ({
+            id: `eval-${proposal.id}`,
+            proposalId: proposal.id,
+            verdict: "reject",
+            metrics: { helpfulRate: 0.0, harmfulRate: 0.9, trials: 5 },
+            evaluatedAt: 1,
+          }),
+          thresholds: {
+            minHelpfulRate: 0.5,
+            maxHarmfulRate: 0.5,
+            minTrials: 1,
+          },
+          idGenerator: () => "agp-rej-1",
+        },
+      });
+
+      const ctx = {
+        agentId: "ace-agp",
+        sessionId: sessionId("ace-agp-reject"),
+        runId: runId("r-agp-rej"),
+        metadata: {} as JsonObject,
+      };
+      await mw.onSessionStart?.(ctx);
+      await mw.wrapToolCall?.(
+        {
+          session: ctx,
+          turnIndex: 0,
+          turnId: `${runId("r-agp-rej")}-0` as TurnContext["turnId"],
+          messages: [],
+          metadata: {},
+        },
+        { toolId: "fs.read", input: {} },
+        async () => ({ output: "ok" }),
+      );
+      await mw.onSessionEnd?.(ctx);
+
+      const head = await store.structuredPlaybooks.get(PB_ID);
+      expect(head?.version).toBe(1); // unchanged
+      // Proposal still recorded — explains why the evaluation ran.
+      const persistedProposal = await store.proposals.getProposal("agp-rej-1");
+      expect(persistedProposal?.id).toBe("agp-rej-1");
+    } finally {
+      store.close();
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -17253,6 +17727,102 @@ describe("Golden: @koi/playbook-store-sqlite", () => {
     await store.structuredPlaybooks.save(base);
     await expect(store.structuredPlaybooks.save({ ...base, title: "tampered" })).rejects.toThrow();
     store.close();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Golden: @koi/playbook-store-nexus (no LLM, no cassette — pure store over fake transport)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Nexus-backed ACE store has no model dependency. Exercise the contract
+// directly against an in-memory fake transport: structured save → get →
+// monotonic version enforcement → lineage capability flag.
+
+describe("Golden: @koi/playbook-store-nexus", () => {
+  test("structured save → get round-trip through fake transport", async () => {
+    const { createNexusStructuredPlaybookStore } = await import("@koi/playbook-store-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const store = createNexusStructuredPlaybookStore({
+      transport: createFakeNexusTransport(),
+      basePath: "ace-golden",
+      requirePreProvisioned: false,
+    });
+
+    const playbook = {
+      id: "spb-golden-nexus",
+      title: "v1",
+      sections: [
+        {
+          name: "Errors",
+          slug: "errors",
+          bullets: [
+            {
+              id: "b1",
+              content: "check exists",
+              helpful: 0,
+              harmful: 0,
+              createdAt: 0,
+              updatedAt: 0,
+            },
+          ],
+        },
+      ],
+      tags: ["fs"],
+      source: "curated" as const,
+      createdAt: 1,
+      updatedAt: 2,
+      sessionCount: 0,
+      version: 1,
+    };
+
+    await store.save(playbook);
+    const got = await store.get("spb-golden-nexus");
+    expect(got?.title).toBe("v1");
+    expect(got?.version).toBe(1);
+    expect(got?.sections[0]?.bullets[0]?.content).toBe("check exists");
+  });
+
+  test("rejects below-head save (monotonic version enforcement)", async () => {
+    const { createNexusStructuredPlaybookStore } = await import("@koi/playbook-store-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const store = createNexusStructuredPlaybookStore({
+      transport: createFakeNexusTransport(),
+      basePath: "ace-golden",
+      requirePreProvisioned: false,
+    });
+
+    const base = {
+      id: "spb-monotonic",
+      title: "v2",
+      sections: [],
+      tags: [],
+      source: "curated" as const,
+      createdAt: 0,
+      updatedAt: 0,
+      sessionCount: 0,
+      version: 2,
+    };
+
+    await store.save(base);
+    // Below-head replay must be rejected — matches sqlite contract.
+    await expect(store.save({ ...base, version: 1 })).rejects.toThrow(/below current version/i);
+  });
+
+  test("getVersion returns undefined and lineageSupported is false (no lineage)", async () => {
+    const { createNexusStructuredPlaybookStore } = await import("@koi/playbook-store-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const store = createNexusStructuredPlaybookStore({
+      transport: createFakeNexusTransport(),
+      basePath: "ace-golden",
+      requirePreProvisioned: false,
+    });
+
+    expect(store.lineageSupported).toBe(false);
+    const v = await store.getVersion?.("any-id", 1);
+    expect(v).toBeUndefined();
   });
 });
 
@@ -17975,5 +18545,723 @@ describe("Golden: @koi/channel-fallback", () => {
     if (block?.kind === "text") {
       expect(block.text).toBe("[image: diagram](https://cdn/x.png)");
     }
+  });
+});
+
+describe("Golden: @koi/scratchpad-nexus", () => {
+  test("createNexusScratchpad write/read round-trip through a mock Nexus transport", async () => {
+    const { createNexusScratchpad } = await import("@koi/scratchpad-nexus");
+    const { agentGroupId, agentId, scratchpadPath } = await import("@koi/core");
+    type KoiResult<T> = import("@koi/core").Result<T, import("@koi/core").KoiError>;
+    type Transport = import("@koi/nexus-client").NexusTransport;
+
+    const path = scratchpadPath("notes/golden");
+    let stored: { content: string; generation: number } | null = null;
+
+    const transport: Transport = {
+      kind: "http",
+      health: async () => ({
+        ok: true,
+        value: { status: "ok", version: "1", latencyMs: 1, probed: ["version"] },
+      }),
+      close: () => {},
+      call: async <T>(method: string): Promise<KoiResult<T>> => {
+        if (method === "scratchpad.write") {
+          stored = { content: "hello golden", generation: 1 };
+          return { ok: true, value: { path, generation: 1, sizeBytes: 12 } as T };
+        }
+        if (method === "scratchpad.read") {
+          if (stored === null) {
+            return {
+              ok: false,
+              error: { code: "NOT_FOUND", message: "missing", retryable: false },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              entry: {
+                path,
+                content: stored.content,
+                generation: stored.generation,
+                groupId: "group-golden",
+                authorId: "agent-golden",
+                createdAt: "2026-05-07T00:00:00.000Z",
+                updatedAt: "2026-05-07T00:00:00.000Z",
+                sizeBytes: stored.content.length,
+              },
+            } as T,
+          };
+        }
+        if (method === "scratchpad.list") {
+          return { ok: true, value: { entries: [] } as T };
+        }
+        return { ok: false, error: { code: "EXTERNAL", message: method, retryable: false } };
+      },
+    };
+
+    const pad = await createNexusScratchpad({
+      groupId: agentGroupId("group-golden"),
+      authorId: agentId("agent-golden"),
+      transport,
+    });
+
+    const writeResult = await pad.write({ path, content: "hello golden" });
+    expect(writeResult.ok).toBe(true);
+
+    const readResult = await pad.read(path);
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok) {
+      expect(readResult.value.content).toBe("hello golden");
+      expect(readResult.value.generation).toBe(1);
+    }
+  });
+
+  test("createNexusScratchpad surfaces CONFLICT when server rejects stale CAS write", async () => {
+    const { createNexusScratchpad } = await import("@koi/scratchpad-nexus");
+    const { agentGroupId, agentId, scratchpadPath } = await import("@koi/core");
+    type KoiResult<T> = import("@koi/core").Result<T, import("@koi/core").KoiError>;
+    type Transport = import("@koi/nexus-client").NexusTransport;
+
+    const transport: Transport = {
+      kind: "http",
+      health: async () => ({
+        ok: true,
+        value: { status: "ok", version: "1", latencyMs: 1, probed: ["version"] },
+      }),
+      close: () => {},
+      call: async <T>(method: string, params: Record<string, unknown>): Promise<KoiResult<T>> => {
+        if (method === "scratchpad.write") {
+          if (params.expectedGeneration === 0) {
+            return {
+              ok: false,
+              error: { code: "CONFLICT", message: "stale generation", retryable: false },
+            };
+          }
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "unexpected", retryable: false },
+          };
+        }
+        return { ok: false, error: { code: "EXTERNAL", message: method, retryable: false } };
+      },
+    };
+
+    const pad = await createNexusScratchpad({
+      groupId: agentGroupId("group-cas"),
+      authorId: agentId("agent-cas"),
+      transport,
+    });
+
+    const result = await pad.write({
+      path: scratchpadPath("cas/test"),
+      content: "stale",
+      expectedGeneration: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("CONFLICT");
+  });
+});
+
+describe("Golden: @koi/workspace-nexus", () => {
+  test("createNexusWorkspaceBackend create/dispose round-trip via mock transport", async () => {
+    const { createNexusWorkspaceBackend } = await import("@koi/workspace-nexus");
+    const { agentId } = await import("@koi/core");
+    type KoiResult<T> = import("@koi/core").Result<T, import("@koi/core").KoiError>;
+    type Transport = import("@koi/nexus-client").NexusTransport;
+
+    const transport: Transport = {
+      kind: "http",
+      health: async () => ({
+        ok: true,
+        value: { status: "ok", version: "1", latencyMs: 1, probed: ["version"] },
+      }),
+      close: () => {},
+      call: async <T>(method: string): Promise<KoiResult<T>> => {
+        if (method === "workspace.create") {
+          return {
+            ok: true,
+            value: {
+              workspace: {
+                id: "ws-golden",
+                path: "/tmp/ws-golden",
+                createdAt: 1,
+                metadata: {},
+              },
+            } as T,
+          };
+        }
+        if (method === "workspace.dispose") return { ok: true, value: { ok: true } as T };
+        if (method === "workspace.health") return { ok: true, value: { healthy: true } as T };
+        return { ok: false, error: { code: "EXTERNAL", message: method, retryable: false } };
+      },
+    };
+
+    const backend = await createNexusWorkspaceBackend({ transport });
+
+    expect(backend.name).toBe("workspace-nexus");
+    expect(typeof backend.create).toBe("function");
+    expect(typeof backend.dispose).toBe("function");
+    expect(typeof backend.isHealthy).toBe("function");
+
+    const aid = agentId("golden-agent");
+    const created = await backend.create(aid, { cleanupPolicy: "always", cleanupTimeoutMs: 5_000 });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await backend.isHealthy(created.value.id)).toBe(true);
+    const disposed = await backend.dispose(created.value.id);
+    expect(disposed.ok).toBe(true);
+  });
+
+  test("createNexusWorkspaceBackend gates isSandboxed on full attestation hook capability", async () => {
+    const { createNexusWorkspaceBackend } = await import("@koi/workspace-nexus");
+    type KoiResult<T> = import("@koi/core").Result<T, import("@koi/core").KoiError>;
+    type Transport = import("@koi/nexus-client").NexusTransport;
+
+    const transport: Transport = {
+      kind: "http",
+      health: async () => ({
+        ok: true,
+        value: { status: "ok", version: "1", latencyMs: 1, probed: ["version"] },
+      }),
+      close: () => {},
+      call: async <T>(): Promise<KoiResult<T>> => ({
+        ok: false,
+        error: { code: "EXTERNAL", message: "unused", retryable: false },
+      }),
+    };
+
+    const sandboxed = await createNexusWorkspaceBackend({
+      transport,
+      serverCapabilities: {
+        findByAgentId: true,
+        attestSetupComplete: true,
+        verifySetupComplete: true,
+        invalidateSetupComplete: true,
+        exists: true,
+      },
+    });
+    expect(sandboxed.isSandboxed).toBe(true);
+
+    const partial = await createNexusWorkspaceBackend({
+      transport,
+      serverCapabilities: { findByAgentId: false },
+    });
+    expect(partial.isSandboxed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/proactive
+// L2 — composition executor + planners + durable execution log + sleep/cron
+// tools. No LLM required: tests exercise the executor/log/planner contracts
+// directly and the sleep/cron tools against an in-memory SchedulerComponent.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/proactive", () => {
+  test("sqliteCompositionExecutionLog: claim → record → replay short-circuits with stored output", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { sqliteCompositionExecutionLog } = await import("@koi/proactive");
+
+    const db = new Database(":memory:");
+    const log = sqliteCompositionExecutionLog(db);
+
+    expect(log.claim("k1")).toEqual({ kind: "claimed" });
+    await log.record("k1", { taskId: "t-1" });
+    expect(log.claim("k1")).toEqual({ kind: "complete", output: { taskId: "t-1" } });
+
+    // Survives across log instances on the same db (restart simulation).
+    const log2 = sqliteCompositionExecutionLog(db);
+    expect(log2.claim("k1")).toEqual({ kind: "complete", output: { taskId: "t-1" } });
+
+    db.close();
+  });
+
+  test("createCompositionExecutor: notify_user via injected handler dedupes on replay", async () => {
+    const { createCompositionExecutor, inMemoryCompositionExecutionLog } = await import(
+      "@koi/proactive"
+    );
+    const { agentId, scheduleId, taskId } = await import("@koi/core");
+
+    const notifications: unknown[] = [];
+    const scheduler: import("@koi/core").SchedulerComponent = {
+      submit: async () => taskId("noop"),
+      cancel: async () => true,
+      schedule: async () => scheduleId("noop"),
+      unschedule: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      query: async () => [],
+      stats: async () => ({
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        deadLettered: 0,
+        activeSchedules: 0,
+        pausedSchedules: 0,
+      }),
+      history: async () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("golden-agent" as import("@koi/core").AgentId),
+      scheduler,
+      notify: async (n) => {
+        notifications.push(n);
+        return { delivered: true };
+      },
+      executionLog: inMemoryCompositionExecutionLog(),
+    });
+    const trigger: import("@koi/core").CompositionTrigger = {
+      id: "trig-1",
+      source: "golden",
+      confidence: 1,
+      moment: { kind: "external_event", source: "x", eventType: "y" },
+      suggestedCapabilities: [],
+      context: {},
+      emittedAt: 1,
+    };
+    const plan: import("@koi/core").CompositionPlan = {
+      triggerId: "trig-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const r1 = await executor.execute(trigger, plan);
+    expect(r1.status).toBe("executed");
+    expect(notifications).toHaveLength(1);
+
+    // Replay → executionLog short-circuits, no second notification.
+    const r2 = await executor.execute(trigger, plan);
+    expect(r2.status).toBe("executed");
+    expect(notifications).toHaveLength(1);
+  });
+
+  test("createLlmCompositionPlanner: back-compat for adapter responses missing triggerEmittedAt", async () => {
+    const { createLlmCompositionPlanner } = await import("@koi/proactive");
+
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trig-legacy",
+            steps: [
+              { kind: "notify_user", channel: "inbox", message: "hello", priority: "normal" },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trig-legacy",
+        source: "golden",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 99,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    // Missing triggerEmittedAt is back-filled from current trigger.emittedAt.
+    expect(plan.triggerEmittedAt).toBe(99);
+    expect(plan.steps).toHaveLength(1);
+  });
+
+  test("createRuleBasedCompositionPlanner: emits notify_user for threshold_crossed", async () => {
+    const { createRuleBasedCompositionPlanner } = await import("@koi/proactive");
+
+    const planner = createRuleBasedCompositionPlanner();
+    const plan = await planner.plan(
+      {
+        id: "trig-rule",
+        source: "governance",
+        confidence: 1,
+        moment: {
+          kind: "threshold_crossed",
+          sensor: "error_rate",
+          value: 0.9,
+          limit: 0.2,
+          direction: "above",
+        },
+        suggestedCapabilities: ["notify_user"],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.steps.length).toBeGreaterThanOrEqual(1);
+    expect(plan.steps.some((s) => s.kind === "notify_user")).toBe(true);
+  });
+
+  test("preCommitRejection brand: round-trips via isPreCommitRejection across throw boundary", async () => {
+    const { isPreCommitRejection, preCommitRejection } = await import("@koi/proactive");
+
+    const e = preCommitRejection("invalid cron", new Error("boom"));
+    expect(isPreCommitRejection(e)).toBe(true);
+    expect(e.message).toContain("invalid cron");
+    expect(isPreCommitRejection(new Error("plain"))).toBe(false);
+    expect(isPreCommitRejection(undefined)).toBe(false);
+  });
+
+  test("governance gate: low-confidence plan returns requires_approval with reason", async () => {
+    const { createCompositionExecutor, inMemoryCompositionExecutionLog } = await import(
+      "@koi/proactive"
+    );
+    const { agentId, scheduleId, taskId } = await import("@koi/core");
+
+    const scheduler: import("@koi/core").SchedulerComponent = {
+      submit: async () => taskId("noop"),
+      cancel: async () => true,
+      schedule: async () => scheduleId("noop"),
+      unschedule: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      query: async () => [],
+      stats: async () => ({
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        deadLettered: 0,
+        activeSchedules: 0,
+        pausedSchedules: 0,
+      }),
+      history: async () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("gov-agent" as import("@koi/core").AgentId),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryCompositionExecutionLog(),
+      governance: {
+        autoApproveConfidenceThreshold: 0.9,
+        novelPatternRequiresApproval: false,
+      },
+    });
+    const result = await executor.execute(
+      {
+        id: "trig-gov",
+        source: "golden",
+        confidence: 0.1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      {
+        triggerId: "trig-gov",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+        estimatedCost: 0,
+        requiresApproval: false,
+      },
+    );
+    expect(result.status).toBe("requires_approval");
+    if (result.status === "requires_approval") {
+      expect(result.error.message).toMatch(/confidence/);
+    }
+  });
+
+  test("outcomeRecorder.recordGap fires CompositionGap when handler missing for tool_call", async () => {
+    const { createCompositionExecutor, inMemoryCompositionExecutionLog } = await import(
+      "@koi/proactive"
+    );
+    const { agentId, scheduleId, taskId } = await import("@koi/core");
+
+    const gaps: import("@koi/core").CompositionGap[] = [];
+    const scheduler: import("@koi/core").SchedulerComponent = {
+      submit: async () => taskId("noop"),
+      cancel: async () => true,
+      schedule: async () => scheduleId("noop"),
+      unschedule: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      query: async () => [],
+      stats: async () => ({
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        deadLettered: 0,
+        activeSchedules: 0,
+        pausedSchedules: 0,
+      }),
+      history: async () => [],
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("gap-agent" as import("@koi/core").AgentId),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryCompositionExecutionLog(),
+      outcomeRecorder: { recordGap: (g) => void gaps.push(g) },
+    });
+    const result = await executor.execute(
+      {
+        id: "trig-gap",
+        source: "golden",
+        confidence: 1,
+        moment: { kind: "capability_gap", missing: "summarize" },
+        suggestedCapabilities: ["summarize"],
+        context: {},
+        emittedAt: 1,
+      },
+      {
+        triggerId: "trig-gap",
+        triggerEmittedAt: 1,
+        steps: [{ kind: "tool_call", toolName: "summarize", input: {} }],
+        estimatedCost: 0,
+        requiresApproval: false,
+      },
+    );
+    expect(result.status).toBe("unsupported");
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]?.missingCapabilities).toEqual(["tool:summarize"]);
+    expect(gaps[0]?.triggerId).toBe("trig-gap");
+  });
+
+  test("session rate limit: 3rd execute past max=2 short-circuits with requires_approval", async () => {
+    const {
+      createCompositionExecutor,
+      inMemoryCompositionExecutionLog,
+      inMemorySessionRateTracker,
+    } = await import("@koi/proactive");
+    const { agentId, scheduleId, taskId } = await import("@koi/core");
+
+    const scheduler: import("@koi/core").SchedulerComponent = {
+      submit: async () => taskId("noop"),
+      cancel: async () => true,
+      schedule: async () => scheduleId("noop"),
+      unschedule: async () => true,
+      pause: async () => true,
+      resume: async () => true,
+      query: async () => [],
+      stats: async () => ({
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        deadLettered: 0,
+        activeSchedules: 0,
+        pausedSchedules: 0,
+      }),
+      history: async () => [],
+    };
+    const sessionRate = inMemorySessionRateTracker();
+    const executor = createCompositionExecutor({
+      agentId: agentId("rate-agent" as import("@koi/core").AgentId),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryCompositionExecutionLog(),
+      sessionId: "sess-1",
+      sessionRate,
+      governance: {
+        maxCompositionsPerSession: 2,
+        autoApproveConfidenceThreshold: 0,
+        novelPatternRequiresApproval: false,
+      },
+    });
+    for (let i = 0; i < 2; i += 1) {
+      const r = await executor.execute(
+        {
+          id: `t-${i}`,
+          source: "golden",
+          confidence: 1,
+          moment: { kind: "external_event", source: "x", eventType: "y" },
+          suggestedCapabilities: [],
+          context: {},
+          emittedAt: i + 1,
+        },
+        {
+          triggerId: `t-${i}`,
+          triggerEmittedAt: i + 1,
+          steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+          estimatedCost: 0,
+          requiresApproval: false,
+        },
+      );
+      expect(r.status).toBe("executed");
+    }
+    const blocked = await executor.execute(
+      {
+        id: "t-3",
+        source: "golden",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 3,
+      },
+      {
+        triggerId: "t-3",
+        triggerEmittedAt: 3,
+        steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+        estimatedCost: 0,
+        requiresApproval: false,
+      },
+    );
+    expect(blocked.status).toBe("requires_approval");
+    if (blocked.status === "requires_approval") {
+      expect(blocked.error.message).toMatch(/maxCompositionsPerSession/);
+    }
+  });
+
+  test("createProactiveTools returns the 4 expected agent-callable tools", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createProactiveTools } = await import("@koi/proactive");
+    const { DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      "golden-proactive" as import("@koi/core").AgentId,
+    );
+
+    const tools = createProactiveTools({
+      scheduler: component,
+      agentId: "golden-proactive" as import("@koi/core").AgentId,
+    });
+
+    expect(tools.length).toBe(4);
+    const names = tools.map((t) => t.descriptor.name);
+    expect(names).toEqual(["sleep", "cancel_sleep", "schedule_cron", "cancel_schedule"]);
+    for (const tool of tools) expect(tool.origin).toBe("primordial");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("sleep tool submits a delayed task that scheduler.query returns as pending", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createProactiveTools } = await import("@koi/proactive");
+    const { DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const agentId = "golden-proactive" as import("@koi/core").AgentId;
+    const component = createSchedulerComponent(scheduler, agentId);
+    const [sleepTool] = createProactiveTools({ scheduler: component, agentId }) as readonly [
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+    ];
+
+    const sleepResult = (await sleepTool.execute({
+      duration_ms: 3_600_000,
+      wake_message: "wake from golden test",
+    } as JsonObject)) as { ok: boolean; task_id?: string; wake_at_ms?: number };
+
+    expect(sleepResult.ok).toBe(true);
+    expect(typeof sleepResult.task_id).toBe("string");
+    expect(typeof sleepResult.wake_at_ms).toBe("number");
+
+    const queryRecord = await scheduler.query({ agentId });
+    expect(queryRecord.length).toBe(1);
+    expect(queryRecord[0]?.status).toBe("pending");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("schedule_cron + cancel_schedule round-trip through SchedulerComponent", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createProactiveTools } = await import("@koi/proactive");
+    const { DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const agentId = "golden-proactive" as import("@koi/core").AgentId;
+    const component = createSchedulerComponent(scheduler, agentId);
+    const [, , scheduleCronTool, cancelScheduleTool] = createProactiveTools({
+      scheduler: component,
+      agentId,
+    }) as readonly [
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+      import("@koi/core").Tool,
+    ];
+
+    const scheduleResult = (await scheduleCronTool.execute({
+      expression: "0 9 * * 1-5",
+      idempotency_key: "weekday-standup",
+    } as JsonObject)) as { ok: boolean; schedule_id?: string };
+    expect(scheduleResult.ok).toBe(true);
+    expect(typeof scheduleResult.schedule_id).toBe("string");
+
+    const cancelResult = (await cancelScheduleTool.execute({
+      schedule_id: scheduleResult.schedule_id ?? "",
+    } as JsonObject)) as { ok: boolean };
+    expect(cancelResult.ok).toBe(true);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("trajectory fixture records expected proactive tool calls", async () => {
+    const trajectoryPath = `${FIXTURES}/proactive-tools.trajectory.json`;
+    const file = Bun.file(trajectoryPath);
+    if (!(await file.exists())) {
+      console.warn("proactive-tools.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const trajectory = (await file.json()) as {
+      schema_version: string;
+      steps: readonly {
+        readonly source?: string;
+        readonly outcome?: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    const toolSteps = trajectory.steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThan(0);
+
+    const invokedToolNames = new Set(
+      toolSteps.flatMap((s) => (s.tool_calls ?? []).map((c) => c.function_name)),
+    );
+    expect(invokedToolNames.has("sleep")).toBe(true);
+    expect(invokedToolNames.has("schedule_cron")).toBe(true);
+
+    const successfulProactiveCalls = toolSteps.filter(
+      (s) =>
+        (s.tool_calls ?? []).some(
+          (c) => c.function_name === "sleep" || c.function_name === "schedule_cron",
+        ) && s.outcome === "success",
+    );
+    expect(successfulProactiveCalls.length).toBeGreaterThan(0);
   });
 });

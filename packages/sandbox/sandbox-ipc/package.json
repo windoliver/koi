@@ -1,0 +1,26 @@
+{
+  "name": "@koi/sandbox-ipc",
+  "description": "Structured host-worker IPC bridge for sandboxed code execution",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/sandbox-cloud-base": "workspace:*"
+  },
+  "koi": {
+    "optional": true
+  }
+}

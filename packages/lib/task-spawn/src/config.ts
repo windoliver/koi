@@ -65,7 +65,7 @@ export function validateTaskSpawnConfig(config: unknown): Result<TaskSpawnConfig
 
   if (typeof config.spawn !== "function") {
     return validationError(
-      "Config requires 'spawn' as a function (request: TaskSpawnRequest) => Promise<TaskSpawnResult>",
+      "Config requires 'spawn' as a function (request: SpawnRequest) => Promise<SpawnResult>",
     );
   }
 

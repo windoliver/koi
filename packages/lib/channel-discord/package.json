@@ -19,7 +19,7 @@
     "discord.js": "14.18.0"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"

@@ -76,6 +76,11 @@ const EXEMPT: ReadonlySet<string> = new Set([
   // Browser drivers — only used when a browser backend is explicitly configured.
   "@koi/browser-ext",
   "@koi/browser-playwright",
+  // Alternate channel adapters — service/channel entry points, not default interactive TUI assembly.
+  "@koi/channel-slack",
+  "@koi/channel-web",
+  // Dashboard SDK — consumed by dashboard clients, not default TUI runtime wiring.
+  "@koi/dashboard-client",
   // Debug package — opt-in (koi.optional: true), not part of default TUI runtime.
   "@koi/debug",
   // Demand-forge package — opt-in (koi.optional: true), not default TUI middleware.
@@ -85,7 +90,11 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/gateway",
   "@koi/gateway-canvas",
   "@koi/gateway-http",
+  "@koi/gateway-nexus",
+  "@koi/gateway-stack",
   "@koi/gateway-webhook",
+  // Structured agent handoff requires a store/target resolver; hosts opt in explicitly.
+  "@koi/handoff",
   // Delegation/security helpers — require explicit delegation or Nexus configuration.
   "@koi/governance-delegation",
   "@koi/governance-security",
@@ -104,10 +113,16 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/middleware-fs-rollback",
   "@koi/middleware-intent-capsule",
   "@koi/middleware-output-verifier",
+  // Policy-cache requires a verified policy store; it is not safe to default-enable.
+  "@koi/middleware-policy-cache",
   // Tool disclosure mutates advertised schemas and adds a companion provider; host opt-in needed.
   "@koi/middleware-tool-disclosure",
   // RLM requires per-request segment-local trust flags and is intentionally hidden from manifest discovery.
   "@koi/middleware-rlm",
+  // User-model needs explicit signal/memory configuration; @koi/runtime wires it only when configured.
+  "@koi/middleware-user-model",
+  // RLM stack is an opt-in composition around the optional RLM middleware.
+  "@koi/rlm-stack",
   // Sandbox providers require explicit backend/runtime selection; the TUI default uses @koi/sandbox-os.
   // Conformance is a golden-query/test suite package, not TUI runtime wiring.
   "@koi/sandbox-conformance",
@@ -119,6 +134,10 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/sandbox-ssh",
   // Scratchpad/workspace/toolset components are opt-in runtime providers.
   "@koi/scratchpad-local",
+  // Skill distillation is an offline/autonomous pipeline, separate from the default Skill meta-tool.
+  "@koi/skill-distiller",
+  // The TUI exposes the engine Spawn tool plus task_* board tools; this alternate task tool is opt-in.
+  "@koi/task-spawn",
   "@koi/toolsets",
   "@koi/workspace",
   // Temporal adapter — optional durable execution backend, not default local TUI.

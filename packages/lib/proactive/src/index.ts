@@ -9,6 +9,40 @@ export {
   computeCompositionApproval,
   DEFAULT_COMPOSITION_APPROVAL_POLICY,
 } from "./composition-approval.js";
+export {
+  type SqliteDatabaseLike,
+  type SqliteStatementLike,
+  sqliteCompositionExecutionLog,
+} from "./composition-execution-log-sqlite.js";
+export {
+  type CompositionExecutionContext,
+  type CompositionExecutionLog,
+  type CompositionExecutionStatus,
+  type CompositionForgeRequest,
+  type CompositionNotification,
+  type CompositionPreCommitRejection,
+  type CompositionSpawnRequest,
+  type CompositionToolCallRequest,
+  createCompositionExecutor,
+  inMemoryCompositionExecutionLog,
+  isPreCommitRejection,
+  preCommitRejection,
+} from "./composition-executor.js";
+export {
+  type CompositionGovernance,
+  DEFAULT_COMPOSITION_GOVERNANCE,
+  defaultPatternKey,
+  evaluateCompositionGate,
+  extractCapabilityGapsFromPlan,
+  type GateDecision,
+  inferCompositionGap,
+  inferMissingCapabilities,
+  inMemoryNoveltyTracker,
+  inMemorySessionRateTracker,
+  type NoveltyTracker,
+  type OutcomeRecorder,
+  type SessionRateTracker,
+} from "./composition-governance.js";
 export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
 export {
@@ -22,5 +56,20 @@ export {
   createRuleBasedCompositionPlanner,
   type RuleBasedCompositionPlannerConfig,
 } from "./rule-based-composition-planner.js";
+export {
+  createGovernanceSignalSource,
+  type GovernanceSignalSourceConfig,
+  type GovernanceThreshold,
+} from "./system-signal-sources/governance.js";
+export {
+  createGroveSignalSource,
+  type GroveEventSourceLike,
+  type GroveSignalSourceConfig,
+} from "./system-signal-sources/grove.js";
+export {
+  createNexusSignalSource,
+  type NexusSignalSourceConfig,
+  type NexusSubscribeFn,
+} from "./system-signal-sources/nexus.js";
 export type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types.js";
 export { DEFAULT_MAX_SLEEP_MS, DEFAULT_WAKE_MESSAGE } from "./types.js";

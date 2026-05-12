@@ -6,6 +6,14 @@
  */
 
 export { createGatewayStack } from "./create-gateway-stack.js";
+export {
+  createLocalGatewayLauncher,
+  type GatewayUpStartedEvent,
+  type GatewayUpStoppedEvent,
+  type LocalGatewayLauncher,
+  type LocalGatewayLauncherConfig,
+  type LocalGatewayLaunchHandle,
+} from "./local-launcher.js";
 export type {
   GatewayStack,
   GatewayStackConfig,

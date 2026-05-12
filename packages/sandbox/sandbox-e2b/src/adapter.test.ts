@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { SandboxProfile } from "@koi/core";
+import {
+  detectUnsupportedProfileFields,
+  formatUnsupportedProfileError,
+} from "@koi/sandbox-cloud-base";
 import { createFakeClient } from "./__tests__/fakes.js";
 import { createE2bAdapter } from "./adapter.js";
 
@@ -9,6 +13,14 @@ const openProfile: SandboxProfile = {
   network: { allow: true },
   resources: {},
 };
+
+function getUnsupportedProfileMessage(profile: SandboxProfile): string {
+  const unsupported = detectUnsupportedProfileFields(profile);
+  if (unsupported === undefined) {
+    throw new Error("expected profile to be rejected by shared hosted-profile validation");
+  }
+  return formatUnsupportedProfileError("sandbox-e2b", unsupported);
+}
 
 describe("createE2bAdapter", () => {
   test("returns adapter when validation passes", () => {
@@ -45,15 +57,17 @@ describe("createE2bAdapter", () => {
     expect(client.calls[0]?.opts.template).toBeUndefined();
   });
 
-  test("create() fails closed when profile requests network=false", async () => {
+  test("create() rejects unsupported hosted profile fields with the shared fail-closed message", async () => {
     const client = createFakeClient();
     const result = createE2bAdapter({ apiKey: "k", client });
     if (!result.ok) throw new Error("validate failed");
     const profile: SandboxProfile = {
       ...openProfile,
       network: { allow: false },
+      resources: { maxMemoryMb: 512 },
     };
-    await expect(result.value.create(profile)).rejects.toThrow(/network\.allow=false/);
+    const expectedMessage = getUnsupportedProfileMessage(profile);
+    await expect(result.value.create(profile)).rejects.toThrow(expectedMessage);
     expect(client.calls).toHaveLength(0);
   });
 
@@ -65,7 +79,9 @@ describe("createE2bAdapter", () => {
       ...openProfile,
       filesystem: { defaultReadAccess: "closed" },
     };
-    await expect(result.value.create(profile)).rejects.toThrow(/filesystem\.defaultReadAccess/);
+    await expect(result.value.create(profile)).rejects.toThrow(
+      getUnsupportedProfileMessage(profile),
+    );
     expect(client.calls).toHaveLength(0);
   });
 
@@ -77,7 +93,9 @@ describe("createE2bAdapter", () => {
       ...openProfile,
       resources: { maxMemoryMb: 512 },
     };
-    await expect(result.value.create(profile)).rejects.toThrow(/resources\.maxMemoryMb/);
+    await expect(result.value.create(profile)).rejects.toThrow(
+      getUnsupportedProfileMessage(profile),
+    );
     expect(client.calls).toHaveLength(0);
   });
 
@@ -89,7 +107,9 @@ describe("createE2bAdapter", () => {
       ...openProfile,
       nexusMounts: [{ nexusUrl: "x", apiKey: "y", mountPath: "/m" }],
     };
-    await expect(result.value.create(profile)).rejects.toThrow(/nexusMounts/);
+    await expect(result.value.create(profile)).rejects.toThrow(
+      getUnsupportedProfileMessage(profile),
+    );
     expect(client.calls).toHaveLength(0);
   });
 

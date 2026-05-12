@@ -23,6 +23,7 @@ export { createHttpTransport } from "./transport.js";
 // Config & types
 export type {
   BridgeNotification,
+  MountDescription,
   NexusCallOptions,
   NexusFileSystemConfig,
   NexusHealth,

@@ -15,7 +15,7 @@
  * injection that emit a tool name the model was not actually shown.
  */
 
-import type { InboundMessage, JsonObject, TurnId } from "@koi/core";
+import type { InboundMessage, JsonObject, SessionId, TurnId } from "@koi/core";
 import type {
   CapabilityFragment,
   KoiMiddleware,
@@ -96,12 +96,12 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   // cannot overwrite each other's bindings (#review-round22-F1).
   const callAllowlists = new Map<TurnId, Map<string, ReadonlySet<string>>>();
   const turnSnapshots = new Map<TurnId, ReadonlySet<string>[]>();
+  const turnSessions = new Map<TurnId, SessionId>();
   // Tombstones for turns whose snapshots were evicted. Tool calls
   // arriving for these turns must fail closed instead of falling
   // through as if the selector never ran (#review-round48-F1). Bounded
   // by its own cap to avoid unbounded growth.
-  const evictedTurns = new Set<TurnId>();
-  const turnSessions = new Map<TurnId, string>();
+  const evictedTurns = new Map<TurnId, SessionId>();
   // Hard cap on the number of distinct turns retained at once.
   // onAfterTurn is the primary cleanup but the engine does not fire
   // it reliably on every successful terminal turn, so without a
@@ -119,38 +119,39 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
   const MAX_SNAPSHOTS_PER_TURN = 256;
   const MAX_CALL_BINDINGS_PER_TURN = 1024;
 
-  function forgetTurn(turnId: TurnId): void {
+  function clearTurn(turnId: TurnId): void {
     turnSnapshots.delete(turnId);
     callAllowlists.delete(turnId);
-    evictedTurns.delete(turnId);
     turnSessions.delete(turnId);
   }
 
-  function evictOldTurns(currentTurnId: TurnId): void {
+  function evictTurn(turnId: TurnId, fallbackSessionId: SessionId): void {
+    const sessionIdForTombstone = turnSessions.get(turnId) ?? fallbackSessionId;
+    clearTurn(turnId);
+    evictedTurns.set(turnId, sessionIdForTombstone);
+  }
+
+  function evictOldTurns(currentTurnId: TurnId, currentSessionId: SessionId): void {
     while (turnSnapshots.size > MAX_RETAINED_TURNS) {
       const oldest = turnSnapshots.keys().next().value;
       if (oldest === undefined || oldest === currentTurnId) break;
-      turnSnapshots.delete(oldest);
-      callAllowlists.delete(oldest);
-      evictedTurns.add(oldest);
+      evictTurn(oldest, currentSessionId);
     }
     while (callAllowlists.size > MAX_RETAINED_TURNS) {
       const oldest = callAllowlists.keys().next().value;
       if (oldest === undefined || oldest === currentTurnId) break;
-      callAllowlists.delete(oldest);
-      evictedTurns.add(oldest);
+      evictTurn(oldest, currentSessionId);
     }
-    // Bound the tombstone set itself. Set iteration order is
+    // Bound the tombstone map itself. Map iteration order is
     // insertion order, so we drop the oldest tombstones first. A
     // tool call arriving for a turn whose tombstone is also gone
     // can no longer be distinguished from "never ran" — but at that
     // depth the call is hopelessly stale and the fall-through is
     // unavoidable without unbounded retention.
     while (evictedTurns.size > MAX_EVICTED_TOMBSTONES) {
-      const oldest = evictedTurns.values().next().value;
+      const oldest = evictedTurns.keys().next().value;
       if (oldest === undefined) break;
       evictedTurns.delete(oldest);
-      turnSessions.delete(oldest);
     }
   }
 
@@ -173,17 +174,17 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     m.set(callId, snapshot);
   }
 
-  function recordSnapshot(turnId: TurnId, sessionId: string, allowed: ReadonlySet<string>): void {
-    turnSessions.set(turnId, sessionId);
-    evictedTurns.delete(turnId);
-    const list = turnSnapshots.get(turnId);
+  function recordSnapshot(ctx: TurnContext, allowed: ReadonlySet<string>): void {
+    turnSessions.set(ctx.turnId, ctx.session.sessionId);
+    evictedTurns.delete(ctx.turnId);
+    const list = turnSnapshots.get(ctx.turnId);
     if (list === undefined) {
-      turnSnapshots.set(turnId, [allowed]);
+      turnSnapshots.set(ctx.turnId, [allowed]);
       // Backstop the per-turn map cleanup that onAfterTurn was
       // expected to handle. Done on first-touch of a new turn so
       // historical entries don't accumulate across long-lived runs
       // (#review-round47-F1).
-      evictOldTurns(turnId);
+      evictOldTurns(ctx.turnId, ctx.session.sessionId);
     } else {
       list.push(allowed);
       // Cap per-turn snapshot history. A pathological turn that
@@ -222,7 +223,7 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     allowed: ReadonlySet<string>,
   ): ReadonlySet<string> | undefined {
     if (!enforceFiltering) return undefined;
-    recordSnapshot(ctx.turnId, ctx.session.sessionId, allowed);
+    recordSnapshot(ctx, allowed);
     return allowed;
   }
 
@@ -426,12 +427,17 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
       );
     },
     async onAfterTurn(ctx: TurnContext): Promise<void> {
-      forgetTurn(ctx.turnId);
+      clearTurn(ctx.turnId);
     },
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       for (const [turnId, sessionId] of turnSessions) {
         if (sessionId === ctx.sessionId) {
-          forgetTurn(turnId);
+          clearTurn(turnId);
+        }
+      }
+      for (const [turnId, sessionId] of evictedTurns) {
+        if (sessionId === ctx.sessionId) {
+          evictedTurns.delete(turnId);
         }
       }
     },

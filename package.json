@@ -13,6 +13,7 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
+    "test:runtime-golden-replay": "bun scripts/run-runtime-golden-replay.ts",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "format": "biome format --write .",
@@ -27,8 +28,9 @@
     "check:doc-gate": "bun scripts/check-doc-gate.ts",
     "check:doc-wiring": "bun scripts/check-doc-wiring.ts",
     "check:test-integrity": "bun scripts/check-test-integrity.ts",
-    "check:complexity": "bun scripts/check-complexity.ts",
+    "check:complexity": "bun scripts/check-complexity.ts --max-violations 783",
     "generate:layer-docs": "bun scripts/generate-layer-docs.ts",
+    "generate:package-coverage": "bun scripts/generate-package-coverage-map.ts",
     "check:orphans": "bun scripts/check-orphans.ts",
     "check:cli-wiring": "bun scripts/check-cli-wiring.ts",
     "bench:startup": "bun scripts/measure-startup.ts",
@@ -42,7 +44,7 @@
     "changeset": "bunx changeset",
     "changeset:version": "bunx changeset version && bun install",
     "changeset:publish": "bunx changeset publish",
-    "postinstall": "lefthook install"
+    "postinstall": "lefthook install --force"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",

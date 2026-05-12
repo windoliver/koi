@@ -38,10 +38,14 @@ import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
 import { formatContextEngineSwapNotice, microcompact } from "@koi/context-manager";
 import type {
   Agent,
+  ApprovalDecision,
+  ApprovalHandler,
   AuditEntry,
   ComponentProvider,
   ContentBlock,
   EngineEvent,
+  EscalationDecision,
+  EscalationRequest,
   GovernanceController,
   InboundMessage,
   JsonObject,
@@ -64,7 +68,12 @@ import {
   createFileSessionRegistry,
   createSubprocessBackend,
 } from "@koi/daemon";
-import { createAuthNotificationHandler } from "@koi/fs-nexus";
+import {
+  createAuthNotificationHandler,
+  createHttpTransport,
+  type MountDescription,
+  type NexusTransport,
+} from "@koi/fs-nexus";
 import type { PatternRule } from "@koi/governance-defaults";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore, createPatternPermissionBackend } from "@koi/middleware-permissions";
@@ -74,8 +83,12 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
-import { createHttpTransport } from "@koi/nexus-client";
-import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime";
+import {
+  createArtifactToolProvider,
+  createMountDescriptionsMiddleware,
+  createMountDescriptionsState,
+  resolveFileSystemAsync,
+} from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import {
   createProgressiveSkillProvider,
@@ -138,6 +151,7 @@ import {
   writeSessionMeta,
 } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
+import { createTuiGatewayClient, type TuiGatewayClient } from "./tui-gateway-client.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
 import {
   createSigusr1Handler,
@@ -201,6 +215,109 @@ function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
   store.dispatch({ kind: "add_info", message: text });
 }
 
+function parseMountArgs(args: string):
+  | { readonly ok: true; readonly value: { readonly uri: string; readonly at?: string } }
+  | {
+      readonly ok: false;
+      readonly error: string;
+    } {
+  const trimmed = args.trim();
+  if (trimmed.length === 0) {
+    return { ok: false, error: "Usage: /mount <uri> [as=/mount/path]" };
+  }
+  const parts = trimmed.split(/\s+/);
+  const [uri, ...rest] = parts;
+  if (uri === undefined || uri.length === 0) {
+    return { ok: false, error: "Usage: /mount <uri> [as=/mount/path]" };
+  }
+  let at: string | undefined;
+  for (const part of rest) {
+    if (part.startsWith("as=") && part.length > 3) {
+      at = part.slice(3);
+      continue;
+    }
+    return { ok: false, error: `Unrecognized /mount argument: ${part}` };
+  }
+  return {
+    ok: true,
+    value: at !== undefined ? { uri, at } : { uri },
+  };
+}
+
+/**
+ * Strip C0 controls and ANSI/CSI/OSC escape sequences from connector-supplied
+ * text before sending it to the terminal. Mount descriptions are sourced from
+ * connector READMEs (untrusted) and would otherwise let a hostile or
+ * compromised connector inject control sequences into the operator UI to
+ * spoof notices, hide output, or manipulate the cursor. Keeps tabs and
+ * newlines because they're useful in multi-line README excerpts.
+ */
+// Built via RegExp constructor + string concatenation rather than regex
+// literals so Biome's noControlCharactersInRegex lint doesn't trip on the
+// explicit control-character classes — these regexes need to match control
+// chars by definition.
+const ESC = String.fromCharCode(0x1b);
+const BEL = String.fromCharCode(0x07);
+const SANITIZE_CSI_OSC = new RegExp(`${ESC}[\\[\\]][^${BEL}${ESC}]*?(?:${BEL}|${ESC}\\\\)`, "g");
+const SANITIZE_BARE_ESC = new RegExp(`${ESC}.`, "g");
+// CR is intentionally included in the strip set: alone it rewinds to column
+// 0 and a connector-supplied "\rOK" can overwrite the start of an operator
+// notice. CRLF/CR pairs were already collapsed to \n above before this
+// strip, so legitimate line breaks survive while standalone CR cannot
+// reposition the cursor.
+const SANITIZE_C0_DEL = new RegExp(
+  `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x08)}${String.fromCharCode(0x0b)}${String.fromCharCode(0x0c)}\\r${String.fromCharCode(0x0e)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
+  "g",
+);
+function sanitizeConnectorText(value: string): string {
+  // Order matters: collapse CRLF and bare CR into \n FIRST so legitimate
+  // line breaks survive. Then drop ESC-prefixed sequences (CSI/OSC and bare
+  // ESC + next char). Finally drop remaining C0 controls (except \t and \n)
+  // and DEL. Standalone CR is in the strip set above so a connector cannot
+  // reposition the cursor inside a single rendered line.
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(SANITIZE_CSI_OSC, "")
+    .replace(SANITIZE_BARE_ESC, "")
+    .replace(SANITIZE_C0_DEL, "");
+}
+
+function formatMountedConnectors(entries: readonly MountDescription[]): string {
+  if (entries.length === 0) return "[No mounts]";
+  return entries
+    .map((entry) => {
+      // Every field is sanitized before reaching the terminal: even though
+      // path / connector look like operator-controlled identifiers, they're
+      // ultimately derived from bridge `list_mounts` / `add_mount` output,
+      // which a malicious or compromised backend can populate with control
+      // characters or ANSI escapes.
+      const path = sanitizeConnectorText(entry.path);
+      const connector = sanitizeConnectorText(entry.connector);
+      const description =
+        entry.description !== undefined && entry.description.length > 0
+          ? sanitizeConnectorText(entry.description)
+          : "";
+      const details = description.length > 0 ? ` — ${description}` : "";
+      return `${path} (${connector})${details}`;
+    })
+    .join("\n");
+}
+
+function isRpcMethodUnavailable(error: {
+  readonly context?: unknown;
+  readonly message: string;
+}): boolean {
+  if (
+    typeof error.context === "object" &&
+    error.context !== null &&
+    "rpcCode" in error.context &&
+    (error.context as { readonly rpcCode?: unknown }).rpcCode === -32601
+  ) {
+    return true;
+  }
+  return error.message.includes("Unknown method");
+}
+
 /**
  * Defensive bounds on context-window values from provider `/models`.
  *
@@ -236,6 +353,152 @@ export function clampContextLength(raw: number | undefined): number | undefined 
   if (!Number.isFinite(raw) || !Number.isInteger(raw)) return undefined;
   if (raw < 2048 || raw > 4_000_000) return undefined;
   return raw;
+}
+
+export function selectTuiRuntimeMode(flags: Pick<TuiFlags, "gatewayUrl">): "local" | "remote" {
+  return flags.gatewayUrl === undefined ? "local" : "remote";
+}
+
+function asJsonObject(value: unknown): JsonObject | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  return value as JsonObject;
+}
+
+function extractGrantedGrants(
+  approval: Extract<ApprovalDecision, { readonly kind: "modify" }>,
+  fallback: readonly string[],
+): readonly string[] | undefined {
+  const updated = asJsonObject(approval.updatedInput);
+  const rawRequested = updated?.requestedGrants;
+  const rawGranted = updated?.grantedGrants;
+  const candidate = Array.isArray(rawGranted)
+    ? rawGranted
+    : Array.isArray(rawRequested)
+      ? rawRequested
+      : undefined;
+  if (candidate === undefined || candidate.some((value) => typeof value !== "string"))
+    return undefined;
+  const fallbackSet = new Set(fallback);
+  const granted = candidate.filter((value): value is string => typeof value === "string");
+  return granted.every((value) => fallbackSet.has(value)) ? granted : undefined;
+}
+
+export function mapApprovalDecisionToEscalationDecision(
+  request: EscalationRequest,
+  approval: ApprovalDecision,
+): EscalationDecision {
+  switch (approval.kind) {
+    case "allow":
+    case "always-allow":
+      return { decision: "approved", grantedGrants: request.requestedGrants };
+    case "deny":
+      return { decision: "rejected", reason: approval.reason };
+    case "modify": {
+      const grantedGrants = extractGrantedGrants(approval, request.requestedGrants);
+      return grantedGrants !== undefined
+        ? { decision: "approved", grantedGrants }
+        : {
+            decision: "rejected",
+            reason: "permission escalation modification must narrow requestedGrants",
+          };
+    }
+  }
+}
+
+export async function resolvePermissionEscalationRequest(
+  approvalHandler: ApprovalHandler,
+  request: EscalationRequest,
+): Promise<EscalationDecision> {
+  const input: JsonObject = {
+    requestId: request.requestId,
+    agentId: request.agentId,
+    requestedGrants: [...request.requestedGrants],
+    purposeStatement: request.purposeStatement,
+    expiresAt: request.expiresAt,
+    ...(asJsonObject(request.context) !== undefined
+      ? { context: asJsonObject(request.context) }
+      : {}),
+  };
+  const approval = await approvalHandler({
+    toolId: "permission_escalation",
+    input,
+    reason: request.purposeStatement,
+    metadata: {
+      requestId: request.requestId,
+      agentId: request.agentId,
+    },
+  });
+  return mapApprovalDecisionToEscalationDecision(request, approval);
+}
+
+export async function pollPermissionEscalationCoordinatorOnce(
+  runtimeHandle: Pick<
+    KoiRuntimeHandle,
+    "permissionEscalationMode" | "pollPermissionEscalationCoordinator"
+  >,
+  approvalHandler: ApprovalHandler,
+): Promise<number> {
+  if (
+    runtimeHandle.permissionEscalationMode !== "nexus" ||
+    runtimeHandle.pollPermissionEscalationCoordinator === undefined
+  ) {
+    return 0;
+  }
+  return runtimeHandle.pollPermissionEscalationCoordinator((request) =>
+    resolvePermissionEscalationRequest(approvalHandler, request),
+  );
+}
+
+function startPermissionEscalationCoordinatorLoop(
+  runtimeHandle: Pick<
+    KoiRuntimeHandle,
+    | "permissionEscalationMode"
+    | "pollPermissionEscalationCoordinator"
+    | "disposePermissionEscalationCoordinator"
+  >,
+  approvalHandler: ApprovalHandler,
+  pollIntervalMs = 250,
+): { readonly dispose: () => void } | undefined {
+  if (
+    runtimeHandle.permissionEscalationMode !== "nexus" ||
+    runtimeHandle.pollPermissionEscalationCoordinator === undefined
+  ) {
+    return undefined;
+  }
+
+  let disposed = false;
+  let inFlight = false;
+  let timer: ReturnType<typeof createUnrefTimer> | undefined;
+
+  const schedule = (): void => {
+    if (disposed) return;
+    timer = createUnrefTimer(() => {
+      void tick();
+    }, pollIntervalMs);
+  };
+
+  const tick = async (): Promise<void> => {
+    if (disposed || inFlight) return;
+    inFlight = true;
+    try {
+      await pollPermissionEscalationCoordinatorOnce(runtimeHandle, approvalHandler);
+    } catch (err) {
+      console.warn("[koi:tui] permission escalation coordinator poll failed", err);
+    } finally {
+      inFlight = false;
+      schedule();
+    }
+  };
+
+  schedule();
+  return {
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      timer?.cancel();
+      runtimeHandle.disposePermissionEscalationCoordinator?.();
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2059,10 +2322,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Resolved nexus backend (if any). Passed to `createKoiRuntime` via `filesystem`.
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
+  // strictPromptIdentifiers: backend-supplied mount paths/connector names
+  // flow into the system prompt via mount-descriptions-middleware. Reject any
+  // entry that fails the strict character allowlist so a hostile or buggy
+  // bridge cannot smuggle prompt-injection text through identifiers, even
+  // after the description sanitization above.
+  const mountDescriptionsState = createMountDescriptionsState({
+    strictPromptIdentifiers: true,
+  });
+  const mountDescriptionsMiddleware = createMountDescriptionsMiddleware({
+    state: mountDescriptionsState,
+  });
 
   // let: set when nexus local-bridge transport resolves; passed to runtime for
   // permission policy sync and audit trail. Undefined for local-only sessions.
-  let nexusFilesystemTransport: import("@koi/nexus-client").NexusTransport | undefined;
+  let nexusFilesystemTransport: NexusTransport | undefined;
+  // True only when the resolved nexus backend was constructed with a stable
+  // (explicit or namespace-root) base path. False when we inferred a
+  // single-mount root for backward compat — in that mode the backend root is
+  // fixed at startup and runtime /mount /unmount mutations would point the
+  // session at a stale path. See resolveFileSystemAsync for full rationale.
+  let runtimeMountMutationsSupported = false;
+  // The mount path the backend resolves bare paths against, when one is fixed
+  // at construction time. Unmounting this path would strand the session on a
+  // dead root, so /unmount must refuse it. Undefined = namespace-root mode
+  // (no fixed root), in which case any mount can be unmounted safely.
+  let backendActiveRoot: string | undefined;
 
   // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
   // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
@@ -2083,6 +2368,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       tuiAuthNotificationHandler,
     );
     resolvedFilesystemBackend = fsResolved.backend;
+    runtimeMountMutationsSupported = fsResolved.runtimeMountMutationsSupported;
+    backendActiveRoot = fsResolved.backendActiveRoot;
+    // Apply the session disclosure scope so all subsequent /mount and
+    // /mounts updates filter sibling mounts the same way startup-seed did.
+    mountDescriptionsState.setScope(fsResolved.effectiveScopePaths);
+    mountDescriptionsState.setManifest(fsResolved.mountDescriptions);
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
     // (the two should agree, but resolveFileSystemAsync is authoritative).
     if (fsResolved.operations !== undefined) {
@@ -2122,6 +2413,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
   let runtimeHandle: KoiRuntimeHandle | null = null;
+  let permissionEscalationCoordinatorLoop: { readonly dispose: () => void } | undefined;
+  const runtimeMode = selectTuiRuntimeMode(flags);
+  let gatewayClient: TuiGatewayClient | null = null;
+  let activeRemoteRequestId: string | null = null;
   // Manifest-declared supervision (#1866). Populated only when the loaded
   // koi.yaml carries a `supervision:` block. Disposed in reverse-construction
   // order in the teardown chain below.
@@ -2247,8 +2542,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           await registryOnlyBridge?.close();
         } catch {}
         try {
+          permissionEscalationCoordinatorLoop?.dispose();
+        } catch {}
+        try {
           if (runtimeHandle !== null) {
             await runtimeHandle.runtime.dispose();
+          }
+        } catch {}
+        try {
+          if (runtimeHandle === null) {
+            await gatewayClient?.dispose();
           }
         } catch {}
         // Dispose the auth notification handler synchronously first: the
@@ -2563,687 +2866,741 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
-  const runtimeReady = createKoiRuntime({
-    modelAdapter,
-    modelName,
-    approvalHandler: labeledApprovalHandler,
-    approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
-    cwd: process.cwd(),
-    systemPrompt,
-    ...(yoloPermissionBackend !== undefined
-      ? {
-          permissionBackend: yoloPermissionBackend,
-          permissionsDescription: "koi tui --yolo (auto-allow all tools)",
-          bashElicitAutoApprove: true,
-        }
-      : {}),
-    currentModelMiddleware,
-    // Resolve budgetConfig per turn so a mid-session model switch picks up
-    // the new model's context window immediately.
-    getCurrentModel: () => ({
-      model: currentModelBox.current,
-      ...(currentModelBox.contextLength !== undefined
-        ? { contextLength: currentModelBox.contextLength }
-        : {}),
-    }),
-    ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
-    // TUI opts out of engine loop detection explicitly: the
-    // per-submit iteration budget reset + governance caps below
-    // already bound spirals, and false-positive trips during an
-    // interactive session are expensive (they abort mid-turn with a
-    // confusing error). `koi start`'s auto-allow backend leaves
-    // this at the engine default (enabled) — see `runtime-factory.ts`.
-    loopDetection: false,
-    // In loop mode, session persistence is intentionally omitted so
-    // failed iterations don't pollute the resumable JSONL transcript.
-    // Loop mode is a self-correcting execution, not a conversation.
-    ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: tuiSessionId } }),
-    // Issue #1683: cancel-resume checkpoint wiring. Activates only when
-    // `KOI_SESSION_STATE_DB` was set (and the SQLite open succeeded) and
-    // we're not in loop mode. Loop mode skips both session and checkpoint
-    // by design — failed iterations must not pollute resumable state.
-    // initialEngineState/initialEngineStateVersion are forwarded from the
-    // resume so the wrapped adapter restores the cancel cursor and the
-    // CAS check protects against a parallel runtime overwriting our row.
-    ...(stateSessionPersistence !== undefined && !isLoopMode
-      ? {
-          sessionPersistence: {
-            persistence: stateSessionPersistence,
-            agentId: (await import("@koi/core")).agentId(`koi-tui:${tuiSessionId}`),
-            manifestSnapshot: {
-              name: "koi-tui",
-              version: "0",
-              model: { name: modelName },
-            } satisfies import("@koi/core").AgentManifest,
-            onPersistError: (err: import("@koi/core").KoiError | Error): void => {
-              const msg = "message" in err ? err.message : String(err);
-              process.stderr.write(
-                `koi tui: cancel checkpoint write failed (${msg}); next resume will fall back to transcript-only\n`,
-              );
-            },
-            ...(resumedEngineState !== undefined ? { initialEngineState: resumedEngineState } : {}),
-            ...(resumedStateVersion !== undefined
-              ? { initialEngineStateVersion: resumedStateVersion }
-              : {}),
-          },
-        }
-      : {}),
-    skillsRuntime: skillRuntime,
-    skillsProgressive: true,
-    mcpOAuthChannel: tuiOAuthChannel,
-    ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
-    ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
-      ? { maxSpendUsd: governance.maxSpendUsd }
-      : {}),
-    ...(governance.enabled && governance.maxTurns !== undefined
-      ? { maxTurns: governance.maxTurns }
-      : {}),
-    ...(governance.enabled && governance.maxSpawnDepth !== undefined
-      ? { maxSpawnDepth: governance.maxSpawnDepth }
-      : {}),
-    ...(governance.enabled && governance.alertThresholds !== undefined
-      ? { governanceAlertThresholds: governance.alertThresholds }
-      : {}),
-    ...(governance.enabled && governanceRules !== undefined ? { governanceRules } : {}),
-    ...(governance.enabled ? {} : { governanceDisabled: true }),
-    // Fallback model chain validation only runs when the router actually
-    // wired up. If router config validation failed above (modelRouterMiddleware
-    // === undefined), fallback models are unreachable — passing them to
-    // resolveCostConfig would refuse startup over models the runtime can't
-    // ever call.
-    ...(fallbackModels.length > 0 && modelRouterMiddleware !== undefined
-      ? { fallbackModelNames: fallbackModels }
-      : {}),
-    // Manifest-driven opt-in for preset stacks + plugins. Omitted
-    // when the user didn't pass --manifest, in which case the
-    // factory defaults to activating every stack / every discovered
-    // plugin (v1's "wire everything" posture).
-    ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
-    ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
-    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
-    // gov-15: outbound-network scope from manifest.network → web-tools fetch wrap.
-    ...(manifestNetwork !== undefined ? { networkScope: { allow: manifestNetwork.allow } } : {}),
-    // gov-15: shared scoped CredentialComponent — same instance is registered
-    // on the CREDENTIALS subsystem token AND used by the progressive skill
-    // provider to gate skill `requires.credentials` at attach time.
-    ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
-    // #2088: ACE activation. resolvedAceConfig is built above under the
-    // spawn-gate; on resume without --manifest, manifestResult is never
-    // loaded so resolvedAceConfig stays undefined (resume-provenance gate
-    // by construction). Passes undefined → no middleware installed.
-    ...(resolvedAceConfig !== undefined ? { ace: resolvedAceConfig } : {}),
-    // Nexus backend (when resolved above) is passed through so the checkpoint
-    // stack stamps the correct backend name and the restore protocol dispatches
-    // compensating ops through the right backend. Omitted when undefined —
-    // factory falls back to the default local backend rooted at cwd.
-    ...(resolvedFilesystemBackend !== undefined ? { filesystem: resolvedFilesystemBackend } : {}),
-    // Nexus transport (when a local-bridge resolved above) enables permission
-    // policy sync and nexus audit trail alongside NDJSON/SQLite sinks.
-    ...(nexusFilesystemTransport !== undefined ? { nexusTransport: nexusFilesystemTransport } : {}),
-    // @koi/artifacts tools — wired when the advisory lock was acquired at
-    // boot. When construction failed (concurrent TUI, FS issue) the array
-    // is empty and the artifact_* tools are simply absent from the agent.
-    //
-    // The mock browser provider (KOI_BROWSER_MOCK) is single-agent by
-    // design: createBrowserProvider throws if a second distinct agent
-    // tries to attach. This is safe here because extraProviders are only
-    // assembled onto the root TUI agent — create-agent-spawn-fn.ts does
-    // NOT propagate extraProviders into childProviders for spawned agents.
-    // Limitation: browser_* tools are therefore NOT available in spawned
-    // sub-agents. Workflows that delegate browser work to a child agent
-    // will lose those tools after the spawn. This is a known scope
-    // restriction of the mock dev/test path, not a bug in production.
-    // Post-permissions slot: runs inside the security layers so request.tools
-    // is permissions-filtered when the injector checks for the Skill tool.
-    skillInjector: skillInjectorMw,
-    // Propagate skill injection into spawned children so they receive the
-    // <available_skills> XML block in progressive mode. Uses a filtered injector
-    // that only includes runtimeBacked skills — body-backed skills (browser,
-    // memory) belong to root-only providers not available in children.
-    childSkillInjector: childSkillInjectorMw,
-    extraProviders: [
-      skillProvider,
-      ...(nexusDelegationProvider !== undefined ? [nexusDelegationProvider] : []),
-      ...artifactExtraProviders,
-      ...(process.env.KOI_BROWSER_MOCK === "1"
-        ? [
-            createBrowserProvider({
-              backend: createMockDriver(),
-              // Mock driver never opens a real connection, so SSRF
-              // protection only needs to block IP literals and known
-              // metadata hostnames — no DNS resolution required.
-              // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
-              // so mDNS/RFC6762 names are still rejected by design.
-              isUrlAllowed: (url) => {
-                try {
-                  const { protocol, hostname } = new URL(url);
-                  if (protocol !== "http:" && protocol !== "https:") return false;
-                  // Strip IPv6 brackets then lower-case + strip trailing DNS root
-                  // dot so `localhost.` / `metadata.google.internal.` can't
-                  // bypass suffix/host checks (same canonicalization as isSafeUrl).
-                  const h = hostname
-                    .replace(/^\[|\]$/g, "")
-                    .toLowerCase()
-                    .replace(/\.$/, "");
-                  if (isBlockedIp(h)) return false;
-                  if (BLOCKED_HOSTS.includes(h)) return false;
-                  // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
-                  // "local" matches ".local" — endsWith alone misses these.
-                  if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
-                    return false;
-                  return true;
-                } catch {
-                  return false;
-                }
-              },
-            }),
-          ]
-        : []),
-    ],
-    // Zone B — manifest-declared middleware. Resolved inside the
-    // factory via the default built-in registry. Runs INSIDE the
-    // security guard so repo-authored content cannot observe raw
-    // traffic before `exfiltration-guard` redacts secrets.
-    //
-    // `allowManifestFileSinks` gates the built-in audit entry
-    // (which opens a file at resolution time). Controlled by the
-    // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
-    // manifest so repo content cannot flip it.
-    ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
-    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" ? { allowManifestFileSinks: true } : {}),
-    // TUI defaults `backgroundSubprocesses` to `true` (the factory
-    // default) because its interactive surface makes long-running
-    // jobs observable. A manifest setting wins if provided.
-    ...(manifestBackgroundSubprocesses !== undefined
-      ? { backgroundSubprocesses: manifestBackgroundSubprocesses }
-      : {}),
-    // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
-    // initOtelSdk() registers a global TracerProvider so middleware-otel's
-    // trace.getTracer() returns a real tracer. Must be called before createKoiRuntime.
-    ...(otelEnabled ? { otel: true as const } : {}),
-    // KOI_AUDIT_NDJSON=<path> opts into security-grade audit logging.
-    // Manifest audit.ndjson is the fallback when the env var is absent.
-    // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 (repo-authored path).
-    // Precedence: env var (present, even "") → manifest (gate required) → off.
-    // Setting the env var to "" is an explicit disable that wins over manifest.
-    ...(process.env.KOI_AUDIT_NDJSON !== undefined
-      ? process.env.KOI_AUDIT_NDJSON !== ""
-        ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
-        : {}
-      : manifestAudit?.ndjson !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
-        ? { auditNdjsonPath: manifestAudit.ndjson }
-        : {}),
-    // KOI_AUDIT_SQLITE=<path> opts into SQLite-backed audit logging.
-    // Same precedence/disable semantics as KOI_AUDIT_NDJSON above.
-    ...(process.env.KOI_AUDIT_SQLITE !== undefined
-      ? process.env.KOI_AUDIT_SQLITE !== ""
-        ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
-        : {}
-      : manifestAudit?.sqlite !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
-        ? { auditSqlitePath: manifestAudit.sqlite }
-        : {}),
-    // KOI_AUDIT_VIOLATIONS=<path> overrides the violations DB path.
-    // Manifest audit.violations is the fallback when the env var is absent.
-    // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 for manifest paths.
-    // Precedence: env var (present, even "") → manifest (gate required) → default (~/.koi/violations.db).
-    // Setting the env var to "" passes the empty string through — runtime-factory treats
-    // length===0 as an explicit disable (no violations DB), preventing the default fallback.
-    ...(process.env.KOI_AUDIT_VIOLATIONS !== undefined
-      ? { violationSqlitePath: process.env.KOI_AUDIT_VIOLATIONS }
-      : manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
-        ? { violationSqlitePath: manifestAudit.violations }
-        : {}),
-    // KOI_AUDIT_NDJSON_MAX_BYTES=<n> enables size-based NDJSON log rotation.
-    // KOI_AUDIT_NDJSON_DAILY=1 enables daily UTC rotation.
-    ...(() => {
-      const rawBytes = process.env.KOI_AUDIT_NDJSON_MAX_BYTES;
-      const maxBytes = rawBytes !== undefined ? Number(rawBytes) : undefined;
-      if (
-        rawBytes !== undefined &&
-        (maxBytes === undefined || !Number.isFinite(maxBytes) || maxBytes <= 0)
-      ) {
-        console.warn(
-          `[koi] KOI_AUDIT_NDJSON_MAX_BYTES="${rawBytes}" is not a positive number — NDJSON size rotation disabled`,
-        );
-      }
-      const daily = process.env.KOI_AUDIT_NDJSON_DAILY === "1";
-      const validMaxBytes = maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0;
-      if (validMaxBytes || daily) {
-        return {
-          auditNdjsonRotation: {
-            ...(validMaxBytes ? { maxSizeBytes: maxBytes } : {}),
-            ...(daily ? { daily: true as const } : {}),
-          },
-        };
-      }
-      return {};
-    })(),
-    // KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path because
-    // the CLI always writes signed (hash-chained) audit entries, which are incompatible
-    // with session-granular pruning. Warn and ignore instead of aborting at boot.
-    ...(() => {
-      const rawDays = process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS;
-      if (rawDays !== undefined) {
-        console.warn(
-          "[koi] KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path " +
-            "(signed/hash-chained logs cannot be pruned). The setting is ignored.",
-        );
-      }
-      return {};
-    })(),
-    // Per-sink manifest provenance: only pass the source path for sinks that
-    // actually came from the manifest (not from operator env vars). This lets
-    // createKoiRuntime run a final containment check immediately before each
-    // manifest-derived sink open, without incorrectly revalidating env-var
-    // sourced paths against the manifest directory.
-    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
-    process.env.KOI_AUDIT_NDJSON === undefined &&
-    manifestAudit?.ndjson !== undefined &&
-    manifestLoadPath !== undefined
-      ? { manifestNdjsonSourcePath: manifestLoadPath }
-      : {}),
-    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
-    process.env.KOI_AUDIT_SQLITE === undefined &&
-    manifestAudit?.sqlite !== undefined &&
-    manifestLoadPath !== undefined
-      ? { manifestSqliteSourcePath: manifestLoadPath }
-      : {}),
-    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
-    process.env.KOI_AUDIT_VIOLATIONS === undefined &&
-    manifestAudit?.violations !== undefined &&
-    manifestLoadPath !== undefined
-      ? { manifestViolationsSourcePath: manifestLoadPath }
-      : {}),
-    // KOI_REPORT_ENABLED=true opts into run-report middleware.
-    // Wires @koi/middleware-report so a RunReport is printed at session end.
-    ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),
-    // KOI_PLANNING_ENABLED=true opts into @koi/middleware-planning.
-    // Default off because plan state is ephemeral across resume until
-    // durable persistence (#1842) lands. Hosts that accept the
-    // limitation can opt in today.
-    ...(process.env.KOI_PLANNING_ENABLED === "true" ? { planningEnabled: true } : {}),
-    // KOI_FEEDBACK_LOOP_ENABLED=true opts into @koi/middleware-feedback-loop.
-    // Activates model-response validation + tool-health tracking with an
-    // empty config (observe-only, no validators, no quarantine thresholds).
-    ...(process.env.KOI_FEEDBACK_LOOP_ENABLED === "true" ? { feedbackLoop: {} } : {}),
-    // KOI_INTENT_CAPSULE=<systemPrompt> opts into @koi/middleware-intent-capsule.
-    // Cryptographically binds the agent's mandate at session start with Ed25519;
-    // verifies hash on every model call. Throws PERMISSION on tamper. (gov-16 #1883)
-    ...(process.env.KOI_INTENT_CAPSULE !== undefined && process.env.KOI_INTENT_CAPSULE !== ""
-      ? { intentCapsule: { systemPrompt: process.env.KOI_INTENT_CAPSULE } }
-      : {}),
-    extraMiddleware:
-      aceMiddleware !== undefined
-        ? [securityBridge.middleware, aceMiddleware]
-        : [securityBridge.middleware],
-    // Bridge spawn lifecycle events into the TUI store so /agents view and
-    // inline spawn_call blocks reflect real spawn state. Each spawn call
-    // produces one spawn_requested + one agent_status_changed event.
-    onSpawnEvent: (event): void => {
-      // Delegate to the current drain's spawn tracker for SIGINT grace.
-      // Null between drains so cross-drain survivors from earlier turns cannot
-      // influence the grace policy of a later, unrelated turn (#1999 r14).
-      currentDrainSpawnHandler?.(event);
-      // Defense-in-depth: store.dispatch can throw if the reducer or
-      // SolidJS reactivity hits an edge case. A throwing callback must
-      // not crash the spawn flow — the engine wraps this in safeSpawnEvent
-      // too, but belt-and-braces keeps the TUI safe even if the engine
-      // guard is ever removed.
-      try {
-        if (event.kind === "spawn_requested") {
-          store.dispatch({
-            kind: "engine_event",
-            event: {
-              kind: "spawn_requested",
-              childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
-              request: {
-                agentName: event.agentName,
-                description: event.description,
-                signal: new AbortController().signal,
-              },
-            },
+  const runtimeReady =
+    runtimeMode === "remote"
+      ? (async (): Promise<void> => {
+          const remoteToken = process.env.KOI_GATEWAY_TOKEN;
+          if (remoteToken === undefined || remoteToken.length === 0) {
+            store.dispatch({
+              kind: "add_info",
+              message:
+                "Remote gateway requires KOI_GATEWAY_TOKEN environment variable. Aborting connect.",
+            });
+            return;
+          }
+          const client = createTuiGatewayClient({
+            gatewayUrl: flags.gatewayUrl as string,
+            clientId: flags.session ?? `tui-${process.pid}`,
+            authToken: remoteToken,
           });
-        } else {
-          // agent_status_changed: use the dedicated set_spawn_terminal action so the
-          // outcome (complete vs failed) is preserved. The engine's ProcessState only
-          // has a single "terminated" value — routing through that path would collapse
-          // failures into successes.
-          const outcome: "complete" | "failed" = event.status === "failed" ? "failed" : "complete";
+          await client.connect();
+          if (shutdownStarted) {
+            await client.dispose();
+            return;
+          }
+          gatewayClient = client;
           store.dispatch({
-            kind: "set_spawn_terminal",
-            agentId: event.agentId,
-            outcome,
-            // Pass metadata so the reducer can synthesize a record when
-            // spawn_requested dispatch was lost (#1855).
-            agentName: event.agentName,
-            description: event.description,
+            kind: "add_info",
+            message: `Connected to remote gateway ${flags.gatewayUrl}`,
           });
-        }
-      } catch (e: unknown) {
-        console.warn("[koi:tui] onSpawnEvent dispatch failed — spawn UI may be stale", e);
-      }
-    },
-  }).then(async (handle) => {
-    // If an interim SIGUSR1 teardown started while createKoiRuntime was
-    // in flight (#1906 R10), the teardown couldn't dispose `handle`
-    // because it wasn't assigned yet. Dispose it here directly and do
-    // NOT assign `runtimeHandle` — otherwise the rest of bootstrap
-    // (transcript priming, /mcp refresh) would run against an
-    // already-disposed runtime.
-    if (shutdownStarted) {
-      handle.shutdownBackgroundTasks();
-      void handle.runtime.dispose().catch(() => {
-        /* best effort — hard-exit failsafe will still fire */
-      });
-      return;
-    }
-    runtimeHandle = handle;
-    // #1767 Phase 6: surface context-engine swap events as TUI notices
-    // through the single-writer store. Subscribing at the controller
-    // level (rather than reading the run-stream `custom` event) covers
-    // out-of-run swaps too — idle, pre-first-run, between reusable
-    // turns. Notices flow through `add_info` like plugin-load banners:
-    // not in the JSONL transcript, not pushed back into model context.
-    handle.runtime.contextEngineSwapController?.subscribe((swap) => {
-      const notice = formatContextEngineSwapNotice(swap);
-      store.dispatch({ kind: "add_info", message: notice.message });
-    });
-    // Resolve lazy skill agent ref so the injector middleware can query
-    // skill components on every subsequent model call.
-    skillAgentRef.current = handle.runtime.agent;
-    // Seed the mutable live skill map from the ECS components attached during
-    // createKoiRuntime. Subsequent session resets update liveSkillComponents via
-    // reloadSkillComponents() without touching the static ECS.
-    liveSkillComponents = handle.runtime.agent.query<SkillComponent>("skill:");
-    // Wire governance bridge when the agent has a GovernanceController
-    // component attached. In default sessions (no --max-spend or equivalent
-    // future flag), component() returns undefined and the bridge stays unset,
-    // leaving all governanceBridge?.xxx() call sites as no-ops.
-    try {
-      const governanceController = handle.runtime.agent.component<GovernanceController>(GOVERNANCE);
-      // `--no-governance` / manifest disable wins here: even though the
-      // engine's bundled GOVERNANCE component is still attached for
-      // guard-level safety, the host-level observer surface (bridge, alerts
-      // JSONL, toast reducer) must stay inert so operator intent is
-      // honored end-to-end. Without this gate, disabling governance would
-      // still fire toasts, persist alerts, and poll snapshots — a
-      // fail-open.
-      if (governanceController !== undefined && handle.governanceEnabled) {
-        governanceBridge = createGovernanceBridge({
-          store,
-          controller: governanceController,
-          sessionId: tuiSessionId as string,
-          alertsPath: join(homedir(), ".koi", "governance-alerts.jsonl"),
-          // Static rule snapshot resolved by runtime-factory via
-          // backend.describeRules() — falls back to a synthetic default-allow
-          // entry until the manifest YAML loader (#1877) wires real rules.
-          rules: handle.governanceRules,
-          // Resolved `--alert-threshold` / manifest thresholds. When both are
-          // unset the bridge falls back to its observational default
-          // ([0.5, 0.8, 0.95]); passing the resolved set here is what makes
-          // CLI/manifest precedence authoritative for TUI toast firing.
-          ...(handle.governanceAlertThresholds !== undefined
-            ? { alertThresholds: handle.governanceAlertThresholds }
+        })()
+      : createKoiRuntime({
+          modelAdapter,
+          modelName,
+          approvalHandler: labeledApprovalHandler,
+          approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
+          cwd: process.cwd(),
+          systemPrompt,
+          ...(yoloPermissionBackend !== undefined
+            ? {
+                permissionBackend: yoloPermissionBackend,
+                permissionsDescription: "koi tui --yolo (auto-allow all tools)",
+                bashElicitAutoApprove: true,
+              }
             : {}),
-          ...(handle.violationStore !== undefined ? { violationStore: handle.violationStore } : {}),
-          // Static capability mirror — matches the createGovernanceMiddleware's
-          // describeCapabilities() output. Hardcoded here to avoid plumbing the
-          // middleware instance back from runtime-factory just for one string.
-          capabilities: [
-            { label: "governance", description: "Policy gate + setpoint enforcement active" },
-          ],
-        });
-        // Seed up to 10 most-recent alerts from JSONL so /governance
-        // shows context across sessions instead of starting empty.
-        // TODO(gov-9): replace per-alert dispatch with a `replay_persisted_alerts`
-        // bulk action once seed counts grow past ~10 to avoid N reducer runs.
-        const recent = governanceBridge.loadRecentAlerts(10);
-        for (const alert of recent) {
-          store.dispatch({ kind: "add_governance_alert", alert });
-        }
-        // Seed up to 10 most-recent persisted violations for the current
-        // session so /governance's "Recent violations" panel is populated
-        // on restart / resume. Load is async (SQLite) — fire-and-forget
-        // so startup isn't blocked on history backfill.
-        void governanceBridge
-          .loadRecentViolations(10)
-          .then((violations) => {
-            // Synthesize UI-shape fields: id is per-entry counter, ts
-            // is load-time (the ViolationStore row timestamp is not
-            // exposed in the Violation shape — it would need an L0
-            // widening to surface). Order is preserved from the DB.
-            for (const v of violations) {
-              store.dispatch({
-                kind: "add_governance_violation",
-                violation: {
-                  id: `backfill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                  ts: Date.now(),
-                  variable: v.rule,
-                  reason: v.message,
+          currentModelMiddleware,
+          // Resolve budgetConfig per turn so a mid-session model switch picks up
+          // the new model's context window immediately.
+          getCurrentModel: () => ({
+            model: currentModelBox.current,
+            ...(currentModelBox.contextLength !== undefined
+              ? { contextLength: currentModelBox.contextLength }
+              : {}),
+          }),
+          ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
+          // TUI opts out of engine loop detection explicitly: the
+          // per-submit iteration budget reset + governance caps below
+          // already bound spirals, and false-positive trips during an
+          // interactive session are expensive (they abort mid-turn with a
+          // confusing error). `koi start`'s auto-allow backend leaves
+          // this at the engine default (enabled) — see `runtime-factory.ts`.
+          loopDetection: false,
+          // In loop mode, session persistence is intentionally omitted so
+          // failed iterations don't pollute the resumable JSONL transcript.
+          // Loop mode is a self-correcting execution, not a conversation.
+          ...(isLoopMode
+            ? {}
+            : { session: { transcript: jsonlTranscript, sessionId: tuiSessionId } }),
+          // Issue #1683: cancel-resume checkpoint wiring. Activates only when
+          // `KOI_SESSION_STATE_DB` was set (and the SQLite open succeeded) and
+          // we're not in loop mode. Loop mode skips both session and checkpoint
+          // by design — failed iterations must not pollute resumable state.
+          // initialEngineState/initialEngineStateVersion are forwarded from the
+          // resume so the wrapped adapter restores the cancel cursor and the
+          // CAS check protects against a parallel runtime overwriting our row.
+          ...(stateSessionPersistence !== undefined && !isLoopMode
+            ? {
+                sessionPersistence: {
+                  persistence: stateSessionPersistence,
+                  agentId: (await import("@koi/core")).agentId(`koi-tui:${tuiSessionId}`),
+                  manifestSnapshot: {
+                    name: "koi-tui",
+                    version: "0",
+                    model: { name: modelName },
+                  } satisfies import("@koi/core").AgentManifest,
+                  onPersistError: (err: import("@koi/core").KoiError | Error): void => {
+                    const msg = "message" in err ? err.message : String(err);
+                    process.stderr.write(
+                      `koi tui: cancel checkpoint write failed (${msg}); next resume will fall back to transcript-only\n`,
+                    );
+                  },
+                  ...(resumedEngineState !== undefined
+                    ? { initialEngineState: resumedEngineState }
+                    : {}),
+                  ...(resumedStateVersion !== undefined
+                    ? { initialEngineStateVersion: resumedStateVersion }
+                    : {}),
                 },
-              });
+              }
+            : {}),
+          skillsRuntime: skillRuntime,
+          skillsProgressive: true,
+          mcpOAuthChannel: tuiOAuthChannel,
+          ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
+          ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
+            ? { maxSpendUsd: governance.maxSpendUsd }
+            : {}),
+          ...(governance.enabled && governance.maxTurns !== undefined
+            ? { maxTurns: governance.maxTurns }
+            : {}),
+          ...(governance.enabled && governance.maxSpawnDepth !== undefined
+            ? { maxSpawnDepth: governance.maxSpawnDepth }
+            : {}),
+          ...(governance.enabled && governance.alertThresholds !== undefined
+            ? { governanceAlertThresholds: governance.alertThresholds }
+            : {}),
+          ...(governance.enabled && governanceRules !== undefined ? { governanceRules } : {}),
+          ...(governance.enabled ? {} : { governanceDisabled: true }),
+          // Fallback model chain validation only runs when the router actually
+          // wired up. If router config validation failed above (modelRouterMiddleware
+          // === undefined), fallback models are unreachable — passing them to
+          // resolveCostConfig would refuse startup over models the runtime can't
+          // ever call.
+          ...(fallbackModels.length > 0 && modelRouterMiddleware !== undefined
+            ? { fallbackModelNames: fallbackModels }
+            : {}),
+          // Manifest-driven opt-in for preset stacks + plugins. Omitted
+          // when the user didn't pass --manifest, in which case the
+          // factory defaults to activating every stack / every discovered
+          // plugin (v1's "wire everything" posture).
+          ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
+          ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+          ...(manifestFilesystemOps !== undefined
+            ? { filesystemOperations: manifestFilesystemOps }
+            : {}),
+          // gov-15: outbound-network scope from manifest.network → web-tools fetch wrap.
+          ...(manifestNetwork !== undefined
+            ? { networkScope: { allow: manifestNetwork.allow } }
+            : {}),
+          // gov-15: shared scoped CredentialComponent — same instance is registered
+          // on the CREDENTIALS subsystem token AND used by the progressive skill
+          // provider to gate skill `requires.credentials` at attach time.
+          ...(scopedCredentials !== undefined ? { credentials: scopedCredentials } : {}),
+          // #2088: ACE activation. resolvedAceConfig is built above under the
+          // spawn-gate; on resume without --manifest, manifestResult is never
+          // loaded so resolvedAceConfig stays undefined (resume-provenance gate
+          // by construction). Passes undefined → no middleware installed.
+          ...(resolvedAceConfig !== undefined ? { ace: resolvedAceConfig } : {}),
+          // Nexus backend (when resolved above) is passed through so the checkpoint
+          // stack stamps the correct backend name and the restore protocol dispatches
+          // compensating ops through the right backend. Omitted when undefined —
+          // factory falls back to the default local backend rooted at cwd.
+          ...(resolvedFilesystemBackend !== undefined
+            ? { filesystem: resolvedFilesystemBackend }
+            : {}),
+          // Nexus transport (when a local-bridge resolved above) enables permission
+          // policy sync and nexus audit trail alongside NDJSON/SQLite sinks.
+          ...(nexusFilesystemTransport !== undefined
+            ? { nexusTransport: nexusFilesystemTransport }
+            : {}),
+          // @koi/artifacts tools — wired when the advisory lock was acquired at
+          // boot. When construction failed (concurrent TUI, FS issue) the array
+          // is empty and the artifact_* tools are simply absent from the agent.
+          //
+          // The mock browser provider (KOI_BROWSER_MOCK) is single-agent by
+          // design: createBrowserProvider throws if a second distinct agent
+          // tries to attach. This is safe here because extraProviders are only
+          // assembled onto the root TUI agent — create-agent-spawn-fn.ts does
+          // NOT propagate extraProviders into childProviders for spawned agents.
+          // Limitation: browser_* tools are therefore NOT available in spawned
+          // sub-agents. Workflows that delegate browser work to a child agent
+          // will lose those tools after the spawn. This is a known scope
+          // restriction of the mock dev/test path, not a bug in production.
+          // Post-permissions slot: runs inside the security layers so request.tools
+          // is permissions-filtered when the injector checks for the Skill tool.
+          skillInjector: skillInjectorMw,
+          // Propagate skill injection into spawned children so they receive the
+          // <available_skills> XML block in progressive mode. Uses a filtered injector
+          // that only includes runtimeBacked skills — body-backed skills (browser,
+          // memory) belong to root-only providers not available in children.
+          childSkillInjector: childSkillInjectorMw,
+          extraProviders: [
+            skillProvider,
+            ...(nexusDelegationProvider !== undefined ? [nexusDelegationProvider] : []),
+            ...artifactExtraProviders,
+            ...(process.env.KOI_BROWSER_MOCK === "1"
+              ? [
+                  createBrowserProvider({
+                    backend: createMockDriver(),
+                    // Mock driver never opens a real connection, so SSRF
+                    // protection only needs to block IP literals and known
+                    // metadata hostnames — no DNS resolution required.
+                    // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
+                    // so mDNS/RFC6762 names are still rejected by design.
+                    isUrlAllowed: (url) => {
+                      try {
+                        const { protocol, hostname } = new URL(url);
+                        if (protocol !== "http:" && protocol !== "https:") return false;
+                        // Strip IPv6 brackets then lower-case + strip trailing DNS root
+                        // dot so `localhost.` / `metadata.google.internal.` can't
+                        // bypass suffix/host checks (same canonicalization as isSafeUrl).
+                        const h = hostname
+                          .replace(/^\[|\]$/g, "")
+                          .toLowerCase()
+                          .replace(/\.$/, "");
+                        if (isBlockedIp(h)) return false;
+                        if (BLOCKED_HOSTS.includes(h)) return false;
+                        // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
+                        // "local" matches ".local" — endsWith alone misses these.
+                        if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
+                          return false;
+                        return true;
+                      } catch {
+                        return false;
+                      }
+                    },
+                  }),
+                ]
+              : []),
+          ],
+          // Zone B — manifest-declared middleware. Resolved inside the
+          // factory via the default built-in registry. Runs INSIDE the
+          // security guard so repo-authored content cannot observe raw
+          // traffic before `exfiltration-guard` redacts secrets.
+          //
+          // `allowManifestFileSinks` gates the built-in audit entry
+          // (which opens a file at resolution time). Controlled by the
+          // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
+          // manifest so repo content cannot flip it.
+          ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
+          ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+            ? { allowManifestFileSinks: true }
+            : {}),
+          // TUI defaults `backgroundSubprocesses` to `true` (the factory
+          // default) because its interactive surface makes long-running
+          // jobs observable. A manifest setting wins if provided.
+          ...(manifestBackgroundSubprocesses !== undefined
+            ? { backgroundSubprocesses: manifestBackgroundSubprocesses }
+            : {}),
+          // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
+          // initOtelSdk() registers a global TracerProvider so middleware-otel's
+          // trace.getTracer() returns a real tracer. Must be called before createKoiRuntime.
+          ...(otelEnabled ? { otel: true as const } : {}),
+          // KOI_AUDIT_NDJSON=<path> opts into security-grade audit logging.
+          // Manifest audit.ndjson is the fallback when the env var is absent.
+          // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 (repo-authored path).
+          // Precedence: env var (present, even "") → manifest (gate required) → off.
+          // Setting the env var to "" is an explicit disable that wins over manifest.
+          ...(process.env.KOI_AUDIT_NDJSON !== undefined
+            ? process.env.KOI_AUDIT_NDJSON !== ""
+              ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
+              : {}
+            : manifestAudit?.ndjson !== undefined &&
+                process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+              ? { auditNdjsonPath: manifestAudit.ndjson }
+              : {}),
+          // KOI_AUDIT_SQLITE=<path> opts into SQLite-backed audit logging.
+          // Same precedence/disable semantics as KOI_AUDIT_NDJSON above.
+          ...(process.env.KOI_AUDIT_SQLITE !== undefined
+            ? process.env.KOI_AUDIT_SQLITE !== ""
+              ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+              : {}
+            : manifestAudit?.sqlite !== undefined &&
+                process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+              ? { auditSqlitePath: manifestAudit.sqlite }
+              : {}),
+          // KOI_AUDIT_VIOLATIONS=<path> overrides the violations DB path.
+          // Manifest audit.violations is the fallback when the env var is absent.
+          // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 for manifest paths.
+          // Precedence: env var (present, even "") → manifest (gate required) → default (~/.koi/violations.db).
+          // Setting the env var to "" passes the empty string through — runtime-factory treats
+          // length===0 as an explicit disable (no violations DB), preventing the default fallback.
+          ...(process.env.KOI_AUDIT_VIOLATIONS !== undefined
+            ? { violationSqlitePath: process.env.KOI_AUDIT_VIOLATIONS }
+            : manifestAudit?.violations !== undefined &&
+                process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+              ? { violationSqlitePath: manifestAudit.violations }
+              : {}),
+          // KOI_AUDIT_NDJSON_MAX_BYTES=<n> enables size-based NDJSON log rotation.
+          // KOI_AUDIT_NDJSON_DAILY=1 enables daily UTC rotation.
+          ...(() => {
+            const rawBytes = process.env.KOI_AUDIT_NDJSON_MAX_BYTES;
+            const maxBytes = rawBytes !== undefined ? Number(rawBytes) : undefined;
+            if (
+              rawBytes !== undefined &&
+              (maxBytes === undefined || !Number.isFinite(maxBytes) || maxBytes <= 0)
+            ) {
+              console.warn(
+                `[koi] KOI_AUDIT_NDJSON_MAX_BYTES="${rawBytes}" is not a positive number — NDJSON size rotation disabled`,
+              );
             }
-          })
-          .catch((err: unknown) => {
-            console.warn("[tui-command] violation backfill failed:", err);
-          });
-        // Initial snapshot push so the view has data before the first turn.
-        governanceBridge.pollSnapshot();
-      }
-    } catch (err: unknown) {
-      console.warn("[tui-command] governance bridge init failed:", err);
-    }
-    // Registry-only daemon bridge (#1944). The registry path follows the
-    // `koi bg` convention — `KOI_STATE_DIR/daemon/sessions` when set, else
-    // `~/.koi/daemon/sessions`. Per-workspace isolation: set KOI_STATE_DIR
-    // per shell. Opened only when the directory already exists so that
-    // simply launching the TUI does not create or mutate shared state on
-    // hosts where no daemon has ever run. Replaced by the live bridge
-    // below when the manifest declares subprocess children.
-    const registryDir = defaultRegistryDir();
-    const registryDirExists = await stat(registryDir)
-      .then((s) => s.isDirectory())
-      .catch(() => false);
-    // Inline helper: maps a DaemonBridgeToast to the TUI Toast shape.
-    // body is empty — daemon toasts carry their message in title only.
-    const pushDaemonToast = (
-      toast: import("./daemon-bridge.js").DaemonBridgeToast,
-      key: string,
-    ): void => {
-      store.dispatch({
-        kind: "add_toast",
-        toast: {
-          id: crypto.randomUUID(),
-          kind: toast.kind,
-          key,
-          title: toast.message,
-          body: "",
-          ts: Date.now(),
-        },
-      });
-    };
-    if (registryDirExists) {
-      try {
-        // The registry-only bridge only calls describeList() + watch() —
-        // it never invokes register/update/unregister, so even though
-        // FileSessionRegistry exposes write methods we never use them.
-        const roRegistry = createFileSessionRegistry({ dir: registryDir });
-        registryOnlyBridge = createDaemonBridge({
-          mode: { kind: "registry-only", registry: roRegistry },
-          dispatch: store.dispatch,
-          pushToast: (toast) => {
-            pushDaemonToast(toast, "daemon-bridge");
-          },
-        });
-      } catch (err: unknown) {
-        console.warn("[tui-command] registry-only bridge init failed:", err);
-      }
-    }
-    // Daemon supervisor wiring (#1944). Constructed BEFORE
-    // wireManifestSupervision so its supervisor + sessionRegistry can back
-    // a daemon-aware SpawnChildFn for subprocess children with `command`.
-    // Skipped when the manifest has no subprocess children.
-    const hasSubprocessChild =
-      manifestSupervision?.children.some((c) => c.isolation === "subprocess") === true;
-    if (hasSubprocessChild) {
-      // Tear down the registry-only bridge first; live mode owns the registry.
-      try {
-        await registryOnlyBridge?.close();
-        registryOnlyBridge = null;
-      } catch (err: unknown) {
-        console.warn("[tui-command] registry-only bridge close failed:", err);
-      }
-      try {
-        const supervisorManifest: import("@koi/core").AgentManifest = {
-          name: flags.manifest ?? "supervisor",
-          version: "0",
-          model: { name: modelName },
-          ...(manifestSupervision !== undefined && { supervision: manifestSupervision }),
-        };
-        daemonSupervisorHandle = await wireDaemonSupervisor({
-          stateDir: registryDir,
-          manifest: supervisorManifest,
-          dispatch: store.dispatch,
-          pushToast: (toast) => {
-            pushDaemonToast(toast, "daemon-supervisor");
-          },
-          backends: { subprocess: createSubprocessBackend() },
-        });
-        store.dispatch({ kind: "set_supervisor_attached", attached: true });
-      } catch (err: unknown) {
-        console.warn("[tui-command] daemon supervisor wiring failed:", err);
-      }
-    }
-    // Manifest-driven supervision wiring (#1866 + #1944). When the loaded
-    // manifest declares `supervision:`, activate the subsystem here so the
-    // declared children appear in the runtime's AgentRegistry and in the
-    // /agents view. When the daemon supervisor is also active and a child
-    // declares `command`, route that child through the daemon adapter so
-    // /supervisor, /bg, ownership checks, and on-path kills observe and
-    // control the same worker. Children without `command` continue to
-    // use the in-process stub for backwards compatibility.
-    if (manifestSupervision !== undefined) {
-      try {
-        const daemonHandle = daemonSupervisorHandle;
-        const subprocessSpawnFactory =
-          daemonHandle !== undefined
-            ? (agentRegistry: import("@koi/core").AgentRegistry) => {
-                agentRegistryBridge = attachAgentRegistry({
-                  supervisor: daemonHandle.supervisor,
-                  agentRegistry,
+            const daily = process.env.KOI_AUDIT_NDJSON_DAILY === "1";
+            const validMaxBytes =
+              maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0;
+            if (validMaxBytes || daily) {
+              return {
+                auditNdjsonRotation: {
+                  ...(validMaxBytes ? { maxSizeBytes: maxBytes } : {}),
+                  ...(daily ? { daily: true as const } : {}),
+                },
+              };
+            }
+            return {};
+          })(),
+          // KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path because
+          // the CLI always writes signed (hash-chained) audit entries, which are incompatible
+          // with session-granular pruning. Warn and ignore instead of aborting at boot.
+          ...(() => {
+            const rawDays = process.env.KOI_AUDIT_SQLITE_RETENTION_DAYS;
+            if (rawDays !== undefined) {
+              console.warn(
+                "[koi] KOI_AUDIT_SQLITE_RETENTION_DAYS is not supported in the CLI audit path " +
+                  "(signed/hash-chained logs cannot be pruned). The setting is ignored.",
+              );
+            }
+            return {};
+          })(),
+          // Per-sink manifest provenance: only pass the source path for sinks that
+          // actually came from the manifest (not from operator env vars). This lets
+          // createKoiRuntime run a final containment check immediately before each
+          // manifest-derived sink open, without incorrectly revalidating env-var
+          // sourced paths against the manifest directory.
+          ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
+          process.env.KOI_AUDIT_NDJSON === undefined &&
+          manifestAudit?.ndjson !== undefined &&
+          manifestLoadPath !== undefined
+            ? { manifestNdjsonSourcePath: manifestLoadPath }
+            : {}),
+          ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
+          process.env.KOI_AUDIT_SQLITE === undefined &&
+          manifestAudit?.sqlite !== undefined &&
+          manifestLoadPath !== undefined
+            ? { manifestSqliteSourcePath: manifestLoadPath }
+            : {}),
+          ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
+          process.env.KOI_AUDIT_VIOLATIONS === undefined &&
+          manifestAudit?.violations !== undefined &&
+          manifestLoadPath !== undefined
+            ? { manifestViolationsSourcePath: manifestLoadPath }
+            : {}),
+          // KOI_REPORT_ENABLED=true opts into run-report middleware.
+          // Wires @koi/middleware-report so a RunReport is printed at session end.
+          ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),
+          // KOI_PLANNING_ENABLED=true opts into @koi/middleware-planning.
+          // Default off because plan state is ephemeral across resume until
+          // durable persistence (#1842) lands. Hosts that accept the
+          // limitation can opt in today.
+          ...(process.env.KOI_PLANNING_ENABLED === "true" ? { planningEnabled: true } : {}),
+          // KOI_FEEDBACK_LOOP_ENABLED=true opts into @koi/middleware-feedback-loop.
+          // Activates model-response validation + tool-health tracking with an
+          // empty config (observe-only, no validators, no quarantine thresholds).
+          ...(process.env.KOI_FEEDBACK_LOOP_ENABLED === "true" ? { feedbackLoop: {} } : {}),
+          // KOI_INTENT_CAPSULE=<systemPrompt> opts into @koi/middleware-intent-capsule.
+          // Cryptographically binds the agent's mandate at session start with Ed25519;
+          // verifies hash on every model call. Throws PERMISSION on tamper. (gov-16 #1883)
+          ...(process.env.KOI_INTENT_CAPSULE !== undefined && process.env.KOI_INTENT_CAPSULE !== ""
+            ? { intentCapsule: { systemPrompt: process.env.KOI_INTENT_CAPSULE } }
+            : {}),
+          extraMiddleware:
+            aceMiddleware !== undefined
+              ? [mountDescriptionsMiddleware, securityBridge.middleware, aceMiddleware]
+              : [mountDescriptionsMiddleware, securityBridge.middleware],
+          // Bridge spawn lifecycle events into the TUI store so /agents view and
+          // inline spawn_call blocks reflect real spawn state. Each spawn call
+          // produces one spawn_requested + one agent_status_changed event.
+          onSpawnEvent: (event): void => {
+            // Delegate to the current drain's spawn tracker for SIGINT grace.
+            // Null between drains so cross-drain survivors from earlier turns cannot
+            // influence the grace policy of a later, unrelated turn (#1999 r14).
+            currentDrainSpawnHandler?.(event);
+            // Defense-in-depth: store.dispatch can throw if the reducer or
+            // SolidJS reactivity hits an edge case. A throwing callback must
+            // not crash the spawn flow — the engine wraps this in safeSpawnEvent
+            // too, but belt-and-braces keeps the TUI safe even if the engine
+            // guard is ever removed.
+            try {
+              if (event.kind === "spawn_requested") {
+                store.dispatch({
+                  kind: "engine_event",
+                  event: {
+                    kind: "spawn_requested",
+                    childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
+                    request: {
+                      agentName: event.agentName,
+                      description: event.description,
+                      signal: new AbortController().signal,
+                    },
+                  },
                 });
-                return createDaemonSpawnChildFn({
-                  supervisor: daemonHandle.supervisor,
-                  sessionRegistry: daemonHandle.registry,
-                  agentRegistry,
-                  bridge: agentRegistryBridge,
-                  // Subprocess children must declare a `command` to reach
-                  // this branch (the dispatcher in wireManifestSupervision
-                  // only routes here when childSpec.command is set), so
-                  // the builder is always invoked with a defined command.
-                  commandBuilder: (_parent, childSpec) => childSpec.command ?? [],
+              } else {
+                // agent_status_changed: use the dedicated set_spawn_terminal action so the
+                // outcome (complete vs failed) is preserved. The engine's ProcessState only
+                // has a single "terminated" value — routing through that path would collapse
+                // failures into successes.
+                const outcome: "complete" | "failed" =
+                  event.status === "failed" ? "failed" : "complete";
+                store.dispatch({
+                  kind: "set_spawn_terminal",
+                  agentId: event.agentId,
+                  outcome,
+                  // Pass metadata so the reducer can synthesize a record when
+                  // spawn_requested dispatch was lost (#1855).
+                  agentName: event.agentName,
+                  description: event.description,
                 });
               }
-            : undefined;
-        const supHandle = await wireManifestSupervision({
-          runtime: handle.runtime,
-          supervisorManifestName: flags.manifest ?? "supervisor",
-          supervision: manifestSupervision,
-          onChange: (children) => {
-            store.dispatch({ kind: "set_supervised_children", children });
+            } catch (e: unknown) {
+              console.warn("[koi:tui] onSpawnEvent dispatch failed — spawn UI may be stale", e);
+            }
           },
-          ...(subprocessSpawnFactory !== undefined && { subprocessSpawnFactory }),
+        }).then(async (handle) => {
+          // If an interim SIGUSR1 teardown started while createKoiRuntime was
+          // in flight (#1906 R10), the teardown couldn't dispose `handle`
+          // because it wasn't assigned yet. Dispose it here directly and do
+          // NOT assign `runtimeHandle` — otherwise the rest of bootstrap
+          // (transcript priming, /mcp refresh) would run against an
+          // already-disposed runtime.
+          if (shutdownStarted) {
+            handle.shutdownBackgroundTasks();
+            void handle.runtime.dispose().catch(() => {
+              /* best effort — hard-exit failsafe will still fire */
+            });
+            return;
+          }
+          runtimeHandle = handle;
+          permissionEscalationCoordinatorLoop = startPermissionEscalationCoordinatorLoop(
+            handle,
+            labeledApprovalHandler,
+          );
+          // #1767 Phase 6: surface context-engine swap events as TUI notices
+          // through the single-writer store. Subscribing at the controller
+          // level (rather than reading the run-stream `custom` event) covers
+          // out-of-run swaps too — idle, pre-first-run, between reusable
+          // turns. Notices flow through `add_info` like plugin-load banners:
+          // not in the JSONL transcript, not pushed back into model context.
+          handle.runtime.contextEngineSwapController?.subscribe((swap) => {
+            const notice = formatContextEngineSwapNotice(swap);
+            store.dispatch({ kind: "add_info", message: notice.message });
+          });
+          // Resolve lazy skill agent ref so the injector middleware can query
+          // skill components on every subsequent model call.
+          skillAgentRef.current = handle.runtime.agent;
+          // Seed the mutable live skill map from the ECS components attached during
+          // createKoiRuntime. Subsequent session resets update liveSkillComponents via
+          // reloadSkillComponents() without touching the static ECS.
+          liveSkillComponents = handle.runtime.agent.query<SkillComponent>("skill:");
+          // Wire governance bridge when the agent has a GovernanceController
+          // component attached. In default sessions (no --max-spend or equivalent
+          // future flag), component() returns undefined and the bridge stays unset,
+          // leaving all governanceBridge?.xxx() call sites as no-ops.
+          try {
+            const governanceController =
+              handle.runtime.agent.component<GovernanceController>(GOVERNANCE);
+            // `--no-governance` / manifest disable wins here: even though the
+            // engine's bundled GOVERNANCE component is still attached for
+            // guard-level safety, the host-level observer surface (bridge, alerts
+            // JSONL, toast reducer) must stay inert so operator intent is
+            // honored end-to-end. Without this gate, disabling governance would
+            // still fire toasts, persist alerts, and poll snapshots — a
+            // fail-open.
+            if (governanceController !== undefined && handle.governanceEnabled) {
+              governanceBridge = createGovernanceBridge({
+                store,
+                controller: governanceController,
+                sessionId: tuiSessionId as string,
+                alertsPath: join(homedir(), ".koi", "governance-alerts.jsonl"),
+                // Static rule snapshot resolved by runtime-factory via
+                // backend.describeRules() — falls back to a synthetic default-allow
+                // entry until the manifest YAML loader (#1877) wires real rules.
+                rules: handle.governanceRules,
+                // Resolved `--alert-threshold` / manifest thresholds. When both are
+                // unset the bridge falls back to its observational default
+                // ([0.5, 0.8, 0.95]); passing the resolved set here is what makes
+                // CLI/manifest precedence authoritative for TUI toast firing.
+                ...(handle.governanceAlertThresholds !== undefined
+                  ? { alertThresholds: handle.governanceAlertThresholds }
+                  : {}),
+                ...(handle.violationStore !== undefined
+                  ? { violationStore: handle.violationStore }
+                  : {}),
+                // Static capability mirror — matches the createGovernanceMiddleware's
+                // describeCapabilities() output. Hardcoded here to avoid plumbing the
+                // middleware instance back from runtime-factory just for one string.
+                capabilities: [
+                  { label: "governance", description: "Policy gate + setpoint enforcement active" },
+                ],
+              });
+              // Seed up to 10 most-recent alerts from JSONL so /governance
+              // shows context across sessions instead of starting empty.
+              // TODO(gov-9): replace per-alert dispatch with a `replay_persisted_alerts`
+              // bulk action once seed counts grow past ~10 to avoid N reducer runs.
+              const recent = governanceBridge.loadRecentAlerts(10);
+              for (const alert of recent) {
+                store.dispatch({ kind: "add_governance_alert", alert });
+              }
+              // Seed up to 10 most-recent persisted violations for the current
+              // session so /governance's "Recent violations" panel is populated
+              // on restart / resume. Load is async (SQLite) — fire-and-forget
+              // so startup isn't blocked on history backfill.
+              void governanceBridge
+                .loadRecentViolations(10)
+                .then((violations) => {
+                  // Synthesize UI-shape fields: id is per-entry counter, ts
+                  // is load-time (the ViolationStore row timestamp is not
+                  // exposed in the Violation shape — it would need an L0
+                  // widening to surface). Order is preserved from the DB.
+                  for (const v of violations) {
+                    store.dispatch({
+                      kind: "add_governance_violation",
+                      violation: {
+                        id: `backfill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        ts: Date.now(),
+                        variable: v.rule,
+                        reason: v.message,
+                      },
+                    });
+                  }
+                })
+                .catch((err: unknown) => {
+                  console.warn("[tui-command] violation backfill failed:", err);
+                });
+              // Initial snapshot push so the view has data before the first turn.
+              governanceBridge.pollSnapshot();
+            }
+          } catch (err: unknown) {
+            console.warn("[tui-command] governance bridge init failed:", err);
+          }
+          // Registry-only daemon bridge (#1944). The registry path follows the
+          // `koi bg` convention — `KOI_STATE_DIR/daemon/sessions` when set, else
+          // `~/.koi/daemon/sessions`. Per-workspace isolation: set KOI_STATE_DIR
+          // per shell. Opened only when the directory already exists so that
+          // simply launching the TUI does not create or mutate shared state on
+          // hosts where no daemon has ever run. Replaced by the live bridge
+          // below when the manifest declares subprocess children.
+          const registryDir = defaultRegistryDir();
+          const registryDirExists = await stat(registryDir)
+            .then((s) => s.isDirectory())
+            .catch(() => false);
+          // Inline helper: maps a DaemonBridgeToast to the TUI Toast shape.
+          // body is empty — daemon toasts carry their message in title only.
+          const pushDaemonToast = (
+            toast: import("./daemon-bridge.js").DaemonBridgeToast,
+            key: string,
+          ): void => {
+            store.dispatch({
+              kind: "add_toast",
+              toast: {
+                id: crypto.randomUUID(),
+                kind: toast.kind,
+                key,
+                title: toast.message,
+                body: "",
+                ts: Date.now(),
+              },
+            });
+          };
+          if (registryDirExists) {
+            try {
+              // The registry-only bridge only calls describeList() + watch() —
+              // it never invokes register/update/unregister, so even though
+              // FileSessionRegistry exposes write methods we never use them.
+              const roRegistry = createFileSessionRegistry({ dir: registryDir });
+              registryOnlyBridge = createDaemonBridge({
+                mode: { kind: "registry-only", registry: roRegistry },
+                dispatch: store.dispatch,
+                pushToast: (toast) => {
+                  pushDaemonToast(toast, "daemon-bridge");
+                },
+              });
+            } catch (err: unknown) {
+              console.warn("[tui-command] registry-only bridge init failed:", err);
+            }
+          }
+          // Daemon supervisor wiring (#1944). Constructed BEFORE
+          // wireManifestSupervision so its supervisor + sessionRegistry can back
+          // a daemon-aware SpawnChildFn for subprocess children with `command`.
+          // Skipped when the manifest has no subprocess children.
+          const hasSubprocessChild =
+            manifestSupervision?.children.some((c) => c.isolation === "subprocess") === true;
+          if (hasSubprocessChild) {
+            // Tear down the registry-only bridge first; live mode owns the registry.
+            try {
+              await registryOnlyBridge?.close();
+              registryOnlyBridge = null;
+            } catch (err: unknown) {
+              console.warn("[tui-command] registry-only bridge close failed:", err);
+            }
+            try {
+              const supervisorManifest: import("@koi/core").AgentManifest = {
+                name: flags.manifest ?? "supervisor",
+                version: "0",
+                model: { name: modelName },
+                ...(manifestSupervision !== undefined && { supervision: manifestSupervision }),
+              };
+              daemonSupervisorHandle = await wireDaemonSupervisor({
+                stateDir: registryDir,
+                manifest: supervisorManifest,
+                dispatch: store.dispatch,
+                pushToast: (toast) => {
+                  pushDaemonToast(toast, "daemon-supervisor");
+                },
+                backends: { subprocess: createSubprocessBackend() },
+              });
+              store.dispatch({ kind: "set_supervisor_attached", attached: true });
+            } catch (err: unknown) {
+              console.warn("[tui-command] daemon supervisor wiring failed:", err);
+            }
+          }
+          // Manifest-driven supervision wiring (#1866 + #1944). When the loaded
+          // manifest declares `supervision:`, activate the subsystem here so the
+          // declared children appear in the runtime's AgentRegistry and in the
+          // /agents view. When the daemon supervisor is also active and a child
+          // declares `command`, route that child through the daemon adapter so
+          // /supervisor, /bg, ownership checks, and on-path kills observe and
+          // control the same worker. Children without `command` continue to
+          // use the in-process stub for backwards compatibility.
+          if (manifestSupervision !== undefined) {
+            try {
+              const daemonHandle = daemonSupervisorHandle;
+              const subprocessSpawnFactory =
+                daemonHandle !== undefined
+                  ? (agentRegistry: import("@koi/core").AgentRegistry) => {
+                      agentRegistryBridge = attachAgentRegistry({
+                        supervisor: daemonHandle.supervisor,
+                        agentRegistry,
+                      });
+                      return createDaemonSpawnChildFn({
+                        supervisor: daemonHandle.supervisor,
+                        sessionRegistry: daemonHandle.registry,
+                        agentRegistry,
+                        bridge: agentRegistryBridge,
+                        // Subprocess children must declare a `command` to reach
+                        // this branch (the dispatcher in wireManifestSupervision
+                        // only routes here when childSpec.command is set), so
+                        // the builder is always invoked with a defined command.
+                        commandBuilder: (_parent, childSpec) => childSpec.command ?? [],
+                      });
+                    }
+                  : undefined;
+              const supHandle = await wireManifestSupervision({
+                runtime: handle.runtime,
+                supervisorManifestName: flags.manifest ?? "supervisor",
+                supervision: manifestSupervision,
+                onChange: (children) => {
+                  store.dispatch({ kind: "set_supervised_children", children });
+                },
+                ...(subprocessSpawnFactory !== undefined && { subprocessSpawnFactory }),
+              });
+              supervisionHandle = supHandle;
+            } catch (err: unknown) {
+              console.warn("[tui-command] supervision wiring failed:", err);
+            }
+          }
+          // Prime the runtime's in-memory transcript with the resumed
+          // messages. The runtime's context-window builder reads from this
+          // array on every turn, so without this push the model would see
+          // an empty history and treat the first post-resume turn as a
+          // fresh conversation. Dispatching `rehydrate_messages` only
+          // updates the UI; this line makes the agent remember.
+          if (resumedMessagesToPrime.length > 0) {
+            handle.transcript.push(...resumedMessagesToPrime);
+            resumedMessagesToPrime = [];
+          }
+          // If /mcp was opened during startup, refresh its live status now
+          // that the runtime is ready.
+          if (store.getState().activeView === "mcp") {
+            void (async () => {
+              mcpViewGeneration += 1;
+              const refreshGen = mcpViewGeneration;
+              const live = await handle.getMcpStatus();
+              if (mcpViewGeneration !== refreshGen) return;
+              store.dispatch({
+                kind: "set_mcp_status",
+                servers: live.map((l) => ({
+                  name: l.name,
+                  // transport is now threaded through McpServerStatus from getMcpStatus(),
+                  // so startup refresh uses the same authoritative source as nav:mcp enrichment.
+                  status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
+                  toolCount: l.toolCount,
+                  detail: l.failureMessage,
+                })),
+              });
+            })();
+          }
+
+          // Dispatch plugin summary to TUI store (#1728)
+          store.dispatch({
+            kind: "set_plugin_summary",
+            summary: handle.pluginSummary,
+          });
+
+          // Surface plugin status as inline TUI notice (#1728, #1887).
+          // UI-only — not injected into the model transcript to avoid a trust
+          // boundary issue (plugin descriptions are untrusted metadata).
+          // Agent awareness comes through the /plugins view and startup log.
+          //
+          // #1887: suppress the banner on the happy path (plugins loaded cleanly,
+          // no errors) — users who configured those plugins already know they
+          // loaded, and `/plugins` is the canonical way to inspect them. Only
+          // render when there are errors to surface, so failures are never
+          // silent. Include the loaded list alongside errors for context.
+          //
+          // Plugin-derived strings are sanitized to strip ANSI escape sequences
+          // and control characters before display.
+          if (handle.pluginSummary.errors.length > 0) {
+            // Strip ANSI escapes and control characters from untrusted plugin text.
+            // Constructor form avoids `noControlCharactersInRegex` (hex escapes in
+            // literal regex still trip the rule). The `useRegexLiterals` warning on
+            // the next two lines is a false positive in that case.
+            // biome-ignore lint/complexity/useRegexLiterals: constructor avoids noControlCharactersInRegex
+            const ANSI_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+            // biome-ignore lint/complexity/useRegexLiterals: constructor avoids noControlCharactersInRegex
+            const CTRL_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
+            const sanitize = (s: string): string => s.replace(ANSI_RE, "").replace(CTRL_RE, "");
+
+            const parts: string[] = [];
+            if (handle.pluginSummary.loaded.length > 0) {
+              const pluginLines = handle.pluginSummary.loaded
+                .map((p) => `- ${sanitize(p.name)} v${sanitize(p.version)}`)
+                .join("\n");
+              parts.push(`[Loaded Plugins]\n${pluginLines}`);
+            }
+            const errorLines = handle.pluginSummary.errors
+              .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
+              .join("\n");
+            parts.push(`[Plugin Load Errors]\n${errorLines}`);
+
+            // Route through `add_info` so the notice renders as a system block
+            // rather than being attributed to "You:", and stays out of the
+            // JSONL transcript + next-submit model context.
+            store.dispatch({
+              kind: "add_info",
+              message: parts.join("\n\n"),
+            });
+          }
+
+          return handle;
         });
-        supervisionHandle = supHandle;
-      } catch (err: unknown) {
-        console.warn("[tui-command] supervision wiring failed:", err);
-      }
-    }
-    // Prime the runtime's in-memory transcript with the resumed
-    // messages. The runtime's context-window builder reads from this
-    // array on every turn, so without this push the model would see
-    // an empty history and treat the first post-resume turn as a
-    // fresh conversation. Dispatching `rehydrate_messages` only
-    // updates the UI; this line makes the agent remember.
-    if (resumedMessagesToPrime.length > 0) {
-      handle.transcript.push(...resumedMessagesToPrime);
-      resumedMessagesToPrime = [];
-    }
-    // If /mcp was opened during startup, refresh its live status now
-    // that the runtime is ready.
-    if (store.getState().activeView === "mcp") {
-      void (async () => {
-        mcpViewGeneration += 1;
-        const refreshGen = mcpViewGeneration;
-        const live = await handle.getMcpStatus();
-        if (mcpViewGeneration !== refreshGen) return;
-        store.dispatch({
-          kind: "set_mcp_status",
-          servers: live.map((l) => ({
-            name: l.name,
-            // transport is now threaded through McpServerStatus from getMcpStatus(),
-            // so startup refresh uses the same authoritative source as nav:mcp enrichment.
-            status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
-            toolCount: l.toolCount,
-            detail: l.failureMessage,
-          })),
-        });
-      })();
-    }
-
-    // Dispatch plugin summary to TUI store (#1728)
-    store.dispatch({
-      kind: "set_plugin_summary",
-      summary: handle.pluginSummary,
-    });
-
-    // Surface plugin status as inline TUI notice (#1728, #1887).
-    // UI-only — not injected into the model transcript to avoid a trust
-    // boundary issue (plugin descriptions are untrusted metadata).
-    // Agent awareness comes through the /plugins view and startup log.
-    //
-    // #1887: suppress the banner on the happy path (plugins loaded cleanly,
-    // no errors) — users who configured those plugins already know they
-    // loaded, and `/plugins` is the canonical way to inspect them. Only
-    // render when there are errors to surface, so failures are never
-    // silent. Include the loaded list alongside errors for context.
-    //
-    // Plugin-derived strings are sanitized to strip ANSI escape sequences
-    // and control characters before display.
-    if (handle.pluginSummary.errors.length > 0) {
-      // Strip ANSI escapes and control characters from untrusted plugin text.
-      // Constructor form avoids `noControlCharactersInRegex` (hex escapes in
-      // literal regex still trip the rule). The `useRegexLiterals` warning on
-      // the next two lines is a false positive in that case.
-      // biome-ignore lint/complexity/useRegexLiterals: constructor avoids noControlCharactersInRegex
-      const ANSI_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
-      // biome-ignore lint/complexity/useRegexLiterals: constructor avoids noControlCharactersInRegex
-      const CTRL_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
-      const sanitize = (s: string): string => s.replace(ANSI_RE, "").replace(CTRL_RE, "");
-
-      const parts: string[] = [];
-      if (handle.pluginSummary.loaded.length > 0) {
-        const pluginLines = handle.pluginSummary.loaded
-          .map((p) => `- ${sanitize(p.name)} v${sanitize(p.version)}`)
-          .join("\n");
-        parts.push(`[Loaded Plugins]\n${pluginLines}`);
-      }
-      const errorLines = handle.pluginSummary.errors
-        .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
-        .join("\n");
-      parts.push(`[Plugin Load Errors]\n${errorLines}`);
-
-      // Route through `add_info` so the notice renders as a system block
-      // rather than being attributed to "You:", and stays out of the
-      // JSONL transcript + next-submit model context.
-      store.dispatch({
-        kind: "add_info",
-        message: parts.join("\n\n"),
-      });
-    }
-
-    return handle;
-  });
 
   // let: set once after createTuiApp resolves, read in shutdown.
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
@@ -3337,6 +3694,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // dismiss the modal and keep the bridge usable for the next turn.
     // (#1759 review round 5)
     activeController?.abort();
+    if (activeRemoteRequestId !== null) {
+      void gatewayClient?.cancel(activeRemoteRequestId).catch(() => {
+        /* best effort while remote cancel is a safe no-op placeholder */
+      });
+    }
     permissionBridge.cancelPending("Turn cancelled by user");
   };
 
@@ -3452,6 +3814,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // Best-effort — must not block force-quit.
         }
         try {
+          permissionEscalationCoordinatorLoop?.dispose();
+        } catch {
+          // Best-effort — must not block force-quit.
+        }
+        try {
           await runtimeHandle?.runtime.dispose();
         } catch (disposeErr: unknown) {
           // Log but don't block — force-quit must always terminate.
@@ -3464,6 +3831,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           } catch {
             /* stderr unwritable — best effort */
           }
+        }
+        try {
+          await gatewayClient?.dispose();
+        } catch {
+          // Best-effort — force-quit must always terminate.
         }
         if (liveTasks) {
           // Wait long enough for the runtime's SIGKILL escalation window
@@ -4189,6 +4561,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }\n`,
         );
       }
+      try {
+        permissionEscalationCoordinatorLoop?.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] permission escalation coordinator dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
       // #1742 loop-2 round 10: dispose now fails closed on settle
       // timeout. Catch the throw so the rest of shutdown (approval
       // store close, process.exit) still runs. The hard-exit timer
@@ -4198,6 +4579,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       } catch (disposeErr) {
         process.stderr.write(
           `[koi tui] runtime.dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
+    }
+    if (runtimeHandle === null) {
+      try {
+        await gatewayClient?.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] gateway client dispose failed during shutdown: ${
             disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
           }\n`,
         );
@@ -4567,6 +4959,47 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     store.dispatch({ kind: "set_at_results", results }),
   );
 
+  async function createRemoteStreamWithReconnect(
+    remoteClient: TuiGatewayClient,
+    text: string,
+  ): Promise<AsyncIterable<EngineEvent>> {
+    const startRemoteRun = (): AsyncIterable<EngineEvent> => {
+      const requestId = crypto.randomUUID();
+      activeRemoteRequestId = requestId;
+      return remoteClient.run({
+        requestId,
+        text,
+      });
+    };
+
+    try {
+      return startRemoteRun();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== "gateway socket is not connected") {
+        throw err;
+      }
+      store.dispatch({
+        kind: "add_info",
+        message: "Gateway disconnected - reconnecting...",
+      });
+      try {
+        await remoteClient.reconnect();
+      } catch (reconnectErr) {
+        throw new Error(
+          `Remote gateway resume failed: ${
+            reconnectErr instanceof Error ? reconnectErr.message : String(reconnectErr)
+          }`,
+        );
+      }
+      store.dispatch({
+        kind: "add_info",
+        message: "Gateway resumed existing session.",
+      });
+      return startRemoteRun();
+    }
+  }
+
   const processSubmit = async (text: string): Promise<void> => {
     // Fail closed after a durable clear failure. If the last
     // `/clear` or `/new` could not truncate the JSONL, the
@@ -4643,7 +5076,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // P2-A: block on runtime assembly if not yet ready.
       // First submit waits for createKoiRuntime to complete; subsequent
       // submits use the cached runtimeHandle (already resolved).
-      if (runtimeHandle === null) {
+      if (runtimeHandle === null && gatewayClient === null) {
         try {
           await runtimeReady;
         } catch (e: unknown) {
@@ -4656,13 +5089,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
       }
 
-      // runtimeHandle is guaranteed non-null after runtimeReady resolves.
-      // The await above sets runtimeHandle; if it threw, we returned early.
-      if (runtimeHandle === null) return;
+      if (runtimeHandle === null && gatewayClient === null) return;
       // Bail if a reset (e.g. `/clear`, `/new`) landed during runtime
       // initialization. The submit was implicitly invalidated.
       if (resetGeneration !== submitResetGen) return;
       const handle = runtimeHandle;
+      const remoteClient = gatewayClient;
 
       // Wait for any pending session reset to complete before submitting.
       // Prevents hitting stale task board or trajectory state.
@@ -4738,20 +5170,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Inject a synthetic turn-boundary step so /trajectory can group steps
       // by user turn. The engine resets ctx.turnIndex to 0 on each run() call,
       // so we maintain our own counter here at the TUI session level.
-      const thisTurnIndex = tuiTurnCounter++;
-      await runtimeHandle.appendTrajectoryStep({
-        stepIndex: 0,
-        timestamp: Date.now(),
-        source: "system",
-        kind: "tool_call",
-        identifier: "koi:tui_turn_start",
-        outcome: "success",
-        durationMs: 0,
-        metadata: {
-          type: "tui_turn_start",
-          tuiTurnIndex: thisTurnIndex,
-        } as import("@koi/core").JsonObject,
-      });
+      if (handle !== null) {
+        const thisTurnIndex = tuiTurnCounter++;
+        await handle.appendTrajectoryStep({
+          stepIndex: 0,
+          timestamp: Date.now(),
+          source: "system",
+          kind: "tool_call",
+          identifier: "koi:tui_turn_start",
+          outcome: "success",
+          durationMs: 0,
+          metadata: {
+            type: "tui_turn_start",
+            tuiTurnIndex: thisTurnIndex,
+          } as import("@koi/core").JsonObject,
+        });
+      }
 
       try {
         // A2-A: drive conversation via runtime.run() — the KoiRuntime handles
@@ -4825,13 +5259,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
         let stream: AsyncIterable<EngineEvent>;
         try {
-          stream = isLoopMode
-            ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
-            : handle.runtime.run({
-                kind: "text",
-                text: modelText,
-                signal: controller.signal,
-              });
+          if (remoteClient !== null) {
+            stream = await createRemoteStreamWithReconnect(remoteClient, modelText);
+          } else if (handle !== null) {
+            stream = isLoopMode
+              ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
+              : handle.runtime.run({
+                  kind: "text",
+                  text: modelText,
+                  signal: controller.signal,
+                });
+          } else {
+            throw new Error("Runtime failed to initialize");
+          }
         } catch (err) {
           store.dispatch({
             kind: "add_error",
@@ -4960,15 +5400,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // reset that runs in the 500 ms window invalidates this refresh
         // before it dispatches. Otherwise the post-reset store would be
         // repopulated with this turn's stale trajectory. (#1764)
-        const submitGen = trajectoryRefreshGen;
-        void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
-          refreshTrajectoryData(
-            handle,
-            store,
-            handle.runtime.sessionId,
-            () => trajectoryRefreshGen === submitGen,
-          ),
-        );
+        if (handle !== null) {
+          const submitGen = trajectoryRefreshGen;
+          void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
+            refreshTrajectoryData(
+              handle,
+              store,
+              handle.runtime.sessionId,
+              () => trajectoryRefreshGen === submitGen,
+            ),
+          );
+        }
       } finally {
         // Guard against cross-run races: only clear activeController and
         // reset the SIGINT handler if THIS run is still the active one.
@@ -4978,6 +5420,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const isStillActive = activeController === controller;
         if (isStillActive) {
           activeController = null;
+          activeRemoteRequestId = null;
           activeRunPromise = null;
         }
         // The active run has settled. Clear the interrupt-time spawn snapshot
@@ -5997,6 +6440,204 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           dispatchNotice(store, "zoom-info", `[Zoom level: ${next}×]`);
           break;
         }
+        case "system:mount":
+          void (async (): Promise<void> => {
+            if (nexusFilesystemTransport?.addMount === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_UNAVAILABLE",
+                message: "Runtime mount changes are unavailable in this session.",
+              });
+              return;
+            }
+            if (!runtimeMountMutationsSupported) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_UNAVAILABLE",
+                message:
+                  "Runtime /mount is disabled because this session inferred a single-mount root for backward compat. Set filesystem.options.mountPoint explicitly in the manifest to enable runtime mount changes.",
+              });
+              return;
+            }
+            const parsed = parseMountArgs(args);
+            if (!parsed.ok) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_INVALID_ARGS",
+                message: parsed.error,
+              });
+              return;
+            }
+            const result = await nexusFilesystemTransport.addMount(
+              parsed.value.uri,
+              parsed.value.at,
+            );
+            if (!result.ok) {
+              const message = isRpcMethodUnavailable(result.error)
+                ? "Mount add/remove requires a newer Nexus build with add_mount/remove_mount support."
+                : `Mount failed: ${sanitizeConnectorText(result.error.message)}`;
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_FAILED",
+                message,
+              });
+              return;
+            }
+            // pathUnknown: bridge committed the mount but couldn't isolate the
+            // resulting path. Don't treat the empty path as canonical (would
+            // make /unmount and state tracking incorrect); surface partial
+            // state and prompt the operator to refresh via /mounts.
+            if (result.value.pathUnknown === true || result.value.path === "") {
+              dispatchNotice(
+                store,
+                "mount-info",
+                `[Mounted ${sanitizeConnectorText(parsed.value.uri)} but path discovery failed; run /mounts to refresh]`,
+              );
+              return;
+            }
+            mountDescriptionsState.addRuntime(result.value);
+            dispatchNotice(
+              store,
+              "mount-info",
+              `[Mounted ${sanitizeConnectorText(parsed.value.uri)} at ${sanitizeConnectorText(result.value.path)}]`,
+            );
+          })();
+          break;
+        case "system:unmount":
+          void (async (): Promise<void> => {
+            const path = args.trim();
+            if (path.length === 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_INVALID_ARGS",
+                message: "Usage: /unmount <mount-path>",
+              });
+              return;
+            }
+            if (nexusFilesystemTransport?.removeMount === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_UNAVAILABLE",
+                message: "Runtime mount changes are unavailable in this session.",
+              });
+              return;
+            }
+            if (!runtimeMountMutationsSupported) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_UNAVAILABLE",
+                message:
+                  "Runtime /unmount is disabled because this session inferred a single-mount root for backward compat. Set filesystem.options.mountPoint explicitly in the manifest to enable runtime mount changes.",
+              });
+              return;
+            }
+            // Refuse to unmount the path the backend resolves bare paths
+            // against — removing it leaves all subsequent fs operations
+            // pointing at a dead root with no way to recover short of restart.
+            if (backendActiveRoot !== undefined && path === backendActiveRoot) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_ACTIVE_ROOT",
+                message: `Cannot /unmount ${path}: it is the active backend root for this session. Restart with a different filesystem.options.mountPoint to remove it.`,
+              });
+              return;
+            }
+            const result = await nexusFilesystemTransport.removeMount(path);
+            if (!result.ok) {
+              const message = isRpcMethodUnavailable(result.error)
+                ? "Mount add/remove requires a newer Nexus build with add_mount/remove_mount support."
+                : `Unmount failed: ${sanitizeConnectorText(result.error.message)}`;
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_FAILED",
+                message,
+              });
+              return;
+            }
+            // Use the bridge's authoritative removed path: the operator
+            // may have typed a non-canonical form ("/foo/bar/" vs the live
+            // mount "/foo/bar"), and the bridge's list_mounts diff returns
+            // the canonical identifier. Removing by raw `path` from
+            // mountDescriptionsState would leave a stale entry behind.
+            const removedPath =
+              result.value.path !== undefined && result.value.path.length > 0
+                ? result.value.path
+                : path;
+            mountDescriptionsState.remove(removedPath);
+            dispatchNotice(
+              store,
+              "unmount-info",
+              `[Unmounted ${sanitizeConnectorText(removedPath)}]`,
+            );
+          })();
+          break;
+        case "system:mounts":
+          // Two-stage refresh, never blocked on slow connectors:
+          //   1. Call listMounts() — the cheap, authoritative path list — and
+          //      reconcile mountDescriptionsState so removed mounts disappear
+          //      and stale `pathUnknown` placeholders are dropped.
+          //   2. Print immediately using cheap path/connector fallbacks for
+          //      any path we don't already have a description for.
+          //   3. Best-effort, fire-and-forget describeMount per path: each is
+          //      bounded by the transport's own callTimeoutMs so a single
+          //      OAuth-blocked connector cannot stall others or the print.
+          void (async (): Promise<void> => {
+            const transport = nexusFilesystemTransport;
+            const printSnapshot = (): void => {
+              const snapshot = mountDescriptionsState.getSnapshot();
+              dispatchNotice(
+                store,
+                "mounts-info",
+                formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
+              );
+            };
+            if (transport?.listMounts === undefined) {
+              printSnapshot();
+              return;
+            }
+            const listResult = await transport.listMounts();
+            if (!listResult.ok) {
+              printSnapshot();
+              return;
+            }
+            const livePaths = listResult.value;
+            mountDescriptionsState.reconcile(livePaths);
+            // Seed any newly-discovered live paths with cheap fallbacks so
+            // the print includes them even before describeMount completes.
+            const known = new Set(
+              [
+                ...mountDescriptionsState.getSnapshot().manifest,
+                ...mountDescriptionsState.getSnapshot().runtime,
+              ].map((entry) => entry.path),
+            );
+            for (const path of livePaths) {
+              if (!known.has(path)) {
+                // Prefer the transport's authoritative URI-scheme map for
+                // aliased mounts (e.g. gdrive://x at /team/docs reports
+                // connector "gdrive", not "team"). Fall back to first
+                // path segment only when the transport has no record.
+                const authoritative = transport.mountConnector?.(path);
+                mountDescriptionsState.addRuntime({
+                  path,
+                  connector: authoritative ?? path.split("/").filter(Boolean)[0] ?? "unknown",
+                });
+              }
+            }
+            printSnapshot();
+            // No describeMount enrichment from /mounts. The local bridge is
+            // single-flight: every RPC (reads, writes, /mount, auth) shares
+            // one serialized callQueue. A describeMount that hits OAuth or
+            // simply runs slow can either occupy the queue indefinitely
+            // (blocking foreground filesystem ops) or trip the per-call
+            // timeout that closes the bridge entirely — turning a cosmetic
+            // listing command into a session-killing failure mode. The
+            // operator-facing /mounts UI shows path + connector via the
+            // cheap fallbacks already populated above; README content is
+            // not used by the system prompt and is not worth the risk on
+            // the interactive transport. If a future feature needs it,
+            // it must run on a separate non-interactive transport.
+          })();
+          break;
         case "system:governance-reset":
           // The TUI side already cleared its in-memory alerts via the
           // optimistic dispatch from executeGovernanceReset() in tui-root.tsx.

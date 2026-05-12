@@ -40,6 +40,7 @@
     "@koi/agent-runtime": "workspace:*",
     "@koi/agent-summary": "workspace:*",
     "@koi/artifacts": "workspace:*",
+    "@koi/auto-harness": "workspace:*",
     "@koi/audit-sink-ndjson": "workspace:*",
     "@koi/audit-sink-nexus": "workspace:*",
     "@koi/audit-sink-sqlite": "workspace:*",
@@ -58,6 +59,7 @@
     "@koi/forge-tools": "workspace:*",
     "@koi/fs-local": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
+    "@koi/gateway-stack": "workspace:*",
     "@koi/governance-approval-tiers": "workspace:*",
     "@koi/governance-core": "workspace:*",
     "@koi/governance-defaults": "workspace:*",
@@ -101,6 +103,7 @@
     "@koi/model-openai-compat": "workspace:*",
     "@koi/model-router": "workspace:*",
     "@koi/permissions": "workspace:*",
+    "@koi/permission-escalation-nexus": "workspace:*",
     "@koi/playbook-store-sqlite": "workspace:*",
     "@koi/plugins": "workspace:*",
     "@koi/query-engine": "workspace:*",
@@ -163,7 +166,7 @@
     "@koi/tui": "workspace:*"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"

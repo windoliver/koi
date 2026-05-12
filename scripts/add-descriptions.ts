@@ -165,6 +165,8 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Persist agent scratchpad state across zones via Nexus group-scoped storage",
   "@koi/task-spawn":
     "Inject task tool for zero-friction delegation to pre-registered subagent types",
+  "@koi/team-runtime":
+    "Parallel multi-agent team orchestration with dependency-aware scheduling, replay, and shared-resource conflict control",
   "@koi/workspace": "Isolate agent workspaces via pluggable backends (git worktrees, Docker, etc.)",
   "@koi/workspace-nexus": "Sync workspace metadata across devices via Nexus Raft-replicated store",
 
@@ -325,7 +327,7 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
 
   // ── Meta (L3) ────────────────────────────────────────────────────────
   "@koi/autonomous":
-    "Compose long-running harness, scheduler, and checkpoint/inbox middleware into autonomous agents",
+    "L3 autonomous composition facade for long-running harness, scheduler, and task-aware helper wiring",
   "@koi/cli": "Interactive command-line interface for agent initialization and local execution",
   "@koi/context-arena":
     "Allocate token budgets across context management middleware with preset-driven profiles",

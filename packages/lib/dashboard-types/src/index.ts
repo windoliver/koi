@@ -1,6 +1,6 @@
 export type { AgentStatus } from "./agent-status.js";
 export type { MetricPoint, MetricQuery } from "./metric-point.js";
-export type { ApiResult } from "./rest-types.js";
+export type { ApiResult, Page } from "./rest-types.js";
 export type { SessionSummary } from "./session-summary.js";
 export type { TraceSpan, TraceView } from "./trace-view.js";
 export type {

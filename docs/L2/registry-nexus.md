@@ -482,6 +482,11 @@ const registry = await createNexusRegistry({
 | `matchesFilter()` from L0 | Filter logic is shared across InMemory, EventSourced, and Nexus backends via a pure function in `@koi/core`. No duplication. |
 | Eager warmup on creation | The factory is async and loads all agents before returning. Callers never get a registry with stale-on-first-read data. |
 | Poll-based sync (not WebSocket) | Simpler, stateless, works behind load balancers and proxies. 10s poll is acceptable for agent discovery (not real-time messaging). |
+| Tombstoning for partial-failure recovery | When a write commits remotely but the response is lost, the local mirror is marked stale. Subsequent reads return undefined; mutating ops are rejected; poll forces a refetch that clears the tombstone once Nexus is reachable. |
+| Reserved metadata keys (`koi:status`, `koi:terminated`, `agentType`, `parentId`, etc.) | Adapter-owned. `register()` and `patch()` strip/reject caller writes to these keys so user metadata cannot flip authoritative lifecycle state on next hydration. |
+| Deep-frozen projection entries | `lookup()`/`list()` and `watch()` events return runtime-immutable entries. Without this, an in-process caller could mutate `metadata["koi:status"]` and have the forgery re-sent on the next `transition()`/`patch()` outbound rebuild. |
+| Preserve caller phase on `register()` | Both `created`/`running` round-trip through Nexus `CONNECTED` and `waiting`/`idle` through `IDLE`. The koi:status blob is the source of truth for the precise Koi phase, so the caller's phase is preserved instead of canonicalized. This keeps startup transition events (`created → running`) observable for `ChildHandle`/`spawn-child`. |
+| Tombstone on terminate ambiguous failure | If `agent_transition(SUSPENDED)` commits but `update_agent_metadata({koi:terminated: true})` fails, refetching maps bare SUSPENDED back to `suspended` and would silently downgrade the intended `terminated`. The adapter tombstones instead so callers retry transition or deregister explicitly. |
 
 ---
 

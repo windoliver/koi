@@ -84,10 +84,15 @@ CREATE TABLE structured_playbooks (
   created_at                  INTEGER NOT NULL,
   updated_at                  INTEGER NOT NULL,
   session_count               INTEGER NOT NULL,
-  last_reflected_step_index   INTEGER,
+  last_reflected_step_index   INTEGER,                  -- legacy max-across-sessions watermark
+  reflected_step_index_by_session TEXT,                  -- v8: per-session JSON map {sessionId: stepIndex}
   version                     INTEGER NOT NULL,
   provenance                  TEXT
 );
+-- Schema version: PRAGMA user_version = 8.
+-- v8 migration adds `reflected_step_index_by_session` so playbooks shared
+-- across sessions track each session's replay position independently;
+-- legacy `last_reflected_step_index` is retained as `max(map values)`.
 
 -- Immutable lineage of every committed structured-playbook version.
 -- Required by AGP rollback.

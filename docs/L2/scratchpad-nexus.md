@@ -326,6 +326,13 @@ L2 @koi/scratchpad-nexus
 
 ---
 
+## Changelog
+
+- 2026-05-07 — Initial v2 implementation (issue #1373)
+- 2026-05-08 — `flush()` is now a no-op (was incorrectly calling `tracker.clear()` which suppressed change-event deltas mid-stream); wired into shared `@koi/scratchpad-conformance` suite to lock contract parity with `@koi/scratchpad-local`
+
+---
+
 ## Related
 
 - [`@koi/core` scratchpad types](../../packages/core/src/scratchpad.ts) — L0 contracts (ScratchpadComponent, ScratchpadEntry, etc.)

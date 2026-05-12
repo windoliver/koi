@@ -5,9 +5,10 @@ playbooks, and injects high-confidence strategies into future model calls so the
 agent self-improves across sessions.
 
 This package tracks issue [#1715](https://github.com/windoliver/koi/issues/1715).
-It lands incrementally: this revision ships the **stat pipeline + injection
-primitives** as pure functions. Middleware integration, the LLM
-reflector/curator, and the AGP-derived promotion gate land in subsequent PRs.
+It lands incrementally. The package now includes the shipped ACE middleware
+integration plus the core **stat pipeline + injection + promotion-gate**
+primitives. The remaining future work is the LLM reflector/curator pipeline,
+`ace_reflect`, and broader store/runtime extensions.
 
 ---
 
@@ -56,12 +57,14 @@ TrajectoryEntry[] ── aggregateTrajectoryStats ──▶ Map<id, AggregatedSt
                           formatActivePlaybooksMessage → system prompt
 ```
 
-Every step is a pure function. A future `ace-middleware.ts` will own state and
-clock, calling these primitives.
+The stat and injection helpers remain pure. The promotion-gate commit/rollback
+helpers are store-backed orchestration that read and write structured-playbook
+state. `ace-middleware.ts` is the shipped runtime wrapper that owns session
+state, clock access, and lifecycle wiring around those helpers.
 
 ---
 
-## Public Surface (this revision)
+## Public Surface
 
 | Module | Function | Purpose |
 |--------|----------|---------|
@@ -72,6 +75,9 @@ clock, calling these primitives.
 | `consolidator` | `createDefaultConsolidator(opts)` | EMA blend new candidates into existing playbooks; bumps `version` and `sessionCount` |
 | `injector` | `selectPlaybooks(playbooks, opts)` | Confidence-greedy selection within `maxTokens` |
 | `injector` | `formatActivePlaybooksMessage(selected)` | Render selected playbooks into `[Active Playbooks]` system text |
+| `promotion-gate` | `evaluatePromotion(proposal, evaluation, thresholds)` | Pure AGP decision: `promote` / `reject` / `rollback` |
+| `promotion-gate` | `commitPromotion(deps, proposal, evaluation, thresholds)` | Save a promoted structured-playbook head with version bump + provenance |
+| `promotion-gate` | `rollbackPromotion(deps, proposal, targetVersion, evaluation)` | Restore an earlier structured-playbook snapshot as a new head |
 
 ---
 
@@ -81,9 +87,11 @@ Every consolidated playbook carries a monotonic `version` (bumped on each
 mutation) and an optional `provenance` field linking back to the source
 trajectory window, proposal, and evaluation that produced the commit. The
 default consolidator bumps `version` but does **not** populate `provenance` —
-that is the responsibility of the (future) promotion gate, which only commits
-proposals that pass evaluation thresholds (AGP "no evidence, no commit"
-constraint, see #1715 design notes).
+that is the responsibility of the promotion gate. `commitPromotion(...)`
+records accepted evaluations and saves a new head only when thresholds pass
+(AGP "no evidence, no commit"). `rollbackPromotion(...)` requires store lineage
+support via `StructuredPlaybookStore.getVersion(...)` and restores a chosen
+prior snapshot as a fresh head with a new version and rollback provenance.
 
 ---
 
@@ -193,9 +201,7 @@ of refinement).
 |-------|------|
 | Per-agent partitioning | Allow ACE alongside the spawn preset stack |
 | `clear()` on `PlaybookStore` | Wire `/clear` and `/new` to reset ACE state in-process |
-| Middleware integration | `KoiMiddleware` with `wrapModelCall` (inject) + `wrapToolCall` (record) + `onSessionEnd` (consolidate) |
 | LLM pipeline | `reflector` + `curator` + `StructuredPlaybook` operations (`add` / `merge` / `prune`) with bullet credit assignment |
-| Promotion gate | Proposal → evaluation → commit/rollback flow; `PlaybookProposalStore` lineage |
 | `ace_reflect` tool | Agent-initiated mid-session reflection |
 | `@koi/playbook-store-sqlite` | Cross-process persistence; per-session/per-root-agent partitioning; `clear()` API |
 | Golden query | `@koi/runtime` cassette + replay assertion |

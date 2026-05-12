@@ -1,0 +1,220 @@
+export const WORKER_SOURCE: string = `// @bun
+import { serialize as _v8Serialize } from "node:v8";
+
+const _send = process.send.bind(process);
+let _nonce;
+
+function send(message) {
+  if (typeof _send !== "function") {
+    throw new Error("Worker must be spawned with IPC enabled");
+  }
+
+  if (message.kind === "ready" || _nonce === undefined) {
+    _send(message);
+    return;
+  }
+  _send({ ...message, nonce: _nonce });
+}
+
+function sealHostChannel() {
+  // Prevent untrusted code from forging IPC frames after the host hands control off.
+  process.send = function () {
+    return true;
+  };
+  if (typeof process.disconnect === "function") {
+    process.disconnect = function () {};
+  }
+  process.removeAllListeners("message");
+}
+
+function validateExecuteMessage(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return "Execute message must be an object";
+  }
+
+  const record = value;
+  if (record.kind !== "execute") {
+    return 'Execute message kind must be "execute"';
+  }
+  if (typeof record.code !== "string") {
+    return "Execute message code must be a string";
+  }
+  if (
+    typeof record.timeoutMs !== "number" ||
+    !Number.isFinite(record.timeoutMs) ||
+    record.timeoutMs <= 0
+  ) {
+    return "Execute message timeoutMs must be a positive number";
+  }
+  if (typeof record.input !== "object" || record.input === null || Array.isArray(record.input)) {
+    return "Execute message input must be an object";
+  }
+  if (typeof record.nonce !== "string" || record.nonce.length === 0) {
+    return "Execute message nonce must be a non-empty string";
+  }
+  if (
+    record.maxResultBytes !== undefined &&
+    (typeof record.maxResultBytes !== "number" ||
+      !Number.isFinite(record.maxResultBytes) ||
+      record.maxResultBytes <= 0)
+  ) {
+    return "Execute message maxResultBytes must be a positive number when provided";
+  }
+  if (record.serialization !== undefined && record.serialization !== "advanced" && record.serialization !== "json") {
+    return 'Execute message serialization must be "advanced" or "json"';
+  }
+
+  return record;
+}
+
+function measureSerializedBytes(value, mode) {
+  try {
+    if (mode === "advanced") {
+      // node:v8 structured-clone serializer — closest local proxy for the byte
+      // accounting that Bun's advanced IPC will perform when shipping the value.
+      return _v8Serialize(value).byteLength;
+    }
+    const serialized = JSON.stringify(value === undefined ? null : value);
+    if (typeof serialized !== "string") {
+      return undefined;
+    }
+    return Buffer.byteLength(serialized, "utf8");
+  } catch (_error) {
+    return undefined;
+  }
+}
+
+function classifyThrownError(message) {
+  return message.includes("Permission denied") || message.includes("EACCES")
+    ? "PERMISSION"
+    : "CRASH";
+}
+
+send({ kind: "ready" });
+
+let handled = false;
+
+process.on("message", async (raw) => {
+  if (handled) {
+    send({
+      kind: "error",
+      code: "CRASH",
+      message: "Worker received duplicate execute message",
+      durationMs: 0,
+    });
+    process.exit(1);
+    return;
+  }
+
+  const message = validateExecuteMessage(raw);
+  if (typeof message === "string") {
+    if (
+      raw !== null &&
+      typeof raw === "object" &&
+      typeof raw.nonce === "string" &&
+      raw.nonce.length > 0
+    ) {
+      _nonce = raw.nonce;
+    }
+    send({
+      kind: "error",
+      code: "CRASH",
+      message,
+      durationMs: 0,
+    });
+    process.exit(1);
+    return;
+  }
+
+  handled = true;
+  _nonce = message.nonce;
+  sealHostChannel();
+
+  const startedAt = performance.now();
+  let settled = false;
+  const timeoutHandle = setTimeout(() => {
+    if (settled) {
+      return;
+    }
+
+    settled = true;
+    send({
+      kind: "error",
+      code: "TIMEOUT",
+      message: "Worker execution timed out",
+      durationMs: message.timeoutMs,
+    });
+    process.exit(124);
+  }, message.timeoutMs);
+
+  try {
+    // Use AsyncFunction so user code can use \`await\` directly without an
+    // explicit \`(async () => { ... })()\` wrapper.
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const fn = new AsyncFunction("input", message.code);
+    const output = await fn(message.input);
+
+    if (settled) {
+      return;
+    }
+
+    settled = true;
+    clearTimeout(timeoutHandle);
+
+    const cap = message.maxResultBytes;
+    if (typeof cap === "number" && cap > 0) {
+      const measured = measureSerializedBytes(output, message.serialization || "advanced");
+      if (measured === undefined) {
+        // Fail closed when the worker cannot account for transport bytes.
+        send({
+          kind: "error",
+          code: "CRASH",
+          message:
+            "Worker rejected result: size could not be measured for transport (maxResultBytes=" +
+            String(cap) +
+            ")",
+          durationMs: performance.now() - startedAt,
+        });
+        process.exit(1);
+        return;
+      }
+      if (measured > cap) {
+        send({
+          kind: "error",
+          code: "CRASH",
+          message:
+            "Worker rejected result: serialized size " +
+            String(measured) +
+            " bytes exceeds maxResultBytes " +
+            String(cap),
+          durationMs: performance.now() - startedAt,
+        });
+        process.exit(1);
+        return;
+      }
+    }
+
+    send({
+      kind: "result",
+      output,
+      durationMs: performance.now() - startedAt,
+    });
+    process.exit(0);
+  } catch (error) {
+    if (settled) {
+      return;
+    }
+
+    settled = true;
+    clearTimeout(timeoutHandle);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    send({
+      kind: "error",
+      code: classifyThrownError(errorMessage),
+      message: errorMessage,
+      durationMs: performance.now() - startedAt,
+    });
+    process.exit(1);
+  }
+});
+`;

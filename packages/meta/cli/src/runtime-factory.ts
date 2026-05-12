@@ -49,6 +49,8 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  EscalationDecision,
+  EscalationRequest,
   FileSystemBackend,
   GovernanceBackend,
   GovernanceController,
@@ -115,6 +117,10 @@ import {
   assertHealthCapable as nexusAssertHealthCapable,
   assertProductionTransport as nexusAssertProductionTransport,
 } from "@koi/nexus-client";
+import {
+  createNexusPermissionEscalation,
+  createNexusPermissionEscalationCoordinator,
+} from "@koi/permission-escalation-nexus";
 import type { CompiledRule, SourcedRule } from "@koi/permissions";
 import {
   compileGlob,
@@ -126,7 +132,12 @@ import {
 } from "@koi/permissions";
 import type { NexusPermissionBackend } from "@koi/permissions-nexus";
 import { createNexusPermissionBackend } from "@koi/permissions-nexus";
-import { wrapMiddlewareWithTrace } from "@koi/runtime";
+import {
+  createRuntime,
+  type RuntimeAutoHarnessConfig,
+  type RuntimeAutoHarnessHandle,
+  wrapMiddlewareWithTrace,
+} from "@koi/runtime";
 import { loadSettings } from "@koi/settings";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSqliteViolationStore } from "@koi/violation-store-sqlite";
@@ -145,7 +156,12 @@ import {
 } from "./middleware-registry.js";
 import type { PluginDiscoverySummary } from "./plugin-activation.js";
 import { loadPluginComponents } from "./plugin-activation.js";
-import { activateStacks, LATE_PHASE_HOST_KEYS, mergeStackContributions } from "./preset-stacks.js";
+import {
+  activateStacks,
+  DEFAULT_STACKS,
+  LATE_PHASE_HOST_KEYS,
+  mergeStackContributions,
+} from "./preset-stacks.js";
 import { enforceRequiredMiddleware } from "./required-middleware.js";
 import {
   buildCoreMiddleware,
@@ -469,6 +485,21 @@ export interface KoiRuntimeConfig {
   readonly modelName: string;
   /** Approval handler for permission prompts — should be permissionBridge.handler. */
   readonly approvalHandler: ApprovalHandler;
+  /**
+   * Optional auto-harness pipeline config. The host factory injects the
+   * runtime approval bridge so candidate deployment still routes through the
+   * caller's approval handler.
+   */
+  readonly autoHarness?: RuntimeAutoHarnessConfig | undefined;
+  /**
+   * Optional forge-demand detector config. When supplied alongside
+   * `autoHarness`, demand signals automatically drive `synthesizeHarness`
+   * — without this, callers must invoke `synthesizeHarness` out-of-band.
+   * Required to satisfy the runtime's onSessionAttached precondition.
+   */
+  readonly forgeDemand?:
+    | NonNullable<Parameters<typeof createRuntime>[0]>["forgeDemand"]
+    | undefined;
   /**
    * Override the built-in permission backend. When omitted, the factory
    * uses `default`-mode with the TUI's tiered allow rules (pre-allowed
@@ -911,6 +942,24 @@ export interface KoiRuntimeConfig {
    */
   readonly nexusTransport?: import("@koi/nexus-client").NexusTransport | undefined;
   /**
+   * Optional coordinator→worker permission escalation transport selection.
+   * Omitted or `mode: "local"` keeps the existing in-process posture.
+   * `mode: "nexus"` binds the worker and coordinator identities to the
+   * supplied Nexus transport so remote workers can request approvals.
+   */
+  readonly permissionEscalation?:
+    | {
+        readonly mode: "local";
+      }
+    | {
+        readonly mode: "nexus";
+        readonly agentId: AgentId;
+        readonly coordinatorAgentId: AgentId;
+        readonly pollIntervalMs?: number | undefined;
+        readonly requestMethodPrefix?: string | undefined;
+      }
+    | undefined;
+  /**
    * Explicit consumer flags. When BOTH are `false`, runtime skips all Nexus
    * wiring — the fs-only escape hatch that bypasses `assertProductionTransport`.
    * Default: enabled when nexusTransport is set (HTTP-implicit Phase 1 behavior).
@@ -1063,6 +1112,23 @@ export interface KoiRuntimeConfig {
 export interface KoiRuntimeHandle {
   /** The assembled KoiRuntime — call runtime.run(input) to stream a turn. */
   readonly runtime: KoiRuntime;
+  /** Resolved permission escalation transport mode for this runtime. */
+  readonly permissionEscalationMode: "local" | "nexus";
+  /**
+   * Optional coordinator polling hook for Nexus-backed permission escalation.
+   * Present only when `permissionEscalation.mode === "nexus"`; the TUI/host
+   * drives the polling lifecycle in a later assembly layer.
+   */
+  readonly pollPermissionEscalationCoordinator?:
+    | ((resolve: (request: EscalationRequest) => Promise<EscalationDecision>) => Promise<number>)
+    | undefined;
+  /**
+   * Optional cleanup hook for the Nexus permission escalation coordinator.
+   * Present only when `permissionEscalation.mode === "nexus"`.
+   */
+  readonly disposePermissionEscalationCoordinator?: (() => void) | undefined;
+  /** Auto-harness handle. Only populated when `config.autoHarness` is provided. */
+  readonly autoHarness?: RuntimeAutoHarnessHandle | undefined;
   /**
    * Checkpoint handle for session-level rollback (#1625). Always populated
    * in the TUI — captures end-of-turn snapshots and exposes rewind() so the
@@ -1489,6 +1555,56 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // stacks can contribute hookExtras before the hook middleware is built)
   // can thread it into the StackActivationContext.
   const hostId = config.hostId ?? "koi-tui";
+  const permissionEscalationMode = config.permissionEscalation?.mode ?? "local";
+  let pollPermissionEscalationCoordinator:
+    | ((resolve: (request: EscalationRequest) => Promise<EscalationDecision>) => Promise<number>)
+    | undefined;
+  let disposePermissionEscalationCoordinator: (() => void) | undefined;
+  let workerPermissionEscalation: import("@koi/core").PermissionEscalation | undefined;
+
+  if (permissionEscalationMode === "nexus") {
+    if (config.nexusTransport === undefined) {
+      throw new Error("permissionEscalation.mode=nexus requires nexusTransport");
+    }
+    if (config.permissionEscalation === undefined || config.permissionEscalation.mode !== "nexus") {
+      throw new Error("permissionEscalation.mode=nexus requires nexus permissionEscalation config");
+    }
+
+    nexusAssertProductionTransport(config.nexusTransport);
+    const workerConfig = config.permissionEscalation;
+    workerPermissionEscalation = createNexusPermissionEscalation({
+      transport: config.nexusTransport,
+      agentId: workerConfig.agentId,
+      coordinatorAgentId: workerConfig.coordinatorAgentId,
+      ...(workerConfig.pollIntervalMs !== undefined
+        ? { pollIntervalMs: workerConfig.pollIntervalMs }
+        : {}),
+      ...(workerConfig.requestMethodPrefix !== undefined
+        ? { requestMethodPrefix: workerConfig.requestMethodPrefix }
+        : {}),
+    });
+
+    const coordinator = createNexusPermissionEscalationCoordinator({
+      transport: config.nexusTransport,
+      coordinatorAgentId: workerConfig.coordinatorAgentId,
+      ...(workerConfig.pollIntervalMs !== undefined
+        ? { pollIntervalMs: workerConfig.pollIntervalMs }
+        : {}),
+      ...(workerConfig.requestMethodPrefix !== undefined
+        ? { requestMethodPrefix: workerConfig.requestMethodPrefix }
+        : {}),
+    });
+    pollPermissionEscalationCoordinator = (resolve) => coordinator.pollOnce(resolve);
+
+    let coordinatorDisposed = false;
+    disposePermissionEscalationCoordinator = () => {
+      if (coordinatorDisposed) {
+        return;
+      }
+      coordinatorDisposed = true;
+      coordinator.dispose();
+    };
+  }
 
   // --- Optional config hot-reload (log-only; guarded by KOI_CONFIG_PATH) ---
   const configHotReload = await setupConfigHotReload();
@@ -1663,6 +1779,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     ...(config.skillsProgressive === true ? { skillsProgressive: true } : {}),
     ...(config.mcpOAuthChannel !== undefined ? { mcpOAuthChannel: config.mcpOAuthChannel } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
+    ...(workerPermissionEscalation !== undefined
+      ? { permissionEscalation: workerPermissionEscalation }
+      : {}),
     approvalHandler,
     agentId: precomputedAgentId,
     modelName,
@@ -2559,6 +2678,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // next parent-visible dispose — guaranteeing host observability
   // even when children outlive the parent's first dispose call.
   const childManifestCleanupFailures: unknown[] = [];
+  let sharedRuntimeHandle: ReturnType<typeof createRuntime> | undefined;
   let zoneBMiddleware: readonly KoiMiddleware[];
   try {
     zoneBMiddleware = await resolveManifestMiddleware(
@@ -3674,8 +3794,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
     // --- Feedback-loop middleware (opt-in via config.feedbackLoop) ---
     // Model-response validation + tool-health tracking. No shutdown resources.
+    // Capture the handle so we can thread its healthHandle into the shared
+    // auto-harness runtime — without it, forge-demand's
+    // performance_degradation trigger stays dormant and a whole class of
+    // failures never reaches synthesizeHarness.
+    let feedbackLoopHandle: ReturnType<typeof createFeedbackLoopMiddleware> | undefined;
     if (config.feedbackLoop !== undefined) {
-      auditPresetExtras.push(createFeedbackLoopMiddleware(config.feedbackLoop));
+      feedbackLoopHandle = createFeedbackLoopMiddleware(config.feedbackLoop);
+      auditPresetExtras.push(feedbackLoopHandle);
     }
 
     // --- Pre-build shared GovernanceController so it is shared between:
@@ -4018,6 +4144,86 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           })
         : undefined;
 
+    // When forgeDemand is supplied without an explicit healthTracker, fall
+    // back to the host's own feedback-loop healthHandle so the
+    // performance_degradation trigger fires under live latency spikes.
+    // Without this, the shared runtime's auto-wire path cannot see the
+    // host's feedback-loop (it runs in a separate createRuntime instance).
+    const sharedForgeDemand =
+      config.forgeDemand !== undefined
+        ? feedbackLoopHandle?.healthHandle !== undefined &&
+          (config.forgeDemand as { readonly healthTracker?: unknown }).healthTracker === undefined
+          ? { ...config.forgeDemand, healthTracker: feedbackLoopHandle.healthHandle }
+          : config.forgeDemand
+        : undefined;
+
+    // Fail closed when autoHarness is enabled alongside the forge preset:
+    // the forge preset creates its own private in-memory ForgeStore that is
+    // not exposed to the host, while autoHarness saves/deploys into the
+    // caller-supplied store. The two paths would diverge — `forge_list` /
+    // `forge_inspect` would read one store while auto-harness deployments
+    // land in another, and cache invalidation would follow only one
+    // notifier. Until the forge preset exposes its store/notifier for
+    // sharing, refuse the combined configuration so operators can't end up
+    // with split-brain state (R5 round 11 finding).
+    // Treat forge as active only when it's actually in the resolved stack
+    // set: explicit `config.stacks` includes it, OR it is present in
+    // DEFAULT_STACKS (the implicit-default set). Treating
+    // `enabledStackIds === undefined` as "forge active" was over-broad —
+    // DEFAULT_STACKS does not currently register the forge preset, so
+    // hosts using default config could not enable autoHarness at all.
+    const forgeStackActive =
+      enabledStackIds !== undefined
+        ? enabledStackIds.has("forge")
+        : DEFAULT_STACKS.some((s) => s.id === "forge");
+    if (config.autoHarness !== undefined && forgeStackActive) {
+      throw new Error(
+        "createKoiRuntime: cannot enable `autoHarness` together with the " +
+          "`forge` preset stack. The forge preset owns a private in-memory " +
+          "ForgeStore that is not exposed for sharing, while auto-harness " +
+          "uses the caller-supplied store; combining them produces a " +
+          "split-brain configuration where forge_list/forge_inspect read " +
+          "one store and auto-harness deploys land in another. Either " +
+          "disable the forge preset (config.stacks) or run auto-harness " +
+          "out-of-band until the preset surfaces a shared store.",
+      );
+    }
+
+    sharedRuntimeHandle =
+      config.autoHarness !== undefined
+        ? createRuntime({
+            requestApproval: approvalHandler,
+            autoHarness: config.autoHarness,
+            // Threading forgeDemand here is what wires the runtime's
+            // onDemand→synthesizeHarness path. Without it, the auto-harness
+            // handle is exposed but demand signals never drive the pipeline.
+            ...(sharedForgeDemand !== undefined ? { forgeDemand: sharedForgeDemand } : {}),
+          })
+        : undefined;
+    // When auto-harness is configured the stack-owned policy-cache is the
+    // single source of truth for both register() and live dispatch. Refuse
+    // to compose a caller-supplied `policy-cache` from any host source: we
+    // cannot migrate verified entries from another instance into the stack-
+    // owned cache, and silently dropping it would discard live allow/deny
+    // policies (R3 round 3 finding). Hosts that want auto-harness must
+    // remove their own policy-cache from preset/extra middleware.
+    const rejectCallerPolicyCache = (
+      mws: readonly KoiMiddleware[],
+      source: string,
+    ): readonly KoiMiddleware[] => {
+      if (sharedRuntimeHandle?.autoHarness === undefined) return mws;
+      if (mws.some((mw) => mw.name === "policy-cache")) {
+        throw new Error(
+          `auto-harness is enabled, but ${source} contributed a \`policy-cache\` ` +
+            "middleware. The auto-harness stack owns its own policy-cache; " +
+            "we cannot migrate verified entries from another instance, and " +
+            "dropping it would silently discard live allow/deny policies. " +
+            `Remove the policy-cache from ${source} or disable autoHarness.`,
+        );
+      }
+      return mws;
+    };
+
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
     // The ordering (outermost → innermost) is defined in one place —
     // compose-middleware.ts. Preset stacks (observability, checkpoint,
@@ -4048,11 +4254,29 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // slot and is composed strictly INSIDE the security core
       // layers, regardless of array position here.
       presetExtras: [
-        ...stackContribution.middleware,
+        ...rejectCallerPolicyCache(stackContribution.middleware, "preset stack contribution"),
+        // Splice the shared runtime's forge-demand detector into the live
+        // CLI chain so real demand traffic actually flows into auto-harness.
+        // Without this, the detector lives only inside sharedRuntimeHandle
+        // and never observes host-level model/tool calls.
+        ...(sharedRuntimeHandle?.forgeDemand !== undefined
+          ? [sharedRuntimeHandle.forgeDemand.middleware]
+          : []),
+        ...(sharedRuntimeHandle?.autoHarness !== undefined
+          ? [
+              sharedRuntimeHandle.autoHarness.middleware,
+              // Splice the cleanup observer too — without it, ownership
+              // entries accumulate across session attachments and the
+              // hard cap eventually rejects new sessions.
+              ...(sharedRuntimeHandle.autoHarness.cleanupMiddleware !== undefined
+                ? [sharedRuntimeHandle.autoHarness.cleanupMiddleware]
+                : []),
+            ]
+          : []),
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),
         ...(config.ace !== undefined ? [createAceMiddleware(config.ace)] : []),
-        ...(config.extraMiddleware ?? []),
+        ...rejectCallerPolicyCache(config.extraMiddleware ?? [], "config.extraMiddleware"),
       ],
       manifestMiddleware: zoneBMiddleware,
       ...(config.skillInjector !== undefined ? { skillInjector: config.skillInjector } : {}),
@@ -4070,6 +4294,23 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     enforceRequiredMiddleware(allMiddleware, {
       terminalCapable: config.terminalCapable ?? true,
     });
+    // Full-chain policy-cache uniqueness invariant. We've already dropped
+    // caller-supplied `policy-cache` from preset/extra middleware, but
+    // manifestMiddleware composes through a separate slot that the
+    // dropCallerPolicyCache filter doesn't see. If a manifest plugin
+    // contributed its own `policy-cache`, the live chain would split
+    // dispatch from auto-harness register() and silently mask promoted
+    // policies. Refuse to boot.
+    if (sharedRuntimeHandle?.autoHarness !== undefined) {
+      const policyCacheMws = allMiddleware.filter((mw) => mw.name === "policy-cache");
+      if (policyCacheMws.length > 1) {
+        throw new Error(
+          "auto-harness requires exactly one policy-cache middleware in the live chain; " +
+            `found ${policyCacheMws.length} (likely a manifest plugin contributed a duplicate). ` +
+            "Remove the duplicate or disable autoHarness.",
+        );
+      }
+    }
     // Wrap every middleware with the trace wrapper when the observability
     // stack is active (provides `trajectoryStore`). When the stack is
     // disabled via `config.stacks` (e.g. a CI runner opting for a
@@ -4089,6 +4330,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             }),
           )
         : allMiddleware;
+    const installedAutoHarnessMiddleware =
+      sharedRuntimeHandle?.autoHarness !== undefined
+        ? tracedMiddleware.find((mw) => mw.name === "policy-cache")
+        : undefined;
 
     // --- Assemble runtime via createKoi ---
     // When a session is configured, thread `config.session.sessionId` into
@@ -4287,8 +4532,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     //     already-ended writers.
     // Per-hook tracking gives precise retry semantics.
     const completedManifestHooks = new WeakSet<() => Promise<void> | void>();
+    let sharedRuntimeDisposed = false;
     const wrappedDispose = async (): Promise<void> => {
       await engineDispose();
+      disposePermissionEscalationCoordinator?.();
       // Fire manifest-middleware cleanup in reverse registration
       // order, skipping hooks that already ran successfully. Each
       // surviving hook is awaited so audit sinks' final flush +
@@ -4327,6 +4574,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // repeated dispose attempts.
       const pendingChildErrors = childManifestCleanupFailures.splice(0);
       hookErrors.push(...pendingChildErrors);
+      if (sharedRuntimeHandle !== undefined && !sharedRuntimeDisposed) {
+        try {
+          await sharedRuntimeHandle.dispose();
+          sharedRuntimeDisposed = true;
+        } catch (disposeErr) {
+          console.warn(
+            `[koi/${hostId}] shared runtime shutdown hook failed during dispose: ${
+              disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+            }`,
+          );
+          hookErrors.push(disposeErr);
+        }
+      }
       if (hookErrors.length > 0) {
         throw new AggregateError(
           hookErrors,
@@ -4351,6 +4611,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     handleOwnershipTransferred = true;
     return {
       runtime: wrappedRuntime,
+      permissionEscalationMode,
+      pollPermissionEscalationCoordinator,
+      disposePermissionEscalationCoordinator,
+      autoHarness:
+        sharedRuntimeHandle?.autoHarness !== undefined &&
+        installedAutoHarnessMiddleware !== undefined
+          ? {
+              ...sharedRuntimeHandle.autoHarness,
+              middleware: installedAutoHarnessMiddleware,
+            }
+          : undefined,
       checkpoint: checkpointHandle,
       transcript,
       sandboxActive,
@@ -4625,6 +4896,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             hookErrors.push(hookErr);
           }
         }
+        // Reset the *prior* session's auto-harness state. cycleSession()
+        // already rotated runtime.sessionId, so reading it here would clear
+        // the empty new session and leak the old session's budget/dedupe
+        // map plus its scoped forge-demand handle.
+        sharedRuntimeHandle?.autoHarness?.resetSession(priorSessionId);
 
         // 3. Clear the OLD session's approval state (always-allow, caches,
         //    trackers). Not a stack concern — permissions is a core slot.
@@ -4760,6 +5036,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // partially-constructed resources are released.
     if (!handleOwnershipTransferred) {
       await unwindManifestMiddlewareHooks();
+    }
+    if (sharedRuntimeHandle !== undefined) {
+      try {
+        await sharedRuntimeHandle.dispose();
+      } catch (disposeErr) {
+        console.warn(
+          `[koi/${hostId}] shared runtime cleanup failed during assembly unwind: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }`,
+        );
+      }
+    }
+    try {
+      disposePermissionEscalationCoordinator?.();
+    } catch (disposeErr) {
+      console.warn(
+        `[koi/${hostId}] permission escalation coordinator cleanup failed during assembly unwind: ${
+          disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+        }`,
+      );
     }
     throw assemblyErr;
   }

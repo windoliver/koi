@@ -23,6 +23,12 @@ No `@temporalio/*` types appear in any public export. The public API uses:
 | `mapTemporalError(error)` | Maps Temporal failure types to `KoiError` |
 | `mapKoiErrorToApplicationFailure(err)` | Maps `KoiError` to an `ApplicationFailure` payload for round-tripping |
 
+## Workflow Set
+
+- `agentWorkflow` for durable message-driven agent execution
+- `scheduledTaskWorkflow` for schedule-triggered spawn and dispatch handling
+- `retryWorkflow` for bounded transient-failure retries
+
 ### `WorkerConfig`
 
 Flat config accepted by `createTemporalWorker`. All fields except `taskQueue` are optional with documented defaults:
@@ -132,3 +138,14 @@ All tests run without a live Temporal server — `TemporalClientLike` and `Worke
 ```bash
 bun run test --filter=@koi/temporal
 ```
+
+## Changelog
+
+- 2026-05-09: Test fixtures cleanup. The ambient `@koi/core` augmentation
+  used by `workflows-boundary.test.ts` was a global-script `.d.ts` that
+  silently *replaced* the package's typings instead of augmenting them,
+  so 8 stale `@ts-expect-error` pragmas had been masking the gap. The
+  fixture now begins with `export {};` so it is a proper module, the
+  pragmas were removed from `agent-workflow.ts`, `retry-workflow.ts`,
+  and `scheduled-task-workflow.ts`, and `temporal-scheduler.ts` was
+  retypechecked against the real surface. No public-API change.

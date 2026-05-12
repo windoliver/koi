@@ -26,4 +26,32 @@ export interface NexusPlaybookStoreConfig {
    * supply an explicit `lockScope`.
    */
   readonly lockScope?: string;
+
+  /**
+   * Refuse to create structured playbooks on first save (default: `true`).
+   *
+   * The Nexus transport does not currently expose create-only writes
+   * (no `if_none_match`), so two coordinators racing on the very first save
+   * for a playbook id can both succeed and last-writer-wins, silently losing
+   * one initial payload. Defaulting to `true` makes the structured store
+   * fail-closed at the boundary: playbooks MUST be pre-provisioned (e.g.
+   * through the sqlite adapter or a single-coordinator admin path).
+   *
+   * Set to `false` ONLY in single-writer deployments (CLI, tests, dev) where
+   * you can guarantee no two coordinators ever attempt initial creation.
+   *
+   * Optional on this shared base config because non-structured stores
+   * (proposals, trajectories, flat playbooks) ignore it. The structured
+   * store narrows its input to `NexusStructuredStoreConfig` below, which
+   * makes the field REQUIRED — every structured-store deployment must
+   * make an explicit choice rather than rely on a default that has caused
+   * both corruption (fail-open) and outages (fail-closed) historically.
+   */
+  readonly requirePreProvisioned?: boolean;
+}
+
+/** Structured-store-specific config: narrows the shared base by requiring
+ *  an explicit `requirePreProvisioned` decision (no default). */
+export interface NexusStructuredStoreConfig extends NexusPlaybookStoreConfig {
+  readonly requirePreProvisioned: boolean;
 }

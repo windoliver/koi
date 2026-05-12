@@ -1,10 +1,10 @@
 /**
- * Command palette definitions for v2 — ~15 core commands.
+ * Command palette definitions for the implemented TUI command surface.
  *
  * Pure data: no dispatch logic, no router, no side effects.
  * Filtering (progressive disclosure) is a separate pure function below.
  *
- * v2 starts lean: navigation + agent + session + system.
+ * The current surface is navigation + agent + session + system.
  * v1 reference: archive/v1/packages/ui/tui/src/command-registry.ts (40+ cmds).
  */
 
@@ -34,7 +34,7 @@ export interface CommandDef {
 }
 
 // ---------------------------------------------------------------------------
-// Definitions — v2 core set (~15 commands)
+// Definitions — implemented command set
 // ---------------------------------------------------------------------------
 
 export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
@@ -199,6 +199,24 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     id: "system:tokens",
     label: "Tokens",
     description: "Show detailed token breakdown for this process",
+    category: "system",
+  },
+  {
+    id: "system:mount",
+    label: "Mount connector",
+    description: "Mount a connector at runtime with /mount <uri> [as=/path]",
+    category: "system",
+  },
+  {
+    id: "system:unmount",
+    label: "Unmount connector",
+    description: "Unmount a runtime connector with /unmount <mount-path>",
+    category: "system",
+  },
+  {
+    id: "system:mounts",
+    label: "List mounts",
+    description: "List current mounts and their descriptions",
     category: "system",
   },
   {

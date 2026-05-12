@@ -3855,7 +3855,14 @@ describe("Golden: @koi/task-spawn", () => {
       spawn: (req) =>
         new Promise((resolve) => {
           req.signal?.addEventListener("abort", () =>
-            resolve({ ok: false, error: `aborted: ${String(req.signal?.reason)}` }),
+            resolve({
+              ok: false,
+              error: {
+                code: "TIMEOUT",
+                message: `aborted: ${String(req.signal?.reason)}`,
+                retryable: false,
+              },
+            }),
           );
         }),
     });

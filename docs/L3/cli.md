@@ -6,6 +6,37 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/auto-harness` wiring (#1355)**: added as a dependency of `@koi/cli`. The CLI runtime factory (`packages/meta/cli/src/runtime-factory.ts`) accepts an `autoHarness` block on `createKoiRuntime` config and threads it through `createRuntime`. Configuration guards: forge-preset stack and `autoHarness` are mutually exclusive (fail closed if both are active); caller-supplied `policy-cache` middleware on the CLI middleware list is rejected with an actionable error rather than silently dropped; both the auto-harness `policyCache` middleware and the runtime's session-cleanup observer middleware are spliced into preset extras (with undefined-guard for stub adapters that have no terminals); a full-chain policy-cache uniqueness check fires after composition to catch duplicate registrations from any source. No new CLI flag surface — host applications opt in by passing `autoHarness` through their `createKoiRuntime` config. See `docs/L2/auto-harness.md` for the underlying contract.
+
+- **`@koi/daemon` remote worker backend (#1871)**: `@koi/daemon` now exports `createRemoteBackend`, a Nexus-backed `WorkerBackend` driven by a `NexusTransport`. No CLI command/flag surface change — the new backend slots into `SupervisorConfig.backends` alongside subprocess/tmux, so any future `koi bg` or supervisor wiring that registers it inherits the same lifecycle, heartbeat, and respawn contract. Heartbeat is opt-in to avoid routing heartbeat-required workers to endpoints that do not emit heartbeat events. See `docs/L2/daemon.md` for the contract.
+
+- **Remote TUI gateway client (#2122)**: `koi tui --gateway-url ws://…`
+  connects to a running `koi gateway-up` instead of executing the engine
+  in-process. New modules `tui-gateway-client.ts` + `tui-request-stream.ts`
+  bridge per-request gateway response/error frames into `EngineEvent`
+  deltas + terminal `done`. Authentication uses `KOI_GATEWAY_TOKEN`
+  (set on both the gateway and the TUI). Each `run()` installs a
+  ref-correlated WebSocket listener; mismatched refs are ignored, terminal
+  frames detach the listener via the iterator's try/finally. Tests cover
+  matching/mismatching ref, error frames, and pre-terminal socket close.
+  No new dependencies.
+
+- **`koi gateway-up` command (#1213 follow-up)**: new direct dependency on
+  `@koi/gateway-stack`. Adds the `gateway-up` subcommand, which spins up a
+  loopback gateway via the new `createLocalGatewayLauncher` (gateway WS +
+  health endpoint on `port+1`). Optional Nexus HA wiring through
+  `--nexus-url`/`--nexus-api-key`. Port range is `[1, 65534]` because the
+  health server reserves `port+1`. Health responds `503 {"status":"starting"}`
+  (JSON) until `stack.start()` completes, then delegates to
+  `stack.healthHandler`. Failed startup tears down the gateway transport,
+  Nexus transport, health server, and stack independently so a partial bind
+  cannot leak resources. No changes to existing commands or wiring.
+
+- **Review-finding sync for TUI internals (#2139)**: no CLI command, flag, or
+  dependency changes. The TUI command registry comments now describe the
+  implemented command surface rather than parity aspirations, and clipboard
+  image tests use an internal platform override instead of probing host tools.
+
 - **fs_semantic_search wiring (#1319)**: `buildCoreProviders` in `shared-wiring.ts` now auto-exposes the new `fs_semantic_search` builtin tool whenever the active `FileSystemBackend` advertises a `semanticSearch` method (Nexus backends with the embedding bridge do; the default local backend does not). The same change tightens read-surface gating: `fs_semantic_search` and `Grep` are dropped from `builtin-search` whenever `manifest.filesystem.operations` omits `read`, closing a back-door content-read path that survived the `fs_*` tool gate. `Glob` and `ToolSearch` (path/name only, no content reads) remain regardless. No CLI flags or manifest-key changes — gating piggybacks on the existing `filesystemOperations` contract.
 
 - **`@koi/daemon` tmux worker backend (#1870)**: `koi bg` commands now transparently dispatch across both subprocess and tmux backends. `bg ps`/`bg logs`/`bg kill` resolve worker records from `FileSessionRegistry` (keyed by `WorkerId`) and route lifecycle ops to whichever backend owns each session — `backendKind: "tmux"` records flow through tmux session create/list/kill while existing `subprocess` records keep the legacy `process.kill` path. CLI args, output schemas, and the `KOI_BG_ATTACHED_*` env contract are unchanged; the new backend is selected per-session by the supervisor wiring layer (`wire-daemon-supervisor.ts`), not via CLI flags. See `docs/L2/daemon.md` for the backend selection contract.
@@ -130,6 +161,22 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
   Path validation rejects absolute paths and `..` escape via symlink-aware
   `realpathSync` containment.
 
+- **ACE promotion gate hardening (#1715 follow-up)**: the underlying
+  `@koi/middleware-ace` + `@koi/playbook-store-sqlite` packages received correctness
+  fixes that affect every CLI session that opts into ACE. No CLI surface change —
+  no new flags, manifest fields, or commands. Behavioral changes a CLI operator
+  will observe: (1) `koi tui` resumes correctly across sessions sharing a structured
+  playbook (per-session replay watermarks no longer overwrite each other);
+  (2) crash-then-resume during a structured commit either re-applies the
+  byte-identical proposal idempotently or fails closed with a clear error if the
+  retry payload diverges from what was persisted; (3) the sqlite playbook database
+  auto-migrates from schema v7 to v8 on first open by a CLI built from this
+  branch — the new `reflected_step_index_by_session` column is added in place,
+  legacy rows continue to read with the scalar `lastReflectedStepIndex` only.
+  Operators must set an explicit `requirePreProvisioned: true|false` on any
+  `createNexusStructuredPlaybookStore` call (no default); CLI flows continue to
+  use the sqlite adapter and are unaffected.
+
 - **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
   and `credentials:` blocks. The TUI command translates these into compiled scope
   objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)
@@ -166,6 +213,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 - **Per-child Nexus delegation (#1473)**: `@koi/nexus-delegation` added as a direct CLI dependency. When a manifest declares `delegation: { backend: "nexus" }` AND `NEXUS_URL` is set in the environment, `tui-command.ts` instantiates a `NexusDelegationProvider` (via `createNexusDelegationProvider`) and includes it in `extraProviders` so the parent agent gets a `DelegationComponent` keyed under the `DELEGATION` token. `@koi/engine`'s `spawnChildAgent` consumes this component to mint a per-child Nexus API key on every spawn (attenuated capability scope, parent-attenuated `add_grants`/`remove_grants`), inject it into the child's ENV (`NEXUS_API_KEY`), and revoke it on child termination. Dispose path bounds revoke at `REVOKE_DISPOSE_TIMEOUT_MS = 5000` so host teardown cannot complete with a per-child key still active server-side. Manifest with `backend: nexus` but missing `NEXUS_URL` fails fast at startup. Manifests with `backend: memory` (or no `delegation.backend` field) continue to use the in-memory HMAC/Ed25519 grants from `@koi/governance-delegation`.
 
 - **Nexus permissions + audit auto-wiring (#1399)**: `@koi/permissions-nexus`, `@koi/audit-sink-nexus`, and `@koi/nexus-client` added as direct CLI dependencies. When a manifest declares `filesystem.backend: nexus` (HTTP transport with `url` + `apiKey`), `tui-command.ts` automatically instantiates a `NexusPermissionBackend` (via `createNexusPermissionBackend`) and a `NexusAuditSink` (via `createNexusAuditSink`) wired to the same Nexus server. Both share the `@koi/nexus-client` transport. No flag required — the backend selector in the manifest drives both. Agents using a local filesystem backend continue to use the existing SQLite permission store and NDJSON audit sink; the nexus variants activate only when the manifest declares a nexus filesystem.
+
+- **Nexus-backed permission escalation (#1526)**: `@koi/permission-escalation-nexus` added as a direct CLI dependency (optional package). `runtime-factory.ts` accepts a `permissionEscalation: { mode: "local" | "nexus", agentId, coordinatorAgentId }` config. When `mode === "nexus"` (and a `nexusTransport` is configured), it constructs a `createNexusPermissionEscalation` worker client and a `createNexusPermissionEscalationCoordinator` poller, both bound to the same Nexus mailbox. The worker client implements the L0 `PermissionEscalation` contract over Nexus envelopes (`escalation_request` → `escalation_decision`); the coordinator polls its own mailbox, routes requests through a host-supplied resolver, and publishes decisions back to the worker. Default mode remains `"local"` — single-process TUI behavior is unchanged. `tui-command.ts` drives the coordinator polling loop via `startPermissionEscalationCoordinatorLoop`, routing remote escalation requests through the existing TUI approval handler so the same UX surfaces in nexus mode. Reconnect-safe (workers replay persisted decisions when the canonical request fingerprint matches) and replay-protected (decisions bind to a fingerprint over `{requestId, agentId, sorted grants, purposeStatement, expiresAt, context}` so requestId reuse with mutated payload does not inherit a stale approval).
 
 - **Nexus boot modes + health probe + audit-poison wiring (#1401 Phase 3)**: `runtime-factory.ts` gains a Nexus boot lifecycle keyed off `nexusBootMode`:
   - `telemetry` (default): probe failures log advisory and continue.
@@ -263,14 +312,14 @@ Purpose-built for running agents as background services (systemd, launchd, Docke
 
 Both commands resolve channels from the manifest. `start` falls back to a CLI channel (stdin/stdout REPL), while `serve` operates headless with only manifest-declared channels (Slack, Discord, HTTP webhook, etc.).
 
-### Shared Nexus Resolution (`resolve-nexus.ts`)
+### Shared Nexus Resolution (`resolve-nexus-for-host.ts`)
 
-Centralized Nexus URL resolution with clear priority:
+Centralized host-side Nexus endpoint resolution with clear priority:
 
 ```
 1. --nexus-url CLI flag       (highest priority)
-2. NEXUS_URL env var
-3. Embed mode — auto-start    (lowest priority, default)
+2. manifest.nexus.url / NEXUS_URL env
+3. sandbox spawn via @koi/nexus-sandbox when the host needs a global endpoint
 ```
 
 ---
@@ -730,28 +779,29 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 
 ## Nexus Resolution
 
-The `resolve-nexus.ts` module provides two exported functions:
+The current CLI does **not** build a runtime Nexus bundle through `@koi/nexus.createNexusStack()`. Instead it resolves a host endpoint when one is needed, sets `NEXUS_URL`, and wires individual Nexus-backed packages directly in the relevant CLI paths.
 
-### `resolveNexusStack(nexusUrl)`
+### `resolveNexusEndpoint(input, deps)`
 
-Core resolver. Creates the full Nexus stack via `@koi/nexus.createNexusStack()`. Returns `NexusResolution` with middlewares, providers, dispose, and baseUrl.
+Pure resolver in `nexus-resolver.ts`. It decides between:
 
-### `resolveNexusOrWarn(nexusUrl, verbose)`
+- explicit CLI URL
+- explicit manifest URL
+- `NEXUS_URL`
+- spawned local sandbox via `@koi/nexus-sandbox`
 
-Safe wrapper used by both commands. Returns `NexusResolvedState` — on success returns the Nexus stack directly, on failure returns empty defaults (`EMPTY_NEXUS`) and logs a warning. The agent always starts, even if Nexus is unavailable.
+It returns a `NexusEndpoint` with `url`, `source`, `shutdown()`, and `terminate()`.
 
-```typescript
-// In start.ts and serve.ts:
-const nexus = await resolveNexusOrWarn(flags.nexusUrl, flags.verbose);
+### `resolveNexusForHost(input)`
 
-const runtime = await createKoi({
-  manifest,
-  adapter,
-  middleware: [...resolved.value.middleware, ...nexus.middlewares],
-  providers: [...nexus.providers],
-  extensions,
-});
-```
+Host-side wrapper in `resolve-nexus-for-host.ts`. It only resolves an endpoint when the host actually needs one:
+
+- `--nexus-url`
+- `manifest.nexus`
+- Nexus-backed delegation
+- Nexus filesystem without its own explicit URL
+
+That keeps the CLI from spawning or resolving Nexus when no active subsystem needs it.
 
 ---
 
@@ -915,6 +965,7 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 
 ## Changelog
 
+- **Dynamic Nexus mounts in TUI (#1987)** — `tui-command.ts` adds `/mount <uri> [as <path>]`, `/unmount <path>`, and `/mounts` slash commands wired through the resolver-guarded mount surface in `@koi/runtime`. The TUI constructs `MountDescriptionsState` with `strictPromptIdentifiers: true` so backend-controlled mount names that fail the prompt-safety allowlist are omitted from the rendered system prompt block but remain visible to the operator via `/mounts`. Backend error text from the local bridge is sanitized before being surfaced. The mount/unmount path goes through `guardedTransport` in `resolveFileSystemAsync` — read-only, scope, protected-root, overlap, and quarantine checks all enforced before the bridge sees the mutation.
 - **Build: `@koi/middleware-permissions` tsconfig fixed (#1827)** — `bash-spec-guard.ts` was added to `@koi/middleware-permissions` in a prior merge but its `@koi/bash-ast` project reference was missing from `tsconfig.json`, causing DTS build failures. No CLI or TUI behavioral change.
 - **Fix SessionsView row overlap (#1776)** — Layout fix in `@koi/tui` `SessionsView` component (nested column box collapse). No CLI behavioral change as `SessionsView` is currently inactive (superseded by `SessionPicker` modal in #1783).
 - **Wire host-dispatched slash commands (#1752)** — `/model`, `/cost`, `/tokens`, `/compact`, `/export`, `/zoom` previously advertised in the command palette but fell through to `COMMAND_NOT_IMPLEMENTED`. `onCommand` in `tui-command.ts` now handles each: `/model` shows resolved `modelName`/`provider`/fallback chain, `/cost` and `/tokens` read `costBridge.aggregator.breakdown()` (notices labeled "this process" — the aggregator is not backfilled on `--resume`), `/compact` calls `microcompact()` from `@koi/context-manager` and splices `runtimeHandle.transcript`, `/export` renders a Markdown document via the new `renderTranscriptMarkdown` helper and writes to cwd, `/zoom` parses a numeric arg or cycles `1 → 1.25 → 1.5 → 1` and dispatches `set_zoom`. All notices reuse the fork-notice `add_user_message` pattern so they land in the conversation stream without polluting `runtime.transcript`.
@@ -1033,5 +1084,7 @@ spans on both model and tool paths in `/trajectory`.
 
 ## Changelog
 
+- 2026-05-09: Transitive surface — `@koi/scheduler`'s `schedule()` now throws a `preCommitRejection` (instead of a plain `Error`) when handed an invalid cron expression. Lets `@koi/proactive`'s composition executor recognize the failure as pre-commit and release any reserved execution-log claim. No CLI flag or config change.
+- 2026-05-08: `@koi/middleware-otel` exports retry metadata on spans (refs #1413). Transitive surface — when the CLI wires OTel via `RuntimeConfig.otel`, model and tool spans now carry `koi.retry.*` attributes whenever upstream steps recorded retry metadata. No CLI flag or config change.
 - 2026-04-30: `@koi/governance-scope` `tsconfig.json` adds `DOM` to `lib` for `URLPattern` resolution (transitive surface; no behavior change for the CLI).
 - 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.

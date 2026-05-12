@@ -1,6 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { WorkerAndConnection, WorkerCreateParams } from "../worker-factory.js";
-import { createTemporalWorker } from "../worker-factory.js";
+import {
+  createTemporalWorker,
+  createTemporalWorkerFromBundle,
+  createWorkerBundle,
+} from "../worker-factory.js";
 
 function makeWorkerFactory(): (params: WorkerCreateParams) => Promise<WorkerAndConnection> {
   const worker = { run: mock(async () => {}), shutdown: mock(() => {}) };
@@ -103,6 +107,28 @@ describe("createTemporalWorker", () => {
     expect(params.serverUrl).toBe("localhost:7233");
     expect(params.namespace).toBe("default");
     expect(params.maxCachedWorkflows).toBe(100);
+  });
+
+  test("createWorkerBundle returns the exported workflow bundle surface", () => {
+    const activities = { runAgentTurn: async () => ({ ok: true }) };
+    const bundle = createWorkerBundle("/wf.js", activities);
+
+    expect(bundle).toEqual({
+      workflowsPath: "/wf.js",
+      activities,
+    });
+  });
+
+  test("createTemporalWorkerFromBundle wires the exported bundle into worker registration", async () => {
+    const factory = makeWorkerFactory();
+    const activities = { runAgentTurn: async () => ({ ok: true }) };
+    const bundle = createWorkerBundle("/wf.js", activities);
+
+    await createTemporalWorkerFromBundle({ taskQueue: "q" }, bundle, factory);
+
+    const [params] = (factory as ReturnType<typeof mock>).mock.calls[0] as [WorkerCreateParams];
+    expect(params.workflowsPath).toBe("/wf.js");
+    expect(params.activities).toBe(activities);
   });
 
   test("factory error propagates: createWorkerFn throw rejects createTemporalWorker", async () => {

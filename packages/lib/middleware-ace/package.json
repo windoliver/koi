@@ -11,7 +11,7 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
@@ -23,5 +23,10 @@
     "@koi/ace-types": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/token-estimator": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/fs-nexus": "workspace:*",
+    "@koi/playbook-store-nexus": "workspace:*",
+    "@koi/playbook-store-sqlite": "workspace:*"
   }
 }

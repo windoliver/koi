@@ -76,7 +76,7 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
   };
 
   const component: SchedulerComponent = {
-    submit(input, mode, opts): TaskId {
+    submit(input: EngineInput, mode: "spawn" | "dispatch", opts: TaskOptions | undefined): TaskId {
       if (options.submitError !== undefined) {
         throw options.submitError;
       }
@@ -86,13 +86,18 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
       liveTaskIds.add(id as string);
       return id;
     },
-    cancel(id): boolean {
+    cancel(id: TaskId): boolean {
       cancelCalls.push(id);
       const removed = options.cancelResult ?? true;
       if (removed) liveTaskIds.delete(id as string);
       return removed;
     },
-    schedule(expression, input, mode, opts): ScheduleId {
+    schedule(
+      expression: string,
+      input: EngineInput,
+      mode: "spawn" | "dispatch",
+      opts: (TaskOptions & { readonly timezone?: string | undefined }) | undefined,
+    ): ScheduleId {
       if (options.scheduleError !== undefined) {
         throw options.scheduleError;
       }
@@ -100,7 +105,7 @@ export function createSchedulerStub(options: SchedulerStubOptions = {}): Schedul
       counter += 1;
       return scheduleId(`sched-${counter}`);
     },
-    unschedule(id): boolean {
+    unschedule(id: ScheduleId): boolean {
       unscheduleCalls.push(id);
       return options.unscheduleResult ?? true;
     },

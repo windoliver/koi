@@ -21,9 +21,13 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { packageJsonChangeRequiresDocUpdate } from "./check-doc-wiring-utils.js";
 import { L0_PACKAGES, L0U_PACKAGES, L1_PACKAGES, L3_PACKAGES, L4_PACKAGES } from "./layers.js";
 
-const ROOT = new URL("../", import.meta.url).pathname.replace(/\/$/, "");
+const ROOT = (process.env.KOI_DOC_WIRING_ROOT ?? new URL("../", import.meta.url).pathname).replace(
+  /\/$/,
+  "",
+);
 
 /** Map from L3 package name to its doc path */
 const L3_DOC_MAP: ReadonlyMap<string, string> = new Map([
@@ -58,22 +62,53 @@ function addChangedFiles(target: Set<string>, output: string): void {
 }
 
 /** Returns files changed on this branch vs merge-base plus local staged/unstaged edits. */
-function branchChangedFiles(): ReadonlySet<string> {
-  const changed = new Set<string>();
+function mergeBaseRef(): string | null {
   try {
-    const mergeBase = execSync("git merge-base HEAD origin/main", {
+    return execSync("git merge-base HEAD origin/main", {
       cwd: ROOT,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function isTestOnlyPath(file: string): boolean {
+  return (
+    /(^|\/)(__tests__|__snapshots__)\//.test(file) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(file)
+  );
+}
+
+function fileRequiresDocUpdate(file: string, mergeBase: string | null): boolean {
+  if (isTestOnlyPath(file)) return false;
+  if (!file.endsWith("/package.json")) return true;
+  if (mergeBase === null) return true;
+  const currentPath = `${ROOT}/${file}`;
+  if (!existsSync(currentPath)) return true;
+  try {
+    const before = execSync(`git show "${mergeBase}:${file}"`, {
+      cwd: ROOT,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const after = readFileSync(currentPath, "utf-8");
+    return packageJsonChangeRequiresDocUpdate(before, after);
+  } catch {
+    return true;
+  }
+}
+
+/** Returns files changed on this branch vs merge-base plus local staged/unstaged edits. */
+function branchChangedFiles(mergeBase: string | null): ReadonlySet<string> {
+  const changed = new Set<string>();
+  if (mergeBase !== null) {
     const out = execSync(`git diff --name-only "${mergeBase}"...HEAD`, {
       cwd: ROOT,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
     addChangedFiles(changed, out);
-  } catch {
-    // Not in a PR context; staged/unstaged detection below still works.
   }
 
   for (const cmd of ["git diff --name-only --cached", "git diff --name-only"]) {
@@ -95,9 +130,13 @@ function branchChangedFiles(): ReadonlySet<string> {
 }
 
 /** Returns all L2 package names and their source directories that were touched on this branch. */
-function changedL2Packages(changed: ReadonlySet<string>): ReadonlyMap<string, string> {
+function changedL2Packages(
+  changed: ReadonlySet<string>,
+  mergeBase: string | null,
+): ReadonlyMap<string, string> {
   const result = new Map<string, string>();
   for (const file of changed) {
+    if (!fileRequiresDocUpdate(file, mergeBase)) continue;
     // Match packages in packages/*/  directories (not kernel/core, kernel/engine*, meta/*)
     const m = file.match(/^packages\/[^/]+\/([^/]+)\//);
     if (!m) continue;
@@ -138,7 +177,8 @@ interface DocIssue {
 }
 
 async function main(): Promise<void> {
-  const changed = branchChangedFiles();
+  const mergeBase = mergeBaseRef();
+  const changed = branchChangedFiles(mergeBase);
 
   // If not in a PR context (no origin/main reachable), skip staleness checks
   if (changed.size === 0) {
@@ -152,7 +192,7 @@ async function main(): Promise<void> {
   // Rule 1: Any L2 package modified on this branch must have docs/L2/<name>.md
   //         updated on the same branch.
   // ─────────────────────────────────────────────────────────────────────────
-  const changedL2 = changedL2Packages(changed);
+  const changedL2 = changedL2Packages(changed, mergeBase);
 
   for (const [pkgName] of changedL2) {
     const dirName = dirNameFromPackageName(pkgName);
@@ -185,7 +225,7 @@ async function main(): Promise<void> {
     const l3DocPath = L3_DOC_MAP.get(l3Name);
     if (l3DocPath === undefined) continue;
 
-    const l3WiringChanged = changed.has(l3PkgJson);
+    const l3WiringChanged = changed.has(l3PkgJson) && fileRequiresDocUpdate(l3PkgJson, mergeBase);
     const l2Deps = await l2DepsOf(l3PkgJson);
     const wiredL2ModifiedOnBranch = l2Deps.some((dep) => changedL2.has(dep));
 
@@ -233,4 +273,6 @@ async function main(): Promise<void> {
   process.exit(1);
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+}

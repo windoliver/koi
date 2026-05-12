@@ -217,3 +217,5 @@ Span attribute `koi.session.id` lets you filter to a single Koi session in any b
   dropped silently. The agent continues normally — the middleware never throws.
 
 > **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.
+
+> **Retry metadata on spans (refs #1413):** `buildModelSpanAttrs` and `buildToolSpanAttrs` now emit `koi.retry.of_turn`, `koi.retry.attempt`, `koi.retry.failure_class`, and `koi.retry.reason` whenever the upstream step's `metadata` carries the matching `retryOfTurn` / `retryAttempt` / `retryFailureClass` / `retryReason` fields. Attribute names live in `semconv.ts` under the `koi.*` namespace (Koi-specific, not GenAI semconv). When no retry occurred, none of these attributes are written — absence is meaningful. Lets backends group retries by originating turn and slice failure classes without parsing step bodies.

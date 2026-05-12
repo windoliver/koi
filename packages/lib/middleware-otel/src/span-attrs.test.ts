@@ -17,6 +17,10 @@ import {
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_USAGE_INPUT_TOKENS,
   ATTR_GEN_AI_USAGE_OUTPUT_TOKENS,
+  ATTR_KOI_RETRY_ATTEMPT,
+  ATTR_KOI_RETRY_FAILURE_CLASS,
+  ATTR_KOI_RETRY_OF_TURN,
+  ATTR_KOI_RETRY_REASON,
   ATTR_KOI_SESSION_ID,
   ATTR_KOI_STEP_OUTCOME,
   GEN_AI_OPERATION_CHAT,
@@ -171,6 +175,27 @@ describe("buildModelSpanAttrs", () => {
     expect(attrs[ATTR_KOI_STEP_OUTCOME]).toBe("failure");
   });
 
+  test("includes retry attributes when event-trace metadata marks a retry", () => {
+    const attrs = buildModelSpanAttrs(
+      makeModelStep({
+        outcome: "retry",
+        metadata: {
+          requestModel: "gpt-4o",
+          retryOfTurn: 4,
+          retryAttempt: 2,
+          retryFailureClass: "api_error",
+          retryReason: "TIMEOUT from primary provider",
+        },
+      }),
+      SESSION_ID,
+    );
+    expect(attrs[ATTR_KOI_STEP_OUTCOME]).toBe("retry");
+    expect(attrs[ATTR_KOI_RETRY_OF_TURN]).toBe(4);
+    expect(attrs[ATTR_KOI_RETRY_ATTEMPT]).toBe(2);
+    expect(attrs[ATTR_KOI_RETRY_FAILURE_CLASS]).toBe("api_error");
+    expect(attrs[ATTR_KOI_RETRY_REASON]).toBe("TIMEOUT from primary provider");
+  });
+
   test("omits token usage when metrics absent", () => {
     const base = makeModelStep();
     const { metrics: _m, ...stepNoMetrics } = base;
@@ -229,5 +254,25 @@ describe("buildToolSpanAttrs", () => {
     const step = makeToolStep({ outcome: "failure" });
     const attrs = buildToolSpanAttrs(step, SESSION_ID);
     expect(attrs[ATTR_KOI_STEP_OUTCOME]).toBe("failure");
+  });
+
+  test("includes retry attributes on tool spans when retry metadata is present", () => {
+    const attrs = buildToolSpanAttrs(
+      makeToolStep({
+        outcome: "retry",
+        metadata: {
+          retryOfTurn: 1,
+          retryAttempt: 3,
+          retryFailureClass: "tool_misuse",
+          retryReason: "invalid tool args",
+        },
+      }),
+      SESSION_ID,
+    );
+    expect(attrs[ATTR_KOI_STEP_OUTCOME]).toBe("retry");
+    expect(attrs[ATTR_KOI_RETRY_OF_TURN]).toBe(1);
+    expect(attrs[ATTR_KOI_RETRY_ATTEMPT]).toBe(3);
+    expect(attrs[ATTR_KOI_RETRY_FAILURE_CLASS]).toBe("tool_misuse");
+    expect(attrs[ATTR_KOI_RETRY_REASON]).toBe("invalid tool args");
   });
 });

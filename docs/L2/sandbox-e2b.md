@@ -28,15 +28,17 @@ The adapter accepts a pluggable `client` for unit tests (no real network) and fa
 @koi/sandbox-e2b (L2)
 ├── adapter.ts   — createE2bAdapter(config): Result<SandboxAdapter, KoiError>
 ├── instance.ts  — createE2bInstance(sdk): SandboxInstance
+├── profile.ts   — detectUnsupportedProfileFields / extractProfileDefaults (delegates to @koi/sandbox-cloud-base)
 ├── types.ts     — E2bAdapterConfig, E2bClient, E2bSdkSandbox
 ├── validate.ts  — validateE2bConfig: env fallback + client requirement
 └── index.ts     — public API surface
 
 Dependencies
 - @koi/core (L0) — SandboxAdapter, SandboxInstance, SandboxProfile, KoiError, Result
+- @koi/sandbox-cloud-base (L2) — shared hosted-sandbox profile detection + error formatting
 ```
 
-The package depends only on `@koi/core`. The E2B SDK is **not** a static dependency — callers inject a thin `E2bClient` adapter that wraps `@e2b/sdk` (or any compatible API). This keeps the install footprint zero and tests deterministic.
+The package depends on `@koi/core` and the shared cloud-base helper for hosted-sandbox profile policy. Profile-field detection (`detectUnsupportedProfileFields`) and the unsupported-field error message both delegate to `@koi/sandbox-cloud-base` so all hosted adapters report the same fail-closed policy with a single source of truth. The E2B SDK is **not** a static dependency — callers inject a thin `E2bClient` adapter that wraps `@e2b/sdk` (or any compatible API). This keeps the install footprint zero and tests deterministic.
 
 ---
 
@@ -90,8 +92,9 @@ The adapter honours the `SandboxExecOptions.maxOutputBytes` contract: the caller
 
 ```
 src/validate.test.ts   — config validation, env fallback
+src/profile.test.ts    — unsupported-field detection delegates to cloud-base, legacy field shape preserved
 src/instance.test.ts   — exec/readFile/writeFile/destroy delegation
-src/adapter.test.ts    — adapter factory, create() → instance
+src/adapter.test.ts    — adapter factory, create() → instance, fail-closed errors via cloud-base formatter
 ```
 
 Tests use a hand-rolled `FakeE2bClient` — no network, no real `@e2b/sdk` import.

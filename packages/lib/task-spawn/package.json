@@ -11,13 +11,14 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check --vcs-enabled=false src/",
     "test": "bun test"
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/task-board": "workspace:*"
   },
   "devDependencies": {},
   "koi": {}

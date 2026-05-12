@@ -134,3 +134,13 @@ minute key dispatches the cron run.
 Pair this with `@koi/scheduler-nexus` (Nexus-backed `TaskQueueBackend`) for
 cross-node task scheduling, or implement `TaskQueueBackend` against any other
 distributed store.
+
+## Changelog
+
+- 2026-05-09: Invalid cron expressions in `schedule()` now throw a
+  `preCommitRejection` (from `@koi/core`) instead of a plain `Error`.
+  Lets `@koi/proactive`'s composition executor recognize the failure
+  as pre-commit and release any reserved execution-log claim, so a
+  corrected retry can succeed without operator intervention. No
+  callers that already wrap the throw in `try/catch` are affected;
+  the error message is unchanged.

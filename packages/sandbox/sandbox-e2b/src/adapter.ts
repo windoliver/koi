@@ -1,10 +1,7 @@
 import type { KoiError, Result, SandboxAdapter, SandboxProfile } from "@koi/core";
+import { formatUnsupportedProfileError as formatSharedUnsupportedProfileError } from "@koi/sandbox-cloud-base";
 import { createE2bInstance } from "./instance.js";
-import {
-  detectUnsupportedProfileFields,
-  extractProfileDefaults,
-  formatUnsupportedProfileError,
-} from "./profile.js";
+import { detectUnsupportedProfileFields, extractProfileDefaults } from "./profile.js";
 import type { E2bAdapterConfig, E2bCreateOpts } from "./types.js";
 import { validateE2bConfig } from "./validate.js";
 
@@ -45,7 +42,28 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
     create: async (profile: SandboxProfile) => {
       const unsupported = detectUnsupportedProfileFields(profile);
       if (unsupported !== undefined) {
-        throw new Error(formatUnsupportedProfileError(unsupported));
+        throw new Error(
+          formatSharedUnsupportedProfileError("sandbox-e2b", {
+            filesystem: unsupported.fields.some(
+              (field) => field.startsWith("filesystem.") || field === "nexusMounts",
+            ),
+            network: unsupported.fields.includes("network.allow=false"),
+            resources: unsupported.fields.some((field) => field.startsWith("resources.")),
+            details: [
+              ...(unsupported.fields.some(
+                (field) => field.startsWith("filesystem.") || field === "nexusMounts",
+              )
+                ? (["filesystem restrictions or Nexus mounts"] as const)
+                : []),
+              ...(unsupported.fields.includes("network.allow=false")
+                ? (["network deny (allow=false)"] as const)
+                : []),
+              ...(unsupported.fields.some((field) => field.startsWith("resources."))
+                ? (["resource limits (maxMemoryMb/maxPids/maxOpenFiles)"] as const)
+                : []),
+            ],
+          }),
+        );
       }
 
       // Generate an idempotency label per create attempt. The wrapper is

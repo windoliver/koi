@@ -233,3 +233,15 @@ All user-provided paths are normalized through `computeFullPath()` which:
 5. Verifies the result stays within the `basePath` boundary
 
 Traversal attempts return `VALIDATION` errors — they never reach the Nexus server.
+
+---
+
+## Dynamic Mount API
+
+The local transport supports dynamic `add_mount` / `remove_mount` / `list_mounts` / `describe_mount` JSON-RPC methods on the Python bridge. The corresponding TypeScript helpers (`addMount` / `removeMount` / `listMounts` / `describeMount`) are **gated behind an explicit capability flag** — `LocalTransportConfig.enableMountMutations`. When the flag is unset or `false` (the default), the returned `NexusTransport` omits these methods so direct callers cannot bypass the runtime's safety guards. The HTTP transport has no mount-mutation surface at all; if a future feature needs HTTP-side mutations, it must wrap them with the same guarded-transport policy that `resolveFileSystemAsync` applies on the local-bridge path.
+
+The bridge canonicalizes mount paths via a per-call `list_mounts` diff (so the resulting path is authoritative even when the URI does not directly imply it) and tracks per-mount connector schemes (`gdrive`, `gmail`, `local`, …). When the diff is empty or ambiguous, `add_mount` returns `MountDescription` with `pathUnknown: true` and an empty `path`; callers MUST treat that as a partial-state signal and refresh via `list_mounts` rather than echoing the empty path back as a mount identifier.
+
+## Changelog
+
+- 2026-05-08: Dynamic mount RPCs (`add_mount`, `remove_mount`, `list_mounts`, `describe_mount`) added to the bridge and local transport in support of issue #1987. The transport defaults to omitting these methods from the public surface; only `resolveFileSystemAsync` opts in via `enableMountMutations: true` and immediately wraps them with `guardedTransport`. Bridge `add_mount` / `describe_mount` / `remove_mount` validate against scope-aware `list_mounts` (never inner backends) so wildcard-only scope fails closed. The HTTP transport drops mount-mutation methods entirely.

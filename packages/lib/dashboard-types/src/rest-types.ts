@@ -10,3 +10,13 @@ import type { KoiError } from "@koi/core";
 export type ApiResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: KoiError };
+
+/**
+ * Cursor-paginated page wrapper used by list endpoints. `nextCursor` is opaque
+ * to the client — pass it back verbatim in the next request to fetch the
+ * subsequent page. Absent or empty means no more pages.
+ */
+export interface Page<T> {
+  readonly items: readonly T[];
+  readonly nextCursor?: string | undefined;
+}

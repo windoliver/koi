@@ -58,6 +58,14 @@ export interface CompositionCapabilities {
 
 export interface CompositionPlan {
   readonly triggerId: string;
+  /**
+   * `trigger.emittedAt` of the emission this plan was authored against.
+   * Executors require it to match the running trigger's `emittedAt`
+   * before dispatch — this binds the plan to a specific emission so
+   * stale plans for triggers whose `id` is reused across emissions
+   * cannot run against the wrong emission.
+   */
+  readonly triggerEmittedAt: number;
   readonly steps: readonly CompositionStep[];
   readonly estimatedCost: number;
   readonly requiresApproval: boolean;

@@ -11,7 +11,7 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
@@ -19,5 +19,8 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/git-utils": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/workspace-conformance": "workspace:*"
   }
 }

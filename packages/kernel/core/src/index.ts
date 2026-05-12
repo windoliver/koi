@@ -239,6 +239,21 @@ export type {
 export { DEFAULT_SPAWN_CHANNEL_POLICY } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
+export type {
+  CompositionExecutionError,
+  CompositionExecutionResult,
+  CompositionExecutor,
+  CompositionGap,
+  CompositionPreCommitRejection,
+  CompositionStepResult,
+  SuccessfulCompositionStepResult,
+} from "./composition-executor.js";
+export {
+  COMPOSITION_PRE_COMMIT_BRAND,
+  COMPOSITION_PRE_COMMIT_BRAND_KEY,
+  isPreCommitRejection,
+  preCommitRejection,
+} from "./composition-executor.js";
 // composition planner — trigger and planning contracts
 export type {
   CompositionApprovalContext,
@@ -1067,6 +1082,19 @@ export type {
   ScratchpadWriteResult,
 } from "./scratchpad.js";
 export { SCRATCHPAD_DEFAULTS, scratchpadPath } from "./scratchpad.js";
+// search backend — Retriever, Indexer, value types for full-text/keyword search
+export type {
+  IndexDocument,
+  Indexer,
+  Retriever,
+  SearchBackend,
+  SearchFilter,
+  SearchPage,
+  SearchQuery,
+  SearchResult,
+  SearchScore,
+} from "./search-backend.js";
+export { DEFAULT_SEARCH_LIMIT } from "./search-backend.js";
 // security analyzer — dynamic risk classification contract
 export type {
   RiskAnalysis,

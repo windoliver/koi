@@ -278,7 +278,7 @@ only behavior — there are no new L0 types here.
 
 | Signal kind | Resulting `CompositionMoment` | Notes |
 |---|---|---|
-| `governance` | `threshold_crossed` | `error_rate` adds `spawn_agent` + `notify_user` capability hints |
+| `governance` | `threshold_crossed` | `error_rate` adds `spawn_agent` + `notify_user` capability hints. Trigger ID format: `governance:<sensor>:<direction>:<limit>:<emittedAt>` — includes `direction` and `limit` so distinct thresholds on the same sensor (e.g. warning `> 0.3` and critical `> 0.9`) produce distinct trigger IDs and do not deduplicate against each other. |
 | `forge_demand` | `capability_gap` | `missing` derived from inner `ForgeTrigger`; signal preserved in `context.forgeDemand` |
 | `schedule` | `task_terminal` | outcome ∈ `completed`/`failed`/`dead_letter`/`cancelled`; only `failed`/`dead_letter` carry follow-up capability hints |
 | `anomaly` (metric-shift kinds) | `frontier_changed` | `error_spike`, `model_latency_anomaly`, `token_spike`, positive `goal_drift`, `tool_rate_exceeded` |
@@ -333,10 +333,81 @@ of these hold:
   equal-to-budget does **not** require approval.
 - `policy.requireApprovalOnNovelty && context.isNovel`.
 
+Novelty buckets are computed by `defaultPatternKey`. For
+`threshold_crossed` triggers the key is
+`<agentId>|<source>|threshold_crossed|<sensor>|<direction>|<limit>` —
+**including `limit`** so that warning and critical bands on the same
+sensor (e.g. `error_rate > 0.3` vs `error_rate > 0.9`) do not share
+novelty credit; repeated success on a low-severity warning cannot
+auto-approve a materially different critical-threshold plan.
+
 Default policy: `{ confidenceThreshold: 0.5, maxEstimatedCost: 10,
 requireApprovalOnNovelty: true }`. The rule planner additionally
 short-circuits to `requiresApproval: true` whenever it produces a
 zero-step plan, so the runtime never executes an empty plan silently.
+
+## Composition executor (issue #1300, MVP)
+
+`@koi/proactive` now also exposes an execution layer that consumes
+`CompositionPlan` values after planning. The executor is intentionally thin:
+it enforces the plan approval gate, executes steps sequentially, and
+delegates work into injected runtime seams rather than owning new
+infrastructure.
+
+### Public API
+
+```typescript
+createCompositionExecutor(
+  context: CompositionExecutionContext,
+): CompositionExecutor
+
+interface CompositionExecutionContext {
+  readonly agentId: AgentId;
+  readonly scheduler: SchedulerComponent;
+  readonly notify: (notification: CompositionNotification) => Promise<unknown>;
+  readonly spawn?: ((request: CompositionSpawnRequest) => Promise<unknown>) | undefined;
+  readonly forge?: ((request: CompositionForgeRequest) => Promise<unknown>) | undefined;
+}
+```
+
+The `agentId` anchor is part of the approved execution contract. Step-level
+`submit_task` and `create_schedule` requests are validated against the
+attached context `agentId` before they are dispatched.
+
+Supported MVP step kinds:
+
+- `submit_task`
+- `create_schedule`
+- `notify_user`
+
+Unsupported in the MVP:
+
+- `spawn_agent`
+- `forge_skill`
+- `tool_call`
+
+Execution stops on the first unsupported or failed step. No rollback is
+attempted in this version; the result reports any successfully executed
+prefix.
+
+## System Signal Sources (issue #1298)
+
+Three `SystemSignalSource` adapters expose external operational events to a
+`CompositionPlanner` consumer. All three share a close-aware async emitter
+that defends against post-unsubscribe deliveries and catches handler
+exceptions, routing them to `onError` when supplied:
+
+| Factory | Signal | Upstream |
+|---------|--------|----------|
+| `createGovernanceSignalSource(controller, thresholds, config?)` | `{ kind: "governance" }` | Polls `GovernanceController.snapshot()` on a serialized `inFlight` / `pollRequested` drain loop, emitting on strict-`>` (or strict-`<`) threshold crossing with optional `cooldownMs`. `replay: true` emits a synthetic on-subscribe signal if a sensor is already alerting. |
+| `createGroveSignalSource(config)` | `{ kind: "frontier" }` | SSE subscription to a Grove `frontier_changed` event stream; filters by `metrics` allowlist and `minImprovement` floor (rejects `NaN`/`Infinity`). Falls back to `config.now()` (default `Date.now`) when upstream omits `emittedAt`. |
+| `createNexusSignalSource(config)` | `{ kind: "vfs" }` / `{ kind: "agent_lifecycle" }` | EventBus subscription mapping VFS `write`/`delete`/`rename` (with optional `pathFilters` glob suffix) and agent transition events validated against the L0 `ProcessState`, `VALID_TRANSITIONS`, and `TransitionReason` contracts. Self-loops and unknown reasons are dropped. |
+
+Adapters fail open: malformed payloads route to `options.onError` (when
+provided) and never break the source loop. Subscriptions are idempotent —
+`unsubscribe()` may be called multiple times safely. The shared emitter
+honors the L0 `SystemSignalSourceOptions` contract (`sampleRateMs`,
+`replay`, `onError`, `onDisconnect`).
 
 ## Future Phases (out of scope here)
 
@@ -345,10 +416,10 @@ Phase 3a tracker (this issue): sleep / wake / cron tools.
 | Phase | Issue | What |
 |-------|-------|------|
 | 3a (now) | #1195 | This package — sleep + cron |
-| 3a | #1297 | `SystemSignal` L0 contract |
-| 3a | #1298 | System signal adapters |
+| 3a (now) | #1297 | `SystemSignal` L0 contract (extended with `frontier` variant in #1298) |
+| 3a (now) | #1298 | System signal adapters — landed in this package |
 | 3a (now) | #1299 | `CompositionTrigger` + `CompositionPlanner` (rule + LLM) — landed in this package |
-| 3a | #1300 | `CompositionExecutor` + governance gate |
+| 3a (now) | #1300 | `CompositionExecutor` MVP + governance gate |
 | 3-4 | #1301 | Proactive delivery + temporal durability |
 
 `brief` / `notify` / `monitor` tools are blocked on channel + webhook restoration and

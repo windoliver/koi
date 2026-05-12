@@ -42,7 +42,10 @@ function spb(id: string, tags: readonly string[] = []): StructuredPlaybook {
 }
 
 function newStore() {
-  return createNexusStructuredPlaybookStore({ transport: createFakeNexusTransport() });
+  return createNexusStructuredPlaybookStore({
+    transport: createFakeNexusTransport(),
+    requirePreProvisioned: false,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -105,20 +108,115 @@ describe("createNexusStructuredPlaybookStore", () => {
     expect(filtered.map((p) => p.id)).toEqual(["two-tags"]);
   });
 
-  test("save with same id and different version is last-write-wins", async () => {
-    // DIVERGENCE vs sqlite: sqlite enforces version-CAS (same-version different content
-    // throws; lower-version save is rejected). Nexus is last-write-wins — any save
-    // overwrites the current file regardless of version. Documented in
+  test("save with same id rejects below-head writes (monotonic version CAS)", async () => {
+    // Since #1715 the Nexus structured store enforces the same monotonic
+    // version contract as sqlite: forward writes succeed; below-head replays
+    // and same-version divergent content are rejected. Cross-process safety
+    // is enforced by transport-level if_match etag CAS. Documented in
     // docs/L2/playbook-store-nexus.md.
     const store = newStore();
     await store.save({ ...spb("p"), version: 2, title: "v2" });
     await store.save({ ...spb("p"), version: 3, title: "v3" });
     expect((await store.get("p"))?.version).toBe(3);
     expect((await store.get("p"))?.title).toBe("v3");
-    // sqlite would throw here if v2 were re-saved after v3 (out-of-order);
-    // nexus allows it (last-write-wins).
-    await store.save({ ...spb("p"), version: 2, title: "rollback" });
-    expect((await store.get("p"))?.version).toBe(2);
+    // Out-of-order: re-saving v2 after v3 must fail closed.
+    await expect(store.save({ ...spb("p"), version: 2, title: "rollback" })).rejects.toThrow(
+      /below current version/i,
+    );
+    expect((await store.get("p"))?.version).toBe(3);
+  });
+
+  test("top-level etag envelope (no metadata wrapper) is accepted for CAS", async () => {
+    // Some Nexus transport versions surface etag at the top level of the
+    // read envelope (not nested under `metadata`). The structured store
+    // must extract the etag from either location to remain compatible.
+    const baseTransport = createFakeNexusTransport();
+    const seed = createNexusStructuredPlaybookStore({
+      transport: baseTransport,
+      requirePreProvisioned: false,
+    });
+    await seed.save(spb("topetag"));
+
+    const topLevelTransport: FsNexusTransport = {
+      call: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<Result<T, KoiError>> => {
+        const r = await baseTransport.call<T>(method, params);
+        if (
+          r.ok &&
+          method === "read" &&
+          typeof params.path === "string" &&
+          params.path.includes("/structured/")
+        ) {
+          const v = r.value as { content?: unknown; metadata?: { etag?: string } } | undefined;
+          if (v !== undefined) {
+            // Move etag from metadata.etag to top-level etag.
+            return {
+              ok: true,
+              value: { content: v.content, etag: v.metadata?.etag } as T,
+            };
+          }
+        }
+        return r;
+      },
+      subscribe: baseTransport.subscribe.bind(baseTransport),
+      submitAuthCode: baseTransport.submitAuthCode.bind(baseTransport),
+      close: baseTransport.close.bind(baseTransport),
+    };
+    const topLevelStore = createNexusStructuredPlaybookStore({
+      transport: topLevelTransport,
+      requirePreProvisioned: false,
+    });
+    await expect(
+      topLevelStore.save({ ...spb("topetag"), version: 2, title: "v2" }),
+    ).resolves.toBeUndefined();
+  });
+
+  test("missing etag on read of existing head fails closed (no blind overwrite)", async () => {
+    // A degraded transport that returns content but strips metadata.etag —
+    // simulates a backend version skew or a buggy transport wrapper. The
+    // structured store MUST refuse to overwrite, otherwise two coordinators
+    // racing on the same head would both succeed and one update is silently
+    // lost (the bug this CAS path exists to prevent).
+    const baseTransport = createFakeNexusTransport();
+    const seed = createNexusStructuredPlaybookStore({
+      transport: baseTransport,
+      requirePreProvisioned: false,
+    });
+    await seed.save(spb("noetag"));
+
+    const noEtagTransport: FsNexusTransport = {
+      call: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<Result<T, KoiError>> => {
+        const r = await baseTransport.call<T>(method, params);
+        if (
+          r.ok &&
+          method === "read" &&
+          typeof params.path === "string" &&
+          params.path.includes("/structured/")
+        ) {
+          // Strip metadata so etag is undefined.
+          const v = r.value as { content?: unknown } | undefined;
+          if (v !== undefined) {
+            return { ok: true, value: { content: v.content } as T };
+          }
+        }
+        return r;
+      },
+      subscribe: baseTransport.subscribe.bind(baseTransport),
+      submitAuthCode: baseTransport.submitAuthCode.bind(baseTransport),
+      close: baseTransport.close.bind(baseTransport),
+    };
+    const noEtagStore = createNexusStructuredPlaybookStore({
+      transport: noEtagTransport,
+      requirePreProvisioned: false,
+    });
+    await expect(noEtagStore.save({ ...spb("noetag"), version: 2, title: "v2" })).rejects.toThrow(
+      /no etag|refusing blind overwrite/i,
+    );
   });
 
   // --- ACE ID path-safety regression tests (Finding 1) ---
@@ -149,7 +247,10 @@ describe("createNexusStructuredPlaybookStore", () => {
     // Scenario: one structured playbook is written normally. Then a transport
     // wrapper injects EXTERNAL on the read of that file during list(). Must throw.
     const baseTransport = createFakeNexusTransport();
-    const baseStore = createNexusStructuredPlaybookStore({ transport: baseTransport });
+    const baseStore = createNexusStructuredPlaybookStore({
+      transport: baseTransport,
+      requirePreProvisioned: false,
+    });
     await baseStore.save(spb("spb-list-err"));
 
     let listCallDone = false;
@@ -178,7 +279,10 @@ describe("createNexusStructuredPlaybookStore", () => {
       close: baseTransport.close.bind(baseTransport),
     };
 
-    const wrappedStore = createNexusStructuredPlaybookStore({ transport: wrappedTransport });
+    const wrappedStore = createNexusStructuredPlaybookStore({
+      transport: wrappedTransport,
+      requirePreProvisioned: false,
+    });
     await expect(wrappedStore.list()).rejects.toThrow("simulated backend failure");
   });
 
@@ -221,6 +325,7 @@ describe("createNexusStructuredPlaybookStore", () => {
     const structuredStore = createNexusStructuredPlaybookStore({
       transport: wrapTransport(baseTransport),
       lockScope: "shared-structured-backend",
+      requirePreProvisioned: false,
     });
     const proposalStore = createNexusPlaybookProposalStore({
       transport: wrapTransport(baseTransport),
@@ -236,7 +341,7 @@ describe("createNexusStructuredPlaybookStore", () => {
       proposalStore.recordProposal(makeProposal("p-wrapper-lock", "pb-wrapper-lock", 1)),
     ]);
 
-    // save must always succeed (last-write-wins).
+    // save advances monotonically (v1 -> v2) — must always succeed.
     expect(saveResult.status).toBe("fulfilled");
 
     if (recordResult.status === "rejected") {
@@ -246,6 +351,96 @@ describe("createNexusStructuredPlaybookStore", () => {
       // Proposal won the lock (read v=1, wrote proposal, save ran after).
       const got = await proposalStore.getProposal("p-wrapper-lock");
       expect(got?.baseVersion).toBe(1);
+    }
+  });
+
+  test("default config rejects initial create on empty backend (fail-closed against create-race)", async () => {
+    const transport = createFakeNexusTransport();
+    try {
+      // requirePreProvisioned: true is fail-closed — this transport lacks
+      // create-only CAS, and two racing initial saves can both succeed
+      // (silent payload loss). The flag is REQUIRED on the config (no
+      // default), so every deployment must make an explicit choice.
+      const store = createNexusStructuredPlaybookStore({
+        transport,
+        requirePreProvisioned: true,
+      });
+      await expect(store.save({ ...spb("pb-default"), version: 1 })).rejects.toThrow(
+        /refusing to create/,
+      );
+    } finally {
+      transport.close();
+    }
+  });
+
+  test("byte-envelope read response is decoded for CAS update (no false degraded-head)", async () => {
+    // Compliant Nexus transports may return reads as a flat or nested
+    // bytes envelope (`{__type__:"bytes", data: base64}`). The structured
+    // store MUST decode through the canonical extractReadContent helper
+    // rather than assuming top-level string content, otherwise updates
+    // against valid byte-encoded reads throw and brick the playbook.
+    const baseTransport = createFakeNexusTransport();
+    const seed = createNexusStructuredPlaybookStore({
+      transport: baseTransport,
+      requirePreProvisioned: false,
+    });
+    await seed.save(spb("byteenv"));
+
+    const byteEnvTransport: FsNexusTransport = {
+      call: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<Result<T, KoiError>> => {
+        const r = await baseTransport.call<T>(method, params);
+        if (
+          r.ok &&
+          method === "read" &&
+          typeof params.path === "string" &&
+          params.path.includes("/structured/")
+        ) {
+          const v = r.value as { content?: unknown; metadata?: { etag?: string } } | undefined;
+          if (v !== undefined && typeof v.content === "string") {
+            // Re-wrap content as a base64 bytes envelope.
+            const data = Buffer.from(v.content, "utf-8").toString("base64");
+            return {
+              ok: true,
+              value: {
+                content: { __type__: "bytes", data },
+                metadata: v.metadata,
+              } as T,
+            };
+          }
+        }
+        return r;
+      },
+      subscribe: baseTransport.subscribe.bind(baseTransport),
+      submitAuthCode: baseTransport.submitAuthCode.bind(baseTransport),
+      close: baseTransport.close.bind(baseTransport),
+    };
+    const byteEnvStore = createNexusStructuredPlaybookStore({
+      transport: byteEnvTransport,
+      requirePreProvisioned: false,
+    });
+    await expect(
+      byteEnvStore.save({ ...spb("byteenv"), version: 2, title: "v2" }),
+    ).resolves.toBeUndefined();
+    const got = await byteEnvStore.get("byteenv");
+    expect(got?.version).toBe(2);
+    expect(got?.title).toBe("v2");
+  });
+
+  test("requirePreProvisioned: false allows initial create (explicit opt-in for proven single-writer)", async () => {
+    const transport = createFakeNexusTransport();
+    try {
+      const store = createNexusStructuredPlaybookStore({
+        transport,
+        requirePreProvisioned: false,
+      });
+      await store.save({ ...spb("pb-bootstrap"), version: 1 });
+      const got = await store.get("pb-bootstrap");
+      expect(got?.version).toBe(1);
+    } finally {
+      transport.close();
     }
   });
 });

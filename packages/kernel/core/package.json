@@ -165,6 +165,10 @@
       "types": "./dist/skill-registry.d.ts",
       "import": "./dist/skill-registry.js"
     },
+    "./search-backend": {
+      "types": "./dist/search-backend.d.ts",
+      "import": "./dist/search-backend.js"
+    },
     "./permission-backend": {
       "types": "./dist/permission-backend.d.ts",
       "import": "./dist/permission-backend.js"
@@ -231,7 +235,7 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",

@@ -3,6 +3,7 @@ import {
   attachRegistry,
   computeBackoff,
   createFileSessionRegistry,
+  createRemoteBackend,
   createSubprocessBackend,
   createSupervisor,
   createTmuxBackend,
@@ -17,6 +18,7 @@ describe("@koi/daemon public exports", () => {
     expect(typeof createSupervisor).toBe("function");
     expect(typeof createSubprocessBackend).toBe("function");
     expect(typeof createTmuxBackend).toBe("function");
+    expect(typeof createRemoteBackend).toBe("function");
     expect(typeof registerSignalHandlers).toBe("function");
     expect(typeof computeBackoff).toBe("function");
     expect(typeof createFileSessionRegistry).toBe("function");

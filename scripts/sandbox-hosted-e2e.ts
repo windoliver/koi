@@ -359,7 +359,7 @@ async function makeRealE2bAdapter(): Promise<SandboxAdapter> {
     supportsTeardown: true,
     supportsCancelCreate: false,
     createSandbox: async (opts) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: optional dev-dep SDK has no static types in this script
       const sb = await (sdk as any).Sandbox.create({ apiKey, metadata: { label: opts.label } });
       return wrapE2bSandbox(sb);
     },
@@ -369,7 +369,7 @@ async function makeRealE2bAdapter(): Promise<SandboxAdapter> {
   return r.value;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: optional dev-dep SDK has no static types in this script
 function wrapE2bSandbox(sb: any): E2bSdkSandbox {
   return {
     commands: {
@@ -420,7 +420,7 @@ async function makeRealDaytonaAdapter(): Promise<SandboxAdapter> {
     supportsWorkspaceDelete: true,
     supportsCancelCreate: false,
     createSandbox: async (opts) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: optional dev-dep SDK has no static types in this script
       const dt = new (sdk as any).Daytona({ apiKey });
       const ws = await dt.create({ labels: { "koi-label": opts.label } });
       return wrapDaytonaSandbox(ws);
@@ -431,7 +431,7 @@ async function makeRealDaytonaAdapter(): Promise<SandboxAdapter> {
   return r.value;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: optional dev-dep SDK has no static types in this script
 function wrapDaytonaSandbox(ws: any): DaytonaSdkSandbox {
   return {
     commands: {

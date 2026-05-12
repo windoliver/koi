@@ -99,6 +99,18 @@ export const ATTR_KOI_SESSION_ID = "koi.session.id" as const;
 /** Step outcome as recorded in ATIF: "success" | "failure" | "retry". */
 export const ATTR_KOI_STEP_OUTCOME = "koi.step.outcome" as const;
 
+/** Original turn index whose failure triggered this retry step. */
+export const ATTR_KOI_RETRY_OF_TURN = "koi.retry.of_turn" as const;
+
+/** 1-based retry attempt number for this step. */
+export const ATTR_KOI_RETRY_ATTEMPT = "koi.retry.attempt" as const;
+
+/** Failure classification that triggered this retry step. */
+export const ATTR_KOI_RETRY_FAILURE_CLASS = "koi.retry.failure_class" as const;
+
+/** Human-readable reason associated with the retry decision. */
+export const ATTR_KOI_RETRY_REASON = "koi.retry.reason" as const;
+
 // ---------------------------------------------------------------------------
 // Span event names (content capture — disabled by default)
 // ---------------------------------------------------------------------------

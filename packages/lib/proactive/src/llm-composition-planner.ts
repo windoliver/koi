@@ -33,6 +33,29 @@ export interface LlmCompositionPlannerConfig {
   readonly approvalPolicy?: CompositionApprovalPolicy | undefined;
   readonly classifyNovelty?: ((trigger: CompositionTrigger) => boolean) | undefined;
   readonly fallbackToRulePlanner?: CompositionPlanner | undefined;
+  /**
+   * notify_user channels the host has wired and considers safe to
+   * auto-deliver to. Plans naming any other channel are forced through
+   * approval. Mirrors the executor's `allowedNotifyChannels` config —
+   * pass the same set so the planner does not gate channels the
+   * executor would happily dispatch. Defaults to `["inbox"]`.
+   */
+  readonly safeNotifyChannels?: readonly string[] | undefined;
+  /**
+   * `submit_task.taskOptions` keys the configured scheduler backend
+   * rejects synchronously. Plans setting any of these are forced
+   * through approval since they would deterministically fail at execute
+   * time. Defaults to the shipped Temporal scheduler's reject list
+   * (`["timeoutMs", "maxRetries"]`); pass `[]` for backends that accept
+   * full TaskOptions.
+   */
+  readonly unsafeSubmitOptionKeys?: readonly string[] | undefined;
+  /**
+   * `create_schedule.taskOptions` keys the configured scheduler backend
+   * rejects synchronously. Defaults to the shipped Temporal scheduler's
+   * reject list. Pass `[]` for backends that accept full TaskOptions.
+   */
+  readonly unsafeScheduleOptionKeys?: readonly string[] | undefined;
 }
 
 const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
@@ -288,10 +311,107 @@ const compositionStepSchema = z.discriminatedUnion("kind", [
 const llmPlanSchema = z
   .object({
     triggerId: z.string(),
+    // Optional for back-compat with pre-emittedAt adapters. When omitted, the
+    // parser defaults to the current trigger.emittedAt (no relabeling risk
+    // because there is nothing to compare against). When present, the parser
+    // rejects mismatched values — that is the anti-relabeling guard.
+    triggerEmittedAt: z.number().optional(),
     steps: z.array(compositionStepSchema),
     estimatedCost: z.number().finite().nonnegative(),
   })
   .passthrough();
+
+// Step kinds the executor currently does not run; the executor fail-closes
+// on the first such step.
+const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>(["spawn_agent", "forge_skill", "tool_call"]);
+
+// True when ANY step in the plan is a kind the executor cannot run.
+// The executor fail-closes on the first such step, so a plan containing
+// any unsupported kind is at best partially executable and at worst a
+// pure no-op. Routing all such plans through approval is symmetric with
+// the rule planner's behavior and prevents the planner/executor mismatch
+// where an auto-approved plan deterministically fails at execute time.
+function planContainsUnsupported(steps: readonly CompositionStep[]): boolean {
+  for (const step of steps) {
+    if (EXECUTOR_UNSUPPORTED_KINDS.has(step.kind)) return true;
+  }
+  return false;
+}
+
+// MVP-safe notify_user channels: the executor's default
+// allowedNotifyChannels is ["inbox"]. LLM plans naming any other channel
+// would deterministically fail-closed at execute time on a default host,
+// so they are routed through approval. Hosts that have wired additional
+// channels into the executor can override this allowlist via planner
+// config (parallel to the executor's allowedNotifyChannels option).
+const DEFAULT_PLANNER_SAFE_CHANNELS: readonly string[] = ["inbox"];
+
+// Schedule taskOption keys the shipped Temporal scheduler rejects up
+// front (see packages/exec/temporal/src/temporal-scheduler.ts schedule()).
+// LLM plans setting any of these on a create_schedule step will be
+// rejected as preCommitRejection at execute time. Auto-approving those
+// plans is a deterministic planner/runtime mismatch, so route them
+// through approval for the operator/policy to decide.
+const TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS: readonly string[] = [
+  "timeoutMs",
+  "maxRetries",
+  "delayMs",
+  "priority",
+  "metadata",
+  "idempotencyKey",
+];
+
+// submit() throws synchronously on these option combinations (see
+// temporal-scheduler.ts submit()). Auto-approving plans that hit them
+// would deterministically fail at execute time.
+const TEMPORAL_UNSUPPORTED_SUBMIT_OPTION_KEYS: readonly string[] = ["timeoutMs", "maxRetries"];
+
+function planUsesUnsafeChannel(
+  steps: readonly CompositionStep[],
+  safeChannels: readonly string[],
+): boolean {
+  for (const step of steps) {
+    if (step.kind === "notify_user" && !safeChannels.includes(step.channel)) return true;
+  }
+  return false;
+}
+
+function planUsesUnsupportedScheduleOption(
+  steps: readonly CompositionStep[],
+  unsafeKeys: readonly string[],
+): boolean {
+  if (unsafeKeys.length === 0) return false;
+  for (const step of steps) {
+    if (step.kind !== "create_schedule" || step.taskOptions === undefined) continue;
+    for (const key of unsafeKeys) {
+      if ((step.taskOptions as Record<string, unknown>)[key] !== undefined) return true;
+    }
+  }
+  return false;
+}
+
+function planUsesUnsupportedSubmitOption(
+  steps: readonly CompositionStep[],
+  unsafeKeys: readonly string[],
+): boolean {
+  for (const step of steps) {
+    if (step.kind !== "submit_task" || step.taskOptions === undefined) continue;
+    for (const key of unsafeKeys) {
+      if ((step.taskOptions as Record<string, unknown>)[key] !== undefined) return true;
+    }
+    // dispatch + delayMs is also rejected unconditionally by Temporal.
+    // Only enforced when the caller has opted into Temporal-style gating
+    // (non-empty unsafeKeys) so non-Temporal backends are not affected.
+    if (
+      unsafeKeys.length > 0 &&
+      step.mode === "dispatch" &&
+      (step.taskOptions as Record<string, unknown>).delayMs !== undefined
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function parseAdapterResponse(
   raw: string,
@@ -313,8 +433,21 @@ function parseAdapterResponse(
       );
     }
 
+    // Anti-relabeling guard: if the adapter declared an emittedAt, it MUST
+    // match the current trigger.emittedAt. A cached/replayed adapter response
+    // for a prior emission must not be silently relabeled as current.
+    // Adapters that omit the field (back-compat) get the current emittedAt
+    // synthesized — there is no stale value to mistakenly trust.
+    if (plan.triggerEmittedAt !== undefined && plan.triggerEmittedAt !== trigger.emittedAt) {
+      throw new AdapterPlanParseError(
+        `planner triggerEmittedAt mismatch: expected ${trigger.emittedAt}, got ${plan.triggerEmittedAt} ` +
+          `(adapter likely returned a stale plan for a reused trigger id)`,
+      );
+    }
+
     return {
       triggerId: plan.triggerId,
+      triggerEmittedAt: plan.triggerEmittedAt ?? trigger.emittedAt,
       steps: plan.steps as readonly CompositionStep[],
       estimatedCost: plan.estimatedCost,
     };
@@ -326,12 +459,48 @@ function parseAdapterResponse(
   }
 }
 
+interface ApprovalGuards {
+  readonly safeChannels: readonly string[];
+  readonly unsafeSubmitKeys: readonly string[];
+  readonly unsafeScheduleKeys: readonly string[];
+}
+
 function withComputedApproval(
   plan: Omit<CompositionPlan, "requiresApproval">,
   trigger: CompositionTrigger,
   approvalPolicy: CompositionApprovalPolicy,
   isNovel: boolean,
+  guards: ApprovalGuards,
 ): CompositionPlan {
+  // Empty plans are forced through the approval path. The executor rejects
+  // zero-step non-approval plans as INVALID_PLAN, so without this guard an
+  // adapter response with `steps: []` (or a fallback path that returns
+  // none) would planner-as-executable but fail deterministically at run.
+  // Routing to approval lets a human/policy decide what to do instead of
+  // surfacing as a planner/executor mismatch.
+  if (plan.steps.length === 0) {
+    return { ...plan, requiresApproval: true };
+  }
+  // Plans containing any executor-unsupported step (spawn_agent/forge_skill/
+  // tool_call) are forced to approval. The executor fail-closes on those
+  // kinds, so auto-executing would either silently drop a supported suffix
+  // (unsupported precedes supported) or return STATUS=unsupported as a
+  // no-op (unsupported-only). Either way a human/policy decision is
+  // safer than auto-dispatch.
+  if (planContainsUnsupported(plan.steps)) {
+    return { ...plan, requiresApproval: true };
+  }
+  // Plans naming a notify_user channel outside the safe set, or setting
+  // create_schedule taskOptions the default scheduler rejects, would
+  // deterministically fail-closed at execute time. Route through approval
+  // instead of auto-dispatching a plan we know will be rejected.
+  if (
+    planUsesUnsafeChannel(plan.steps, guards.safeChannels) ||
+    planUsesUnsupportedScheduleOption(plan.steps, guards.unsafeScheduleKeys) ||
+    planUsesUnsupportedSubmitOption(plan.steps, guards.unsafeSubmitKeys)
+  ) {
+    return { ...plan, requiresApproval: true };
+  }
   return {
     ...plan,
     requiresApproval: computeCompositionApproval(trigger, plan.estimatedCost, approvalPolicy, {
@@ -345,6 +514,12 @@ export function createLlmCompositionPlanner(
 ): CompositionPlanner {
   const approvalPolicy = config.approvalPolicy ?? DEFAULT_COMPOSITION_APPROVAL_POLICY;
   const classifyNovelty = config.classifyNovelty ?? (() => false);
+  const guards: ApprovalGuards = {
+    safeChannels: config.safeNotifyChannels ?? DEFAULT_PLANNER_SAFE_CHANNELS,
+    unsafeSubmitKeys: config.unsafeSubmitOptionKeys ?? TEMPORAL_UNSUPPORTED_SUBMIT_OPTION_KEYS,
+    unsafeScheduleKeys:
+      config.unsafeScheduleOptionKeys ?? TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS,
+  };
 
   return {
     async plan(trigger, capabilities): Promise<CompositionPlan> {
@@ -356,12 +531,28 @@ export function createLlmCompositionPlanner(
       } catch (error) {
         if (config.fallbackToRulePlanner !== undefined && error instanceof AdapterPlanParseError) {
           const fallbackPlan = await config.fallbackToRulePlanner.plan(trigger, capabilities);
-          return withComputedApproval(fallbackPlan, trigger, approvalPolicy, isNovel);
+          // Reclassify under THIS planner's policy/novelty, but never
+          // weaken the fallback's gate: if the rule planner already
+          // required approval (e.g. unsupported steps present) keep it.
+          const reclassified = withComputedApproval(
+            { ...fallbackPlan, requiresApproval: undefined } as Omit<
+              CompositionPlan,
+              "requiresApproval"
+            >,
+            trigger,
+            approvalPolicy,
+            isNovel,
+            guards,
+          );
+          return {
+            ...reclassified,
+            requiresApproval: reclassified.requiresApproval || fallbackPlan.requiresApproval,
+          };
         }
         throw error;
       }
 
-      return withComputedApproval(parsed, trigger, approvalPolicy, isNovel);
+      return withComputedApproval(parsed, trigger, approvalPolicy, isNovel, guards);
     },
   };
 }

@@ -99,3 +99,4 @@ interface WorkspaceProviderConfig {
 ## Changelog
 
 - 2026-04-24 — Initial v2 implementation (issue #1370)
+- 2026-05-08 — Wired into shared `@koi/workspace-conformance` suite alongside `@koi/workspace-nexus`; behavior unchanged (issue #1373)

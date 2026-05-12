@@ -77,8 +77,13 @@ function stripServerNormalizedFields(snapshotJson: string): string {
     const parsed = JSON.parse(snapshotJson) as {
       provenance?: { committedAt?: number };
       lastReflectedStepIndex?: number;
+      reflectedStepIndexBySession?: Readonly<Record<string, number>>;
     };
-    const { lastReflectedStepIndex: _w, ...withoutWatermark } = parsed;
+    const {
+      lastReflectedStepIndex: _w,
+      reflectedStepIndexBySession: _m,
+      ...withoutWatermark
+    } = parsed;
     if (withoutWatermark.provenance !== undefined) {
       const { committedAt: _ignored, ...rest } = withoutWatermark.provenance;
       if (Object.keys(rest).length === 0) {
@@ -124,7 +129,10 @@ export interface SqlitePlaybookStoreConfig {
 export interface SqlitePlaybookStore {
   readonly playbooks: PlaybookStore;
   readonly structuredPlaybooks: Required<
-    Pick<StructuredPlaybookStore, "get" | "list" | "save" | "remove" | "getVersion">
+    Pick<
+      StructuredPlaybookStore,
+      "get" | "list" | "save" | "remove" | "getVersion" | "lineageSupported"
+    >
   >;
   readonly trajectories: TrajectoryStore;
   readonly proposals: PlaybookProposalStore;
@@ -557,6 +565,7 @@ interface StructuredPlaybookRow {
   readonly updated_at: number;
   readonly session_count: number;
   readonly last_reflected_step_index: number | null;
+  readonly reflected_step_index_by_session: string | null;
   readonly version: number;
   readonly provenance: string | null;
 }
@@ -565,8 +574,8 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
   const upsertCurrent = db.prepare(`
     INSERT OR REPLACE INTO structured_playbooks
       (id, title, sections, tags, source, created_at, updated_at, session_count,
-       last_reflected_step_index, version, provenance)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       last_reflected_step_index, reflected_step_index_by_session, version, provenance)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertVersion = db.prepare(`
     INSERT INTO structured_playbook_versions (playbook_id, version, snapshot, committed_at)
@@ -652,36 +661,28 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       // Fall back to lineage snapshot only if the watermarks table has no
       // row yet (e.g. fresh playbook on a freshly-migrated v6 DB before
       // any save has populated the table for this id).
-      const watermarkRow = selectWatermarkTable.get(pb.id) as {
-        readonly max_step_index: number;
-      } | null;
-      let currentWatermark: number | null;
-      if (watermarkRow !== null) {
-        currentWatermark = watermarkRow.max_step_index;
-      } else {
-        const latestRow = selectLatestLineageSnapshot.get(pb.id) as {
-          readonly snapshot: string;
-        } | null;
-        if (latestRow !== null) {
-          const latestSnapshot = JSON.parse(latestRow.snapshot) as {
-            readonly lastReflectedStepIndex?: number;
-          };
-          currentWatermark = latestSnapshot.lastReflectedStepIndex ?? null;
-        } else {
-          currentWatermark = null;
-        }
-      }
+      const currentWatermark = resolveCurrentWatermark(
+        selectWatermarkTable.get(pb.id) as { readonly max_step_index: number } | null,
+        selectLatestLineageSnapshot.get(pb.id) as { readonly snapshot: string } | null,
+      );
       const incomingWatermark = pb.lastReflectedStepIndex ?? null;
-      const monotonicWatermark =
-        currentWatermark === null
-          ? incomingWatermark
-          : incomingWatermark === null
-            ? currentWatermark
-            : Math.max(currentWatermark, incomingWatermark);
-      const { lastReflectedStepIndex: _w, provenance: _p, ...rest } = pb;
+      const monotonicWatermark = clampMonotonic(currentWatermark, incomingWatermark);
+      const mergedSessionMap = mergeSessionMaps(
+        selectLatestLineageSnapshot.get(pb.id) as { readonly snapshot: string } | null,
+        pb.reflectedStepIndexBySession,
+      );
+      const {
+        lastReflectedStepIndex: _w,
+        reflectedStepIndexBySession: _m,
+        provenance: _p,
+        ...rest
+      } = pb;
       const normalized: StructuredPlaybook = {
         ...rest,
         ...(monotonicWatermark !== null ? { lastReflectedStepIndex: monotonicWatermark } : {}),
+        ...(mergedSessionMap !== undefined
+          ? { reflectedStepIndexBySession: mergedSessionMap }
+          : {}),
         ...(normalizedProvenance !== undefined ? { provenance: normalizedProvenance } : {}),
       };
       const snapshot = canonicalJson(normalized);
@@ -743,6 +744,9 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
             stored.updatedAt,
             stored.sessionCount,
             promotedWatermark,
+            stored.reflectedStepIndexBySession !== undefined
+              ? canonicalJson(stored.reflectedStepIndexBySession)
+              : null,
             stored.version,
             stored.provenance !== undefined ? canonicalJson(stored.provenance) : null,
           );
@@ -762,6 +766,7 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
         pb.updatedAt,
         pb.sessionCount,
         monotonicWatermark,
+        mergedSessionMap !== undefined ? canonicalJson(mergedSessionMap) : null,
         pb.version,
         normalizedProvenance !== undefined ? canonicalJson(normalizedProvenance) : null,
       );
@@ -844,7 +849,61 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       const row = selectVersion.get(id, version) as { readonly snapshot: string } | null;
       return row !== null ? (JSON.parse(row.snapshot) as StructuredPlaybook) : undefined;
     },
+    lineageSupported: true,
   };
+}
+
+/**
+ * Resolve the current watermark for a structured playbook. Source of truth
+ * is `structured_playbook_watermarks` (survives both head-row loss and
+ * lineage immutability); fall back to the latest lineage snapshot only if
+ * the watermarks table has no row yet.
+ */
+function resolveCurrentWatermark(
+  watermarkRow: { readonly max_step_index: number } | null,
+  latestSnapshotRow: { readonly snapshot: string } | null,
+): number | null {
+  if (watermarkRow !== null) return watermarkRow.max_step_index;
+  if (latestSnapshotRow === null) return null;
+  const parsed = JSON.parse(latestSnapshotRow.snapshot) as {
+    readonly lastReflectedStepIndex?: number;
+  };
+  return parsed.lastReflectedStepIndex ?? null;
+}
+
+function clampMonotonic(current: number | null, incoming: number | null): number | null {
+  if (current === null) return incoming;
+  if (incoming === null) return current;
+  return Math.max(current, incoming);
+}
+
+/**
+ * Merge per-session replay watermarks from the latest stored snapshot with
+ * the incoming map. Each session takes max(prior, incoming) so a commit from
+ * session A cannot regress session B's replay position. Returns undefined
+ * when neither source has any data.
+ */
+function mergeSessionMaps(
+  latestSnapshotRow: { readonly snapshot: string } | null,
+  incoming: Readonly<Record<string, number>> | undefined,
+): Record<string, number> | undefined {
+  let merged: Record<string, number> | undefined;
+  if (latestSnapshotRow !== null) {
+    const parsed = JSON.parse(latestSnapshotRow.snapshot) as {
+      readonly reflectedStepIndexBySession?: Readonly<Record<string, number>>;
+    };
+    if (parsed.reflectedStepIndexBySession !== undefined) {
+      merged = { ...parsed.reflectedStepIndexBySession };
+    }
+  }
+  if (incoming !== undefined) {
+    merged = merged ?? {};
+    for (const [sid, idx] of Object.entries(incoming)) {
+      const prior = merged[sid];
+      merged[sid] = prior === undefined || idx > prior ? idx : prior;
+    }
+  }
+  return merged;
 }
 
 function rowToStructuredPlaybook(row: StructuredPlaybookRow): StructuredPlaybook {
@@ -858,14 +917,26 @@ function rowToStructuredPlaybook(row: StructuredPlaybookRow): StructuredPlaybook
     updatedAt: row.updated_at,
     sessionCount: row.session_count,
     version: row.version,
-  } satisfies Omit<StructuredPlaybook, "lastReflectedStepIndex" | "provenance">;
+  } satisfies Omit<
+    StructuredPlaybook,
+    "lastReflectedStepIndex" | "reflectedStepIndexBySession" | "provenance"
+  >;
   const withWatermark =
     row.last_reflected_step_index !== null
       ? { ...base, lastReflectedStepIndex: row.last_reflected_step_index }
       : base;
+  const withSessionMap =
+    row.reflected_step_index_by_session !== null
+      ? {
+          ...withWatermark,
+          reflectedStepIndexBySession: JSON.parse(row.reflected_step_index_by_session) as Readonly<
+            Record<string, number>
+          >,
+        }
+      : withWatermark;
   return row.provenance !== null
-    ? { ...withWatermark, provenance: JSON.parse(row.provenance) as PlaybookProvenance }
-    : withWatermark;
+    ? { ...withSessionMap, provenance: JSON.parse(row.provenance) as PlaybookProvenance }
+    : withSessionMap;
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,6 +1266,29 @@ function createProposalStore(db: Database): PlaybookProposalStore {
       const rows = selectByPlaybook.all(playbookId) as readonly ProposalRow[];
       return rows.map(rowToProposal);
     },
+    getEvaluation: async (id) => {
+      const row = db
+        .query(
+          "SELECT id, verdict, metrics, notes, proposal_id, evaluated_at FROM playbook_evaluations WHERE id = ?",
+        )
+        .get(id) as {
+        readonly id: string;
+        readonly verdict: string;
+        readonly metrics: string;
+        readonly notes: string | null;
+        readonly proposal_id: string;
+        readonly evaluated_at: number;
+      } | null;
+      if (row === null) return undefined;
+      return {
+        id: row.id,
+        proposalId: row.proposal_id,
+        verdict: row.verdict as PlaybookEvaluation["verdict"],
+        metrics: JSON.parse(row.metrics) as PlaybookEvaluation["metrics"],
+        ...(row.notes !== null ? { notes: row.notes } : {}),
+        evaluatedAt: row.evaluated_at,
+      };
+    },
   };
 }
 
@@ -1211,12 +1305,6 @@ function rowToProposal(row: ProposalRow): PlaybookProposal {
     createdAt: row.created_at,
   };
 }
-
-// PlaybookEvaluation type-check: schema retains evaluation rows for audit.
-// Currently no public reader; getEvaluation is intentionally not exposed
-// until a downstream consumer needs it. The unused import keeps the type
-// surface visible for future expansion.
-type _EvaluationRetained = PlaybookEvaluation;
 
 // ---------------------------------------------------------------------------
 // Helpers

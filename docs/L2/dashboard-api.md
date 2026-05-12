@@ -104,7 +104,7 @@ type ApiResult<T> =
 | `status` | `/sessions` | string | — | filters by `SessionSummary.status` |
 | `name` | `/metrics` | string | — | metric name filter |
 | `since` | `/metrics`, `/traces` | number (ms) | — | filter by `timestampMs >= since` |
-| `topics` | `/events` | comma-sep | all | subset of WsTopic |
+| `topics` | `/events` | comma-sep | all | subset of `WsTopic` |
 | `logLevel` | `/events` | enum | `info` | reserved for filtered event subscription |
 
 Cursors are **opaque to both client and API**. The data source owns cursor

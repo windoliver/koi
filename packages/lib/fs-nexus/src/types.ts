@@ -16,6 +16,22 @@ export type { NexusCallOptions, NexusHealth, NexusHealthOptions, NexusTransportK
 // Config
 // ---------------------------------------------------------------------------
 
+export interface MountDescription {
+  readonly path: string;
+  readonly connector: string;
+  readonly description?: string | undefined;
+  readonly readme?: string | undefined;
+  /**
+   * Set to `true` only by add_mount when the mutation committed but the bridge
+   * could not determine the resulting mount path (e.g. list_mounts diff was
+   * empty or ambiguous after the mutation). When this flag is set, `path` is
+   * empty and callers MUST NOT treat it as canonical — surface the partial
+   * state and prompt a refresh via list_mounts. Never persist or echo the
+   * empty path back as a mount identifier.
+   */
+  readonly pathUnknown?: boolean | undefined;
+}
+
 export interface NexusFileSystemConfig {
   /** Nexus server URL, e.g. "http://localhost:3100" or "https://nexus.example.com". */
   readonly url: string;
@@ -136,6 +152,29 @@ export interface NexusTransport {
   readonly close: () => void;
   /** Mount points discovered during startup (local transport only). */
   readonly mounts?: readonly string[] | undefined;
+  /** Describe a mount path, including connector metadata when available. */
+  readonly describeMount?: (path: string) => Promise<Result<MountDescription, KoiError>>;
+  /** Add a mount dynamically at runtime when supported by the backend. */
+  readonly addMount?: (
+    uri: string,
+    at?: string | undefined,
+  ) => Promise<Result<MountDescription, KoiError>>;
+  /** Remove a mount dynamically at runtime when supported by the backend. */
+  readonly removeMount?: (
+    path: string,
+  ) => Promise<Result<{ readonly path: string; readonly removed: true }, KoiError>>;
+  /** List the currently-mounted paths when supported by the backend. */
+  readonly listMounts?: () => Promise<Result<readonly string[], KoiError>>;
+  /**
+   * Authoritative connector scheme (e.g. "gdrive", "gmail", "local") for a
+   * mount path the transport committed in the current process — including
+   * startup-seeded manifest mounts and runtime add_mount calls. Returns
+   * `undefined` for paths the transport has no record of, in which case
+   * the caller falls back to deriving the scheme from the path. This
+   * exists so aliased mounts (`gdrive://x` at `/team/docs`) report their
+   * real connector type rather than `path.split("/")[0]`.
+   */
+  readonly mountConnector?: (path: string) => string | undefined;
 }
 
 // ---------------------------------------------------------------------------
