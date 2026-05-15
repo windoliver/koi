@@ -1999,6 +1999,13 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/net/remote": {
+      "name": "@koi/remote",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/sandbox/sandbox-cloudflare": {
       "name": "@koi/sandbox-cloudflare",
       "version": "0.1.0",
@@ -3097,6 +3104,8 @@
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
 
     "@koi/registry-nexus": ["@koi/registry-nexus@workspace:packages/security/registry-nexus"],
+
+    "@koi/remote": ["@koi/remote@workspace:packages/net/remote"],
 
     "@koi/replay": ["@koi/replay@workspace:packages/lib/replay"],
 

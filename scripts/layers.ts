@@ -195,6 +195,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/plugins",
   "@koi/proactive",
   "@koi/registry-nexus",
+  "@koi/remote",
   "@koi/sandbox-conformance",
   "@koi/sandbox-cloudflare",
   "@koi/scratchpad-conformance",
