@@ -2,14 +2,14 @@
  * Sync protocol — sequence-cursor federation sync primitives.
  *
  * SyncClient interface for fetching/publishing events, plus pure functions
- * for cursor advancement and deduplication. Phase 3 baseline: no vector
- * clocks, no LWW conflict resolution (#1410).
+ * for cursor advancement, vector-clock merge, and deduplication.
  */
 
 import type { KoiError, Result } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
-import type { FederationSyncEvent, SyncCursor } from "./types.js";
+import type { FederationSyncEvent, SyncCursor, VectorClock } from "./types.js";
 import { FEDERATION_PROTOCOL_VERSION } from "./types.js";
+import { mergeVectorClock } from "./vector-clock.js";
 
 // ---------------------------------------------------------------------------
 // Sync client interface
@@ -51,14 +51,26 @@ export interface NexusSyncClientConfig {
 export function isFederationSyncEvent(value: unknown): value is FederationSyncEvent {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const c = value as Record<string, unknown>;
-  if (typeof c["kind"] !== "string" || c["kind"].length === 0) return false;
-  if (typeof c["originZoneId"] !== "string" || c["originZoneId"].length === 0) return false;
-  if (typeof c["sequence"] !== "number" || !Number.isInteger(c["sequence"]) || c["sequence"] < 0) {
+  if (typeof c.kind !== "string" || c.kind.length === 0) return false;
+  if (typeof c.originZoneId !== "string" || c.originZoneId.length === 0) return false;
+  if (typeof c.sequence !== "number" || !Number.isInteger(c.sequence) || c.sequence < 0) {
     return false;
   }
-  if (typeof c["emittedAt"] !== "number" || !Number.isFinite(c["emittedAt"])) return false;
-  if (c["data"] === null || typeof c["data"] !== "object" || Array.isArray(c["data"])) return false;
+  if (typeof c.emittedAt !== "number" || !Number.isFinite(c.emittedAt)) return false;
+  if (c.vectorClock !== undefined && !isVectorClock(c.vectorClock)) return false;
+  if (c.data === null || typeof c.data !== "object" || Array.isArray(c.data)) return false;
   return true;
+}
+
+function isVectorClock(value: unknown): value is VectorClock {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.values(value).every(
+    (component) =>
+      typeof component === "number" &&
+      Number.isInteger(component) &&
+      Number.isFinite(component) &&
+      component >= 0,
+  );
 }
 
 /** Creates a SyncClient backed by Nexus JSON-RPC. */
@@ -150,7 +162,12 @@ export function advanceCursor(
   if (events.length === 0) {
     return {
       ok: true,
-      value: { zoneId: cursor.zoneId, lastSequence: cursor.lastSequence, lastSyncAt: now },
+      value: {
+        zoneId: cursor.zoneId,
+        vectorClock: cursor.vectorClock ?? {},
+        lastSequence: cursor.lastSequence,
+        lastSyncAt: now,
+      },
     };
   }
 
@@ -158,6 +175,8 @@ export function advanceCursor(
   let expected = cursor.lastSequence + 1;
   // let: tracks the highest sequence we accepted from this batch.
   let advanced = cursor.lastSequence;
+  // let: merges vector-clock metadata from accepted events.
+  let vectorClock = cursor.vectorClock ?? {};
   for (const event of events) {
     // Drop already-acknowledged sequences silently — peers retransmit
     // duplicates legitimately on retry. Only events strictly above the
@@ -179,6 +198,7 @@ export function advanceCursor(
       };
     }
     advanced = event.sequence;
+    vectorClock = mergeVectorClock(vectorClock, event.vectorClock ?? {});
     expected += 1;
   }
 
@@ -186,6 +206,7 @@ export function advanceCursor(
     ok: true,
     value: {
       zoneId: cursor.zoneId,
+      vectorClock,
       lastSequence: advanced,
       lastSyncAt: now,
     },

@@ -1,10 +1,10 @@
 /**
- * @koi/federation — Multi-zone agent coordination & edge sync (Phase 3 baseline).
+ * @koi/federation — Multi-zone agent coordination & edge sync.
  *
  * L2 feature package. Depends on @koi/core (L0) and @koi/nexus-client (L0u).
  *
- * Vector clocks, LWW conflict resolution, adaptive polling, snapshot
- * truncation, and clock pruning are deferred to #1410 (Phase 4e).
+ * Includes sequence-cursor sync, vector-clock metadata, conflict reporting,
+ * and cross-zone tool routing.
  */
 
 // config
@@ -25,8 +25,28 @@ export { createSyncEngine } from "./sync-engine.js";
 export type { NexusSyncClientConfig, SyncClient } from "./sync-protocol.js";
 export { advanceCursor, createNexusSyncClient, deduplicateEvents } from "./sync-protocol.js";
 // types
-export type { FederationConfig, FederationSyncEvent, SyncCursor } from "./types.js";
+export type {
+  ClockOrder,
+  ConflictReport,
+  ConflictResolutionResult,
+  ConflictResolutionStrategy,
+  FederationConfig,
+  FederationSyncEvent,
+  ReportedConflict,
+  SyncCursor,
+  VectorClock,
+} from "./types.js";
 export { DEFAULT_FEDERATION_CONFIG, FEDERATION_PROTOCOL_VERSION } from "./types.js";
+// vector clock + conflict helpers
+export {
+  compareVectorClock,
+  detectEventConflict,
+  getConflictResourceKey,
+  incrementVectorClock,
+  mergeVectorClock,
+  pruneVectorClock,
+  resolveEventConflict,
+} from "./vector-clock.js";
 // zone registry (Nexus-backed)
 export type { ServerReadsMode, ZoneRegistryNexusConfig } from "./zone-registry-nexus.js";
 export { createZoneRegistryNexus } from "./zone-registry-nexus.js";

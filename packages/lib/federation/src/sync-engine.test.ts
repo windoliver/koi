@@ -4,7 +4,7 @@ import { zoneId } from "@koi/core";
 import type { SyncEngineHandle } from "./sync-engine.js";
 import { createSyncEngine } from "./sync-engine.js";
 import type { SyncClient } from "./sync-protocol.js";
-import type { FederationSyncEvent } from "./types.js";
+import type { FederationSyncEvent, ReportedConflict, SyncCursor } from "./types.js";
 
 const ZA = zoneId("zone-a");
 const ZB = zoneId("zone-b");
@@ -390,6 +390,19 @@ describe("createSyncEngine", () => {
     ).toThrow(/fetchTimeoutMs/);
   });
 
+  test("rejects unsupported conflictResolution at construction", () => {
+    expect(() =>
+      createSyncEngine({
+        localZoneId: ZA,
+        remoteClients: new Map([["zone-b", fakeClient({ events: [] })]]),
+        pollIntervalMs: 60_000,
+        offlineAfterFailures: 3,
+        // @ts-expect-error exercising runtime validation for malformed JS callers
+        conflictResolution: "newest",
+      }),
+    ).toThrow(/conflictResolution must be one of/);
+  });
+
   test("stale outstanding fetch beyond outstandingFetchMaxAgeMs marks zone offline (no replacement RPC)", async () => {
     // Regression for #1372 review-loop pass-2 rounds 3+5+7: a leaked
     // never-settling fetch must NOT trigger a replacement RPC (would
@@ -681,6 +694,35 @@ describe("createSyncEngine", () => {
         ]),
       }),
     ).toThrow(/non-negative integer/);
+
+    expect(() =>
+      createSyncEngine({
+        ...base,
+        initialCursors: new Map([
+          [
+            "zone-b",
+            {
+              zoneId: zoneId("zone-b"),
+              vectorClock: { "zone-b": -1 },
+              lastSequence: 0,
+              lastSyncAt: 0,
+            },
+          ],
+        ]),
+      }),
+    ).toThrow(/vectorClock/);
+
+    expect(() =>
+      createSyncEngine({
+        ...base,
+        initialCursors: new Map([
+          [
+            "zone-b",
+            { zoneId: zoneId("zone-b"), vectorClock: [1], lastSequence: 0, lastSyncAt: 0 },
+          ],
+        ]) as unknown as ReadonlyMap<string, SyncCursor>,
+      }),
+    ).toThrow(/vectorClock/);
   });
 
   test("handler exception keeps cursor at the last successfully-delivered event so the failed batch is redelivered", async () => {
@@ -759,8 +801,8 @@ describe("createSyncEngine", () => {
     await engine[Symbol.asyncDispose]();
     const disconnect = calls.find((c) => c.method === "federation.zone_disconnect");
     expect(disconnect).toBeDefined();
-    expect(disconnect?.params["protocolVersion"]).toBe(FEDERATION_PROTOCOL_VERSION);
-    expect(disconnect?.params["zoneId"]).toBe(ZA);
+    expect(disconnect?.params.protocolVersion).toBe(FEDERATION_PROTOCOL_VERSION);
+    expect(disconnect?.params.zoneId).toBe(ZA);
   });
 
   test("initialCursors seeds replication progress so a restart does not replay history", async () => {
@@ -914,5 +956,133 @@ describe("createSyncEngine", () => {
     expect(received).toEqual([]);
     const cursor = engine.getCursor("zone-b");
     expect(cursor === undefined || cursor.lastSequence === 0).toBe(true);
+  });
+
+  test("reports concurrent shared-resource conflicts to subscribers", async () => {
+    const zoneAEvent: FederationSyncEvent = {
+      kind: "state.write",
+      originZoneId: zoneId("zone-a"),
+      sequence: 1,
+      vectorClock: { "zone-a": 1 },
+      data: { resourceKey: "shared-doc", left: true },
+      emittedAt: 10,
+    };
+    const zoneCEvent: FederationSyncEvent = {
+      kind: "state.write",
+      originZoneId: zoneId("zone-c"),
+      sequence: 1,
+      vectorClock: { "zone-c": 1 },
+      data: { resourceKey: "shared-doc", right: true },
+      emittedAt: 20,
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZB,
+      remoteClients: new Map([
+        ["zone-a", fakeClient({ events: [zoneAEvent] })],
+        ["zone-c", fakeClient({ events: [zoneCEvent] })],
+      ]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 3,
+      conflictResolution: "lww",
+    });
+    engines.push(engine);
+
+    const conflicts: ReportedConflict[] = [];
+    engine.onConflict((report) => conflicts.push(report));
+
+    await engine.sync();
+
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.resourceKey).toBe("shared-doc");
+    expect(conflicts[0]?.resolution.kind).toBe("resolved");
+    if (conflicts[0]?.resolution.kind === "resolved") {
+      expect(conflicts[0].resolution.event).toBe(zoneCEvent);
+    }
+    expect(engine.getConflictReports()).toHaveLength(1);
+  });
+
+  test("reports merge conflict resolution through UI hook", async () => {
+    const zoneAEvent: FederationSyncEvent = {
+      kind: "state.write",
+      originZoneId: zoneId("zone-a"),
+      sequence: 1,
+      vectorClock: { "zone-a": 1 },
+      data: { resourceKey: "shared-doc", left: true },
+      emittedAt: 10,
+    };
+    const zoneCEvent: FederationSyncEvent = {
+      kind: "state.write",
+      originZoneId: zoneId("zone-c"),
+      sequence: 1,
+      vectorClock: { "zone-c": 1 },
+      data: { resourceKey: "shared-doc", right: true },
+      emittedAt: 20,
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZB,
+      remoteClients: new Map([
+        ["zone-a", fakeClient({ events: [zoneAEvent] })],
+        ["zone-c", fakeClient({ events: [zoneCEvent] })],
+      ]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 3,
+      conflictResolution: "merge",
+    });
+    engines.push(engine);
+
+    const conflicts: ReportedConflict[] = [];
+    engine.onConflict((report) => conflicts.push(report));
+
+    await engine.sync();
+
+    expect(conflicts[0]?.resolution.kind).toBe("resolved");
+    if (conflicts[0]?.resolution.kind === "resolved") {
+      expect(conflicts[0].resolution.strategy).toBe("merge");
+      expect(conflicts[0].resolution.event.data).toEqual({
+        resourceKey: "shared-doc",
+        left: true,
+        right: true,
+      });
+    }
+  });
+
+  test("reports manual conflict resolution through UI hook", async () => {
+    const zoneAEvent: FederationSyncEvent = {
+      kind: "state.write",
+      originZoneId: zoneId("zone-a"),
+      sequence: 1,
+      vectorClock: { "zone-a": 1 },
+      data: { resourceKey: "shared-doc", left: true },
+      emittedAt: 10,
+    };
+    const zoneCEvent: FederationSyncEvent = {
+      kind: "state.write",
+      originZoneId: zoneId("zone-c"),
+      sequence: 1,
+      vectorClock: { "zone-c": 1 },
+      data: { resourceKey: "shared-doc", right: true },
+      emittedAt: 20,
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZB,
+      remoteClients: new Map([
+        ["zone-a", fakeClient({ events: [zoneAEvent] })],
+        ["zone-c", fakeClient({ events: [zoneCEvent] })],
+      ]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 3,
+      conflictResolution: "manual",
+    });
+    engines.push(engine);
+
+    const conflicts: ReportedConflict[] = [];
+    engine.onConflict((report) => conflicts.push(report));
+
+    await engine.sync();
+
+    expect(conflicts[0]?.resolution.kind).toBe("manual");
+    if (conflicts[0]?.resolution.kind === "manual") {
+      expect(conflicts[0].resolution.report.resourceKey).toBe("shared-doc");
+    }
   });
 });

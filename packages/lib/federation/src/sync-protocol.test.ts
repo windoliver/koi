@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type { KoiError, Result } from "@koi/core";
 import { zoneId } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
-import { advanceCursor, createNexusSyncClient, deduplicateEvents } from "./sync-protocol.js";
+import {
+  advanceCursor,
+  createNexusSyncClient,
+  deduplicateEvents,
+  isFederationSyncEvent,
+} from "./sync-protocol.js";
 import type { FederationSyncEvent, SyncCursor } from "./types.js";
 
 const ZB = zoneId("zone-b");
@@ -90,6 +95,17 @@ describe("deduplicateEvents", () => {
   });
 });
 
+describe("isFederationSyncEvent", () => {
+  test("accepts optional vectorClock with non-negative integer components", () => {
+    expect(isFederationSyncEvent({ ...evt(1), vectorClock: { "zone-b": 1 } })).toBe(true);
+  });
+
+  test("rejects malformed vectorClock components", () => {
+    expect(isFederationSyncEvent({ ...evt(1), vectorClock: { "zone-b": -1 } })).toBe(false);
+    expect(isFederationSyncEvent({ ...evt(1), vectorClock: { "zone-b": Number.NaN } })).toBe(false);
+  });
+});
+
 describe("createNexusSyncClient", () => {
   /**
    * Build a NexusTransport whose `call` returns a fixed payload regardless of T.
@@ -128,16 +144,16 @@ describe("createNexusSyncClient", () => {
     if (result.ok) expect(result.value).toEqual(events);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.method).toBe("federation.sync_fetch_delta");
-    expect(calls[0]?.params["zoneId"]).toBe(ZB);
-    expect(calls[0]?.params["lastSequence"]).toBe(0);
-    expect(calls[0]?.params["maxEvents"]).toBe(100);
+    expect(calls[0]?.params.zoneId).toBe(ZB);
+    expect(calls[0]?.params.lastSequence).toBe(0);
+    expect(calls[0]?.params.maxEvents).toBe(100);
   });
 
   test("fetchDelta forwards explicit maxEvents", async () => {
     const { transport, calls } = makeTransport(() => []);
     const client = createNexusSyncClient({ transport });
     await client.fetchDelta(baseCursor, 50);
-    expect(calls[0]?.params["maxEvents"]).toBe(50);
+    expect(calls[0]?.params.maxEvents).toBe(50);
   });
 
   test("fetchDelta returns Result.error when payload is not an array", async () => {
@@ -168,7 +184,7 @@ describe("createNexusSyncClient", () => {
     const result = await client.publishEvents(events);
     expect(result.ok).toBe(true);
     expect(calls[0]?.method).toBe("federation.sync_publish");
-    expect(calls[0]?.params["events"]).toEqual(events);
+    expect(calls[0]?.params.events).toEqual(events);
   });
 
   test("propagates transport errors as Result.error", async () => {

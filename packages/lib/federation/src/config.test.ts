@@ -10,6 +10,7 @@ describe("validateFederationConfig", () => {
       expect(result.value.localZoneId).toBe(zoneId("zone-a"));
       expect(result.value.pollIntervalMs).toBe(5_000);
       expect(result.value.offlineAfterFailures).toBe(3);
+      expect(result.value.conflictResolution).toBe("lww");
       expect(result.value.remoteZones).toEqual([]);
     }
   });
@@ -70,6 +71,29 @@ describe("validateFederationConfig", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.remoteZones).toEqual(remoteZones);
+    }
+  });
+
+  test("preserves supported conflict resolution strategy", () => {
+    const result = validateFederationConfig({
+      localZoneId: zoneId("zone-a"),
+      conflictResolution: "manual",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.conflictResolution).toBe("manual");
+    }
+  });
+
+  test("rejects unsupported conflict resolution strategy", () => {
+    const result = validateFederationConfig({
+      localZoneId: zoneId("zone-a"),
+      // @ts-expect-error exercising runtime validation for malformed input
+      conflictResolution: "newest",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("conflictResolution");
     }
   });
 });
