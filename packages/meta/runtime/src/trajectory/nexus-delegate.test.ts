@@ -133,6 +133,18 @@ describe("createNexusAtifDelegate", () => {
     expect(result?.steps).toHaveLength(1);
   });
 
+  test("document survives a fresh delegate instance sharing the same Nexus transport", async () => {
+    const firstDelegate = createNexusAtifDelegate({ transport });
+    await firstDelegate.write("restart-doc", DOC);
+
+    const secondDelegate = createNexusAtifDelegate({ transport });
+    const result = await secondDelegate.read("restart-doc");
+
+    expect(result?.session_id).toBe("test-session");
+    expect(result?.steps).toHaveLength(1);
+    expect(result?.steps[0]?.message).toBe("hello");
+  });
+
   test("read returns undefined for missing document", async () => {
     const delegate = createNexusAtifDelegate({ transport });
     const result = await delegate.read("nonexistent");
