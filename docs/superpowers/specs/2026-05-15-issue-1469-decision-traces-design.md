@@ -90,7 +90,7 @@ decision-ledger -> decision-graph -> DecisionGraphStore
 Outcome reports ------------------/
 ```
 
-The indexer and graph materializer both consume a `DecisionLedger` value rather than independently fetching every source. This preserves the existing integrity filtering and source-status semantics.
+The indexer and graph materializer both consume a structural ledger snapshot rather than independently fetching every source. `@koi/decision-ledger.DecisionLedger` satisfies that snapshot structurally, but the new L2 packages do not import the `@koi/decision-ledger` L2 package.
 
 ## Phase 1: Persistence Hardening
 
