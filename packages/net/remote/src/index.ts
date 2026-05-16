@@ -1,3 +1,10 @@
+export type {
+  RemoteAuthenticatorOptions,
+  RemoteAuthRejectReason,
+  RemoteAuthRequest,
+  RemoteAuthResult,
+} from "./authenticator.js";
+export { authenticateRemoteRequest } from "./authenticator.js";
 export { verifyRemoteJwt } from "./jwt.js";
 export type { RemotePermissionMapping, RemotePermissionMapResult } from "./permission-bridge.js";
 export { mapRemotePermissions } from "./permission-bridge.js";
