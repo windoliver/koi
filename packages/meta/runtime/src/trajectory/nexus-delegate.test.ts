@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import type { KoiError, Result } from "@koi/core";
+import type { KoiError, Result, RichTrajectoryStep } from "@koi/core";
 import type { NexusTransport } from "@koi/fs-nexus";
+import { createAtifDocumentStore } from "./atif-store.js";
 import type { AtifDocument } from "./atif-types.js";
 import { createNexusAtifDelegate } from "./nexus-delegate.js";
 
@@ -9,6 +10,7 @@ import { createNexusAtifDelegate } from "./nexus-delegate.js";
 // ---------------------------------------------------------------------------
 
 interface StubTransportOptions {
+  readonly files?: Map<string, string>;
   /** Inject errors for specific methods. Called before normal handling. */
   readonly errorInjector?: (
     method: string,
@@ -17,7 +19,7 @@ interface StubTransportOptions {
 }
 
 function createStubTransport(options?: StubTransportOptions): NexusTransport {
-  const files = new Map<string, string>();
+  const files = options?.files ?? new Map<string, string>();
 
   async function call<T>(
     method: string,
@@ -112,6 +114,20 @@ const DOC: AtifDocument = {
   ],
 };
 
+function makeRichStep(index: number, message: string): RichTrajectoryStep {
+  return {
+    stepIndex: index,
+    timestamp: Date.now(),
+    source: "agent",
+    kind: "model_call",
+    identifier: "test-model",
+    outcome: "success",
+    durationMs: 100,
+    request: { text: message },
+    response: { text: `${message}-response` },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -133,16 +149,49 @@ describe("createNexusAtifDelegate", () => {
     expect(result?.steps).toHaveLength(1);
   });
 
-  test("document survives a fresh delegate instance sharing the same Nexus transport", async () => {
-    const firstDelegate = createNexusAtifDelegate({ transport });
+  test("document survives a fresh delegate and transport over the same Nexus storage", async () => {
+    const files = new Map<string, string>();
+    const firstDelegate = createNexusAtifDelegate({
+      transport: createStubTransport({ files }),
+    });
     await firstDelegate.write("restart-doc", DOC);
 
-    const secondDelegate = createNexusAtifDelegate({ transport });
+    const secondDelegate = createNexusAtifDelegate({
+      transport: createStubTransport({ files }),
+    });
     const result = await secondDelegate.read("restart-doc");
 
     expect(result?.session_id).toBe("test-session");
     expect(result?.steps).toHaveLength(1);
     expect(result?.steps[0]?.message).toBe("hello");
+  });
+
+  test("trajectory store append state survives fresh delegate and transport", async () => {
+    const files = new Map<string, string>();
+    const firstStore = createAtifDocumentStore(
+      { agentName: "test-agent" },
+      createNexusAtifDelegate({ transport: createStubTransport({ files }) }),
+    );
+
+    await firstStore.append("restart-store", [makeRichStep(0, "first")]);
+
+    const secondStore = createAtifDocumentStore(
+      { agentName: "test-agent" },
+      createNexusAtifDelegate({ transport: createStubTransport({ files }) }),
+    );
+    const restored = await secondStore.getDocument("restart-store");
+
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.stepIndex).toBe(0);
+    expect(restored[0]?.request).toEqual({ text: "first" });
+
+    await secondStore.append("restart-store", [makeRichStep(99, "second")]);
+    const continued = await secondStore.getDocument("restart-store");
+
+    expect(continued).toHaveLength(2);
+    expect(continued[0]?.stepIndex).toBe(0);
+    expect(continued[1]?.stepIndex).toBe(1);
+    expect(continued[1]?.request).toEqual({ text: "second" });
   });
 
   test("read returns undefined for missing document", async () => {
