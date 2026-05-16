@@ -7,13 +7,26 @@ test("exports the team runtime public surface", () => {
   expect(api.planRunnableTasks).toBeFunction();
   expect(api.reduceTeamEvents).toBeFunction();
   expect(api.createTeamScheduler).toBeFunction();
+  expect(api.createFileTeamMailbox).toBeFunction();
+  expect(api.createTeamManager).toBeFunction();
+  expect(api.createTeamCreateTool).toBeFunction();
+  expect(api.createTeamDeleteTool).toBeFunction();
+  expect(api.createTeamAssignTaskTool).toBeFunction();
+  expect(api.createTeamReportTaskTool).toBeFunction();
+  expect(api.findInProcessTeammateTaskId).toBeFunction();
+  expect(api.setAwaitingPlanApproval).toBeFunction();
+  expect(api.handlePlanApprovalResponse).toBeFunction();
+  expect(api.isPlanModeRequired).toBeFunction();
+  expect(api.createTaskAssignmentMessage).toBeFunction();
+  expect(api.createTaskReportMessage).toBeFunction();
+  expect(api.parseTeamProtocolMessage).toBeFunction();
 });
 
 test("public surface exposes future-stable contracts", async () => {
   const assigned: Array<{ taskId: string; agentId: string }> = [];
   const spec = api.validateTeamSpec({
     name: "delivery-team",
-    agents: [{ agentType: "implementer" }],
+    agents: [{ agentType: "implementer", planModeRequired: true }],
     budget: { total: 10, reserve: 1, defaultSlice: 2 },
     workspacePolicy: { mode: "isolated", sharedResources: ["README.md"] },
   });
@@ -49,7 +62,7 @@ test("public surface exposes future-stable contracts", async () => {
 
   expect(spec).toEqual({
     ...spec,
-    agents: [{ agentType: "implementer" }],
+    agents: [{ agentType: "implementer", planModeRequired: true }],
     budget: { total: 10, reserve: 1, defaultSlice: 2 },
     workspacePolicy: { mode: "isolated", sharedResources: ["README.md"] },
   });

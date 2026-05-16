@@ -6562,6 +6562,197 @@ describe("Golden: @koi/task-tools", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/team-runtime (standalone, deterministic)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/team-runtime", () => {
+  test("team tools create, assign, report, reject non-lead assignment, and delete", async () => {
+    const {
+      createTeamAssignTaskTool,
+      createTeamCreateTool,
+      createTeamDeleteTool,
+      createTeamManager,
+      createTeamReportTaskTool,
+    } = await import("@koi/team-runtime");
+
+    const manager = createTeamManager();
+    const create = createTeamCreateTool(manager);
+    const assign = createTeamAssignTaskTool(manager);
+    const report = createTeamReportTaskTool(manager);
+    const deleteTeam = createTeamDeleteTool(manager);
+
+    const createResult = (await create.execute({
+      name: "golden-team",
+      lead: { agent_id: "lead-1", agent_name: "Lead" },
+      teammates: [
+        {
+          agent_id: "teammate-1",
+          agent_name: "Implementer",
+          plan_mode_required: true,
+          agent_type: "worker",
+        },
+      ],
+    })) as Record<string, unknown>;
+    expect(createResult.ok).toBe(true);
+    expect((createResult.team as Record<string, unknown>).taskCount).toBe(0);
+    expect(manager.getTeam("golden-team")?.members).toHaveLength(2);
+    expect(manager.getTeam("golden-team")?.members[1]?.planModeRequired).toBe(true);
+
+    const nonLeadAssign = (await assign.execute({
+      team_name: "golden-team",
+      task_id: "task-0",
+      assigned_by: "teammate-1",
+      assigned_to: "lead-1",
+      description: "Try to assign upward",
+    })) as Record<string, unknown>;
+    expect(nonLeadAssign.ok).toBe(false);
+    expect(String(nonLeadAssign.error)).toContain("Only team lead");
+
+    const assignResult = (await assign.execute({
+      team_name: "golden-team",
+      task_id: "task-1",
+      assigned_by: "lead-1",
+      assigned_to: "teammate-1",
+      description: "Implement the mailbox flow",
+    })) as Record<string, unknown>;
+    expect(assignResult.ok).toBe(true);
+
+    const reportResult = (await report.execute({
+      team_name: "golden-team",
+      task_id: "task-1",
+      agent_id: "teammate-1",
+      output: "Mailbox flow complete",
+    })) as Record<string, unknown>;
+    expect(reportResult.ok).toBe(true);
+    expect(manager.getTeam("golden-team")?.tasks.get("task-1")?.status).toBe("completed");
+    expect(manager.getTeam("golden-team")?.tasks.get("task-1")?.output).toBe(
+      "Mailbox flow complete",
+    );
+
+    const deleteResult = (await deleteTeam.execute({ name: "golden-team" })) as Record<
+      string,
+      unknown
+    >;
+    expect(deleteResult.ok).toBe(true);
+    expect(manager.getTeam("golden-team")).toBeUndefined();
+  });
+
+  test("mailbox protocol and plan approval helpers preserve typed team state", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const {
+      createFileTeamMailbox,
+      createPlanApprovalRequestMessage,
+      createPlanApprovalResponseMessage,
+      createTaskAssignmentMessage,
+      createTaskReportMessage,
+      findInProcessTeammateTaskId,
+      handlePlanApprovalResponse,
+      isPlanApprovalRequestMessage,
+      isPlanModeRequired,
+      parseTeamProtocolMessage,
+      setAwaitingPlanApproval,
+    } = await import("@koi/team-runtime");
+
+    const rootDir = await mkdtemp(join(tmpdir(), "koi-team-runtime-golden-"));
+    try {
+      const mailbox = createFileTeamMailbox({ rootDir, teamName: "Golden Team" });
+      const timestamp = "2026-05-15T12:00:00.000Z";
+      const approvalRequest = createPlanApprovalRequestMessage({
+        from: "teammate-1",
+        timestamp,
+        planFilePath: "/tmp/plan.md",
+        planContent: "1. Build\n2. Verify",
+        requestId: "approval-1",
+      });
+      const approvalResponse = createPlanApprovalResponseMessage({
+        requestId: "approval-1",
+        approved: true,
+        timestamp,
+        permissionMode: "acceptEdits",
+      });
+      const taskAssignment = createTaskAssignmentMessage({
+        requestId: "task-request-1",
+        from: "lead-1",
+        taskId: "task-1",
+        assignedTo: "teammate-1",
+        description: "Implement team runtime",
+        timestamp,
+      });
+      const taskReport = createTaskReportMessage({
+        requestId: "task-report-1",
+        from: "teammate-1",
+        taskId: "task-1",
+        output: "Done",
+        timestamp,
+      });
+
+      await Promise.all(
+        [approvalRequest, approvalResponse, taskAssignment, taskReport].map((message) =>
+          mailbox.write("Lead Agent", {
+            from: message.type,
+            text: JSON.stringify(message),
+            timestamp,
+          }),
+        ),
+      );
+
+      const messages = await mailbox.read("Lead Agent");
+      expect(messages).toHaveLength(4);
+      const parsed = messages.map((message) => parseTeamProtocolMessage(message.text));
+      expect(parsed.map((message) => message?.type).sort()).toEqual([
+        "plan_approval_request",
+        "plan_approval_response",
+        "task_assignment",
+        "task_report",
+      ]);
+      expect(isPlanApprovalRequestMessage(messages[0]?.text ?? "")?.planContent).toContain("Build");
+
+      await mailbox.markRead(
+        "Lead Agent",
+        (message) => parseTeamProtocolMessage(message.text)?.type === "plan_approval_request",
+      );
+      expect(await mailbox.readUnread("Lead Agent")).toHaveLength(3);
+
+      type TestState = {
+        readonly tasks: Record<
+          string,
+          {
+            readonly id: string;
+            readonly type: "in_process_teammate";
+            readonly identity: { readonly agentName: string };
+            readonly awaitingPlanApproval?: boolean;
+          }
+        >;
+      };
+      let state: TestState = {
+        tasks: {
+          "task-1": {
+            id: "task-1",
+            type: "in_process_teammate",
+            identity: { agentName: "Implementer" },
+          },
+        },
+      };
+      const setState = (updater: (prev: TestState) => TestState): void => {
+        state = updater(state);
+      };
+
+      expect(findInProcessTeammateTaskId("Implementer", state)).toBe("task-1");
+      setAwaitingPlanApproval("task-1", setState, true);
+      expect(state.tasks["task-1"]?.awaitingPlanApproval).toBe(true);
+      handlePlanApprovalResponse("task-1", approvalResponse, setState);
+      expect(state.tasks["task-1"]?.awaitingPlanApproval).toBe(false);
+      expect(isPlanModeRequired({ role: "teammate", planModeRequired: true })).toBe(true);
+      expect(isPlanModeRequired({ role: "lead", planModeRequired: true })).toBe(false);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Full-loop replay: spawn-tools cassette → createKoi → live ATIF
 // Exercises: @koi/spawn-tools + @koi/task-tools wired through createKoi
 // Cassette: LLM calls task_create (first turn); replay validates live ATIF

@@ -170,6 +170,7 @@
     "@koi/task-spawn": "workspace:*",
     "@koi/task-tools": "workspace:*",
     "@koi/tasks": "workspace:*",
+    "@koi/team-runtime": "workspace:*",
     "@koi/temporal": "workspace:*",
     "@koi/toolsets": "workspace:*",
     "@koi/tools-builtin": "workspace:*",

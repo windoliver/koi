@@ -12,6 +12,7 @@
  *   @koi/tools-bash           — Bash execution (sandboxed when adapter available) + bash_background
  *   @koi/tasks                — in-memory task board for background job tracking
  *   @koi/task-tools           — task_create, task_get, task_update, task_list, task_stop, task_output
+ *   @koi/team-runtime         — TeamCreate, TeamDelete, TeamAssignTask, TeamReportTask
  *   @koi/tools-web            — web_fetch
  *   @koi/tool-notebook        — notebook_read, notebook_add_cell, notebook_replace_cell, notebook_delete_cell
  *   @koi/session              — JSONL transcript recording (optional, via config.session)

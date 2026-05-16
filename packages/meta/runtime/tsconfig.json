@@ -59,6 +59,7 @@
     { "path": "../../lib/task-spawn" },
     { "path": "../../lib/task-tools" },
     { "path": "../../lib/tasks" },
+    { "path": "../../lib/team-runtime" },
     { "path": "../../exec/temporal" },
     { "path": "../../lib/toolsets" },
     { "path": "../../lib/tools-builtin" },

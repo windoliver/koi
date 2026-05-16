@@ -53,6 +53,7 @@
     { "path": "../../sched/scheduler" },
     { "path": "../../sched/scheduler-nexus" },
     { "path": "../../sched/scheduler-provider" },
+    { "path": "../../lib/team-runtime" },
     { "path": "../../lib/tool-exec" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/checkpoint" },

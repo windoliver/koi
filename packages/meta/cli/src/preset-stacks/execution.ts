@@ -66,6 +66,13 @@ import { createDefaultSandboxRouter, createRouterAdapterShim } from "@koi/runtim
 import { mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
+import {
+  createTeamAssignTaskTool,
+  createTeamCreateTool,
+  createTeamDeleteTool,
+  createTeamManager,
+  createTeamReportTaskTool,
+} from "@koi/team-runtime";
 import type { BashOutputBuffer } from "@koi/tools-bash";
 import {
   createBashBackgroundTool,
@@ -570,6 +577,20 @@ export const executionStack: PresetStack = {
           )
         : [];
 
+    const teamManager = createTeamManager();
+    const teamToolProviders = [
+      createTeamCreateTool(teamManager),
+      createTeamDeleteTool(teamManager),
+      createTeamAssignTaskTool(teamManager),
+      createTeamReportTaskTool(teamManager),
+    ].map((tool) =>
+      createSingleToolProvider({
+        name: `team-${tool.descriptor.name}`,
+        toolName: tool.descriptor.name,
+        createTool: () => tool,
+      }),
+    );
+
     // --- @koi/middleware-task-anchor: re-anchor model on live task board ---
     // Fires after K idle turns with no task-tool activity, re-prepending a
     // `<system-reminder>` with the current board snapshot so the model
@@ -599,6 +620,7 @@ export const executionStack: PresetStack = {
       providers: [
         ...(bashBackgroundProvider !== undefined ? [bashBackgroundProvider] : []),
         ...taskToolProviders,
+        ...teamToolProviders,
       ],
       exports: {
         [EXECUTION_EXPORTS.bashHandle]: bashHandle,
