@@ -1872,6 +1872,15 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/net/community-registry": {
+      "name": "@koi/community-registry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/net/daemon": {
       "name": "@koi/daemon",
       "version": "0.0.0",
@@ -2812,6 +2821,8 @@
     "@koi/checkpoint": ["@koi/checkpoint@workspace:packages/lib/checkpoint"],
 
     "@koi/code-executor": ["@koi/code-executor@workspace:packages/exec/code-executor"],
+
+    "@koi/community-registry": ["@koi/community-registry@workspace:packages/net/community-registry"],
 
     "@koi/config": ["@koi/config@workspace:packages/lib/config"],
 
