@@ -14,53 +14,67 @@ MANIFEST="$REPO_ROOT/clawbench/koi.yaml"
 rm -rf "$RESULTS_DIR"
 mkdir -p "$WORKSPACE"
 
-# Load API keys (koi reads OPENROUTER_API_KEY or OPENAI_API_KEY, not ANTHROPIC_API_KEY)
-set -a; source "$REPO_ROOT/.env"; set +a
+# --- Credential isolation ---------------------------------------------------
+# Untrusted task code runs in this process tree: environment/setup.sh and the
+# agent's own Bash tool execute arbitrary shell. We therefore NEVER source
+# .env into this shell. Instead we read ONLY the single model key koi needs,
+# inside a subshell, and inject it (plus an explicit allowlist) into just the
+# koi invocation via `env -i`. setup.sh receives no credentials at all.
+_read_model_key() {
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/.env" 2>/dev/null || true
+    set +a
+    if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+      printf 'OPENROUTER_API_KEY=%s' "$OPENROUTER_API_KEY"
+    elif [ -n "${OPENAI_API_KEY:-}" ]; then
+      printf 'OPENAI_API_KEY=%s' "$OPENAI_API_KEY"
+    fi
+  )
+}
+MODEL_KEY_KV="$(_read_model_key)"
+if [ -z "$MODEL_KEY_KV" ]; then
+  echo "FATAL: no OPENROUTER_API_KEY or OPENAI_API_KEY in $REPO_ROOT/.env" >&2
+  exit 1
+fi
 
-# Prevent agent-invoked python from creating __pycache__/.pyc (verifiers flag these).
+# Prevent agent-invoked python from creating __pycache__/.pyc (verifiers flag
+# these). Non-secret; also benefits the in-shell verifier pytest below.
 export PYTHONDONTWRITEBYTECODE=1
 
 # Exfiltration guard.
 #
-# The default is the SAFE one: leave the guard at "block". Some bench fixtures
-# contain mock credentials that can trip the guard, but silently weakening a
-# security boundary for every run (against a third-party, untrusted task set)
-# is itself the bigger risk — a hostile task could surface real secrets.
-#
-# A downgrade to "warn" therefore happens ONLY when the operator explicitly
-# opts in for a trusted run, by exporting CLAWBENCH_EXFIL_DOWNGRADE=1. When
-# that opt-in is set we ALSO sanitize the environment: koi only needs the
-# model key (OPENROUTER_API_KEY or OPENAI_API_KEY); every other real
-# credential is unset so a task abusing the weakened guard has nothing
-# sensitive to exfiltrate.
+# The default is the SAFE one: the guard is explicitly forced to "block".
+# Downgrading to "warn" happens ONLY when the operator explicitly opts in for
+# a trusted run by exporting CLAWBENCH_EXFIL_DOWNGRADE=1. Because the koi
+# invocation runs under `env -i` with an allowlist (model key only), even a
+# downgraded run has no other credential available to exfiltrate.
 if [ "${CLAWBENCH_EXFIL_DOWNGRADE:-0}" = "1" ]; then
-  export KOI_EXFIL_ACTION="warn"
-  export KOI_EXFIL_ALLOW_DOWNGRADE=1
-  # Keep whichever model key koi will actually use; drop everything else.
-  _model_key_name="OPENROUTER_API_KEY"
-  if [ -z "${OPENROUTER_API_KEY:-}" ] && [ -n "${OPENAI_API_KEY:-}" ]; then
-    _model_key_name="OPENAI_API_KEY"
-  fi
-  for _secret in OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY \
-                 NEXUS_API_KEY GITHUB_TOKEN GH_TOKEN \
-                 AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY GOOGLE_API_KEY; do
-    [ "$_secret" = "$_model_key_name" ] && continue
-    unset "$_secret" || true
-  done
-  unset _secret _model_key_name
-  echo "=== exfil guard DOWNGRADED to warn (operator opt-in); non-model secrets scrubbed ===" >&2
+  EXFIL_ACTION_KV="KOI_EXFIL_ACTION=warn"
+  EXFIL_DOWNGRADE_KV="KOI_EXFIL_ALLOW_DOWNGRADE=1"
+  echo "=== exfil guard DOWNGRADED to warn (operator opt-in) ===" >&2
 else
-  # No opt-in: ensure no inherited value can weaken the guard for this run.
-  unset KOI_EXFIL_ACTION KOI_EXFIL_ALLOW_DOWNGRADE || true
+  EXFIL_ACTION_KV="KOI_EXFIL_ACTION=block"
+  EXFIL_DOWNGRADE_KV="KOI_EXFIL_ALLOW_DOWNGRADE=0"
 fi
 
-# Cap per-request output tokens to stay under OpenRouter daily limits.
-# Most clawbench tasks need <8K tokens per turn; cap at 8K.
-export KOI_MAX_TOKENS="${KOI_MAX_TOKENS:-8000}"
+# Minimal allowlisted environment for every untrusted child (setup.sh + koi).
+# `env -i` wipes the inherited environment; we re-add only non-sensitive
+# runtime essentials. No secrets here — the model key is added to the koi
+# invocation ONLY, never to setup.sh.
+SAFE_ENV=(
+  "PATH=$PATH"
+  "HOME=$HOME"
+  "TMPDIR=${TMPDIR:-/tmp}"
+  "LANG=${LANG:-C}"
+  "TERM=${TERM:-xterm}"
+  "PYTHONDONTWRITEBYTECODE=1"
+)
 
 # Try setup.sh with workspace arg; some scripts ignore $1 and write to TASK_DIR/workspace.
 # Always also copy environment/data directly as fallback to guarantee seeding.
-bash "$TASK_DIR/environment/setup.sh" "$WORKSPACE" 2>&1 | tail -5 >&2 || true
+env -i "${SAFE_ENV[@]}" bash "$TASK_DIR/environment/setup.sh" "$WORKSPACE" 2>&1 | tail -5 >&2 || true
 if [ -d "$TASK_DIR/environment/data" ]; then
   cp -r "$TASK_DIR/environment/data/." "$WORKSPACE/" 2>/dev/null || true
 fi
@@ -96,6 +110,11 @@ fi
 echo "=== Running $TASK_ID ===" >&2
 cd "$WORKSPACE"
 
+# Defense-in-depth: bun auto-loads a .env from its cwd ($WORKSPACE). A
+# malicious setup.sh could plant one containing KOI_EXFIL_* to silently
+# disable the guard. Remove any task-planted dotenv before launching koi.
+rm -f "$WORKSPACE"/.env "$WORKSPACE"/.env.* 2>/dev/null || true
+
 # Shell-driven verifier-feedback loop. koi's native --until-pass is
 # incompatible with --headless, so we re-implement: run agent, run pytest,
 # if any test failed, append failures to the prompt and re-run, up to MAX_ITER.
@@ -115,7 +134,11 @@ cap_idx=0
 for iter in $(seq 1 $MAX_ITER); do
   iter_cap="${TOKEN_LADDER[$cap_idx]}"
   echo "--- iter $iter (max_tokens=$iter_cap) ---" >&2
-  KOI_MAX_TOKENS="$iter_cap" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" start \
+  env -i "${SAFE_ENV[@]}" \
+    "$EXFIL_ACTION_KV" "$EXFIL_DOWNGRADE_KV" \
+    "KOI_MAX_TOKENS=$iter_cap" \
+    "$MODEL_KEY_KV" \
+    bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" start \
     --manifest "$MANIFEST" \
     --headless \
     --prompt "$CURRENT_PROMPT" \
