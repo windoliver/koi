@@ -20,13 +20,39 @@ set -a; source "$REPO_ROOT/.env"; set +a
 # Prevent agent-invoked python from creating __pycache__/.pyc (verifiers flag these).
 export PYTHONDONTWRITEBYTECODE=1
 
-# Bench fixtures may contain mock credentials; demote exfil guard from block→warn
-# so the agent can complete the task. This requires BOTH the action var and the
-# explicit downgrade opt-in — the opt-in is what makes a stray inherited
-# KOI_EXFIL_ACTION in a real environment a no-op (stays block). Real prod runs
-# leave both unset.
-export KOI_EXFIL_ACTION="${KOI_EXFIL_ACTION:-warn}"
-export KOI_EXFIL_ALLOW_DOWNGRADE="${KOI_EXFIL_ALLOW_DOWNGRADE:-1}"
+# Exfiltration guard.
+#
+# The default is the SAFE one: leave the guard at "block". Some bench fixtures
+# contain mock credentials that can trip the guard, but silently weakening a
+# security boundary for every run (against a third-party, untrusted task set)
+# is itself the bigger risk — a hostile task could surface real secrets.
+#
+# A downgrade to "warn" therefore happens ONLY when the operator explicitly
+# opts in for a trusted run, by exporting CLAWBENCH_EXFIL_DOWNGRADE=1. When
+# that opt-in is set we ALSO sanitize the environment: koi only needs the
+# model key (OPENROUTER_API_KEY or OPENAI_API_KEY); every other real
+# credential is unset so a task abusing the weakened guard has nothing
+# sensitive to exfiltrate.
+if [ "${CLAWBENCH_EXFIL_DOWNGRADE:-0}" = "1" ]; then
+  export KOI_EXFIL_ACTION="warn"
+  export KOI_EXFIL_ALLOW_DOWNGRADE=1
+  # Keep whichever model key koi will actually use; drop everything else.
+  _model_key_name="OPENROUTER_API_KEY"
+  if [ -z "${OPENROUTER_API_KEY:-}" ] && [ -n "${OPENAI_API_KEY:-}" ]; then
+    _model_key_name="OPENAI_API_KEY"
+  fi
+  for _secret in OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY \
+                 NEXUS_API_KEY GITHUB_TOKEN GH_TOKEN \
+                 AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY GOOGLE_API_KEY; do
+    [ "$_secret" = "$_model_key_name" ] && continue
+    unset "$_secret" || true
+  done
+  unset _secret _model_key_name
+  echo "=== exfil guard DOWNGRADED to warn (operator opt-in); non-model secrets scrubbed ===" >&2
+else
+  # No opt-in: ensure no inherited value can weaken the guard for this run.
+  unset KOI_EXFIL_ACTION KOI_EXFIL_ALLOW_DOWNGRADE || true
+fi
 
 # Cap per-request output tokens to stay under OpenRouter daily limits.
 # Most clawbench tasks need <8K tokens per turn; cap at 8K.
@@ -173,11 +199,20 @@ cd "$REPO_ROOT"
 source .venv-clawbench/bin/activate
 # conftest.py lives at /tmp/claw-bench-src/tasks/conftest.py and registers --workspace.
 # Run pytest with the tasks dir as rootdir so conftest is picked up.
+set +e
 python -m pytest \
   --rootdir=/tmp/claw-bench-src/tasks \
   --workspace="$WORKSPACE" \
   "$TASK_DIR/verifier/test_output.py" \
   -v --tb=short \
-  > "$RESULTS_DIR/verifier.log" 2>&1 || echo "pytest exit=$?" >&2
+  > "$RESULTS_DIR/verifier.log" 2>&1
+verify_rc=$?
+set -e
+[ "$verify_rc" -ne 0 ] && echo "pytest exit=$verify_rc" >&2
 
 tail -20 "$RESULTS_DIR/verifier.log"
+
+# Make the verifier outcome the authoritative exit status so CI/automation
+# can fail-fast. run-domain.sh deliberately tolerates this with `|| true`
+# and parses verifier.log, so a non-zero exit here does not break batch runs.
+exit "$verify_rc"

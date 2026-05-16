@@ -10,7 +10,23 @@ PROGRESS="$REPO_ROOT/clawbench/results/ALL-PROGRESS.txt"
 mkdir -p "$REPO_ROOT/clawbench/results"
 : > "$PROGRESS"
 
-for d in "$TASKS_ROOT"/*/; do
+# Treat a missing/empty task source as a hard error — otherwise this script
+# would loop zero times and still report "COMPLETE", masking a checkout/infra
+# regression with a false green.
+if [ ! -d "$TASKS_ROOT" ]; then
+  echo "FATAL: task source not found: $TASKS_ROOT" | tee -a "$PROGRESS" >&2
+  exit 1
+fi
+shopt -s nullglob
+_domain_dirs=("$TASKS_ROOT"/*/)
+shopt -u nullglob
+if [ "${#_domain_dirs[@]}" -eq 0 ]; then
+  echo "FATAL: no domain directories under $TASKS_ROOT" | tee -a "$PROGRESS" >&2
+  exit 1
+fi
+
+failed_domains=0
+for d in "${_domain_dirs[@]}"; do
   domain=$(basename "$d")
   [ "$domain" = "_schema" ] && continue
   [ "$domain" = "__pycache__" ] && continue
@@ -26,9 +42,17 @@ for d in "$TASKS_ROOT"/*/; do
   fi
 
   echo ">>> START $domain ($(date +%H:%M:%S))" | tee -a "$PROGRESS"
-  "$REPO_ROOT/clawbench/run-domain.sh" "$domain" >> "$PROGRESS" 2>&1 || \
-    echo "  domain $domain exited non-zero" | tee -a "$PROGRESS"
-  echo "<<< DONE  $domain ($(date +%H:%M:%S))" | tee -a "$PROGRESS"
+  if "$REPO_ROOT/clawbench/run-domain.sh" "$domain" >> "$PROGRESS" 2>&1; then
+    echo "<<< DONE  $domain ($(date +%H:%M:%S))" | tee -a "$PROGRESS"
+  else
+    rc=$?
+    failed_domains=$((failed_domains + 1))
+    echo "<<< FAIL  $domain (exit $rc) ($(date +%H:%M:%S))" | tee -a "$PROGRESS"
+  fi
 done
 
+if [ "$failed_domains" -gt 0 ]; then
+  echo "=== INCOMPLETE: $failed_domains domain(s) failed ===" | tee -a "$PROGRESS" >&2
+  exit 1
+fi
 echo "=== ALL REMAINING DOMAINS COMPLETE ===" | tee -a "$PROGRESS"
