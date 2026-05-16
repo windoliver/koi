@@ -12,7 +12,7 @@ Decision-relevant data in Koi lives in three independent sinks:
 
 Operators investigating "what actually happened on this session?" currently have to query all three by hand and stitch them together. This package is that stitching, done once, as a diagnostic read API.
 
-It is Phase 2 part (a) of issue [#1469](https://github.com/windoliver/koi/issues/1469). Phase 1 shipped Nexus-backed trajectory persistence in PR #1592; Phase 2(b) (cross-session index) is blocked on porting `@koi/search-nexus`; Phase 3 (graph) is future work.
+It is Phase 2 part (a) of issue [#1469](https://github.com/windoliver/koi/issues/1469). Phase 1 shipped Nexus-backed trajectory persistence in PR #1592; Phase 2(b) is covered by `@koi/decision-index` over the L0 `SearchBackend` contract, with `@koi/search-nexus` available as the durable Nexus adapter. The graph view is covered by `@koi/decision-graph`.
 
 ## What it is NOT
 
@@ -327,7 +327,7 @@ A replay-driven golden query would require extending the recorder to wire an `Au
 1. Default v2 `AuditSink` implementation (Nexus-backed, queryable).
 2. Default v2 `ReportStore` implementation.
 3. Replay lifecycle hooks so the ledger can graduate to a replay-driven golden query.
-4. Phase 2 part (b) — cross-session decision index (blocked on `@koi/search-nexus` port).
+4. Optional host wiring — decide which production runtime assemblies should enable `@koi/decision-index` and `@koi/decision-graph` by default versus leaving them as caller-supplied factories.
 5. Phase 3 — graph capability (Nexus RecordStore adapter + context graph materialization).
 
 ## `AuditEntry.schema_version` (compatibility note, #1627)

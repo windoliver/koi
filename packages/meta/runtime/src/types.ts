@@ -27,14 +27,27 @@ import type {
   KoiMiddleware,
   OutcomeStore,
   ReportStore,
+  Result,
   RetrySignalReader,
   RichTrajectoryStep,
+  SearchBackend,
   SessionId,
   SpawnLedger,
   ToolDescriptor,
   ToolPolicy,
   TrajectoryDocumentStore,
 } from "@koi/core";
+import type {
+  DecisionGraph,
+  DecisionGraphNeighborsQuery,
+  DecisionGraphStore,
+  DecisionGraphSubgraphQuery,
+} from "@koi/decision-graph";
+import type {
+  DecisionIndexDocumentData,
+  DecisionIndexPage,
+  DecisionIndexQuery,
+} from "@koi/decision-index";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import type { SpawnPolicy } from "@koi/engine-compose";
 import type { GovernanceMiddlewareConfig } from "@koi/governance-core";
@@ -780,6 +793,20 @@ export interface RuntimeAutoHarnessHandle {
   readonly maxSynthesesPerSession: number;
 }
 
+/** Runtime-backed decision index facade. */
+export interface RuntimeDecisionIndexHandle {
+  readonly indexSession: (sessionId: string) => Promise<Result<void>>;
+  readonly queryDecisions: (query: DecisionIndexQuery) => Promise<Result<DecisionIndexPage>>;
+}
+
+/** Runtime-backed decision graph facade. */
+export interface RuntimeDecisionGraphHandle {
+  readonly materializeSession: (sessionId: string) => Promise<Result<DecisionGraph>>;
+  readonly getGraph: (sessionId: string) => Promise<Result<DecisionGraph | undefined>>;
+  readonly getNeighbors: (query: DecisionGraphNeighborsQuery) => Promise<Result<DecisionGraph>>;
+  readonly getSubgraph: (query: DecisionGraphSubgraphQuery) => Promise<Result<DecisionGraph>>;
+}
+
 /** The assembled runtime returned by createRuntime. */
 export interface RuntimeHandle {
   readonly adapter: EngineAdapter;
@@ -900,6 +927,39 @@ export interface RuntimeHandle {
         readonly auditSink?: AuditSink | undefined;
         readonly reportStore?: ReportStore | undefined;
       }) => DecisionLedgerReader)
+    | undefined;
+
+  /**
+   * Factory for a cross-session decision search index over the runtime's
+   * decision ledger. Undefined when `trajectoryStore` is not configured.
+   *
+   * The caller supplies the `SearchBackend` (for example from
+   * `@koi/search-nexus`); runtime supplies the live trajectory store and
+   * optional audit/report overrides, then indexes structural ledger snapshots
+   * via `@koi/decision-index`.
+   */
+  readonly createDecisionIndex:
+    | ((config: {
+        readonly backend: SearchBackend<DecisionIndexDocumentData>;
+        readonly auditSink?: AuditSink | undefined;
+        readonly reportStore?: ReportStore | undefined;
+      }) => RuntimeDecisionIndexHandle)
+    | undefined;
+
+  /**
+   * Factory for materialized decision trace graphs over the runtime's live
+   * ledger. Undefined when `trajectoryStore` is not configured.
+   *
+   * Callers supply the graph store. The default package includes an in-memory
+   * store, while durable RecordStore/Nexus-backed implementations can satisfy
+   * the same structural interface.
+   */
+  readonly createDecisionGraph:
+    | ((config: {
+        readonly store: DecisionGraphStore;
+        readonly auditSink?: AuditSink | undefined;
+        readonly reportStore?: ReportStore | undefined;
+      }) => RuntimeDecisionGraphHandle)
     | undefined;
 
   /**

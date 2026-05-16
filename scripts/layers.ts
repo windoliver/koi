@@ -110,6 +110,8 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/dashboard-api",
   "@koi/dashboard-ui",
   "@koi/debug",
+  "@koi/decision-graph",
+  "@koi/decision-index",
   "@koi/decision-ledger",
   "@koi/eval",
   "@koi/event-trace",

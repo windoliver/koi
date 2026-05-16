@@ -16334,6 +16334,152 @@ describe("Golden: @koi/registry-nexus", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/decision-index (standalone — no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/decision-index", () => {
+  test("indexes a ledger snapshot and forwards structured query filters", async () => {
+    const { createDecisionIndex } = await import("@koi/decision-index");
+    type Backend = import("@koi/core").SearchBackend<
+      import("@koi/decision-index").DecisionIndexDocumentData
+    >;
+    type Document = import("@koi/decision-index").DecisionIndexDocument;
+    type Query = import("@koi/core").SearchQuery;
+    type Step = import("@koi/core/rich-trajectory").RichTrajectoryStep;
+
+    const indexed: Document[][] = [];
+    const removed: string[][] = [];
+    const retrieves: Query[] = [];
+    const backend: Backend = {
+      index: async (documents) => {
+        indexed.push([...documents]);
+        return { ok: true, value: undefined };
+      },
+      remove: async (ids) => {
+        removed.push([...ids]);
+        return { ok: true, value: undefined };
+      },
+      retrieve: async (query) => {
+        retrieves.push(query);
+        return { ok: true, value: { results: [], hasMore: false } };
+      },
+    };
+    const steps: readonly Step[] = [
+      {
+        stepIndex: 0,
+        timestamp: 1_700_000_000_000,
+        source: "agent",
+        kind: "model_call",
+        identifier: "approve-outcome",
+        outcome: "success",
+        durationMs: 7,
+        request: { text: "should we ship?" },
+        response: { text: "ship it" },
+        metadata: { decisionCorrelationId: "dcid-golden" },
+      },
+    ];
+
+    const index = createDecisionIndex({ backend, clock: () => 1_700_000_001_000 });
+    const write = await index.indexSession({
+      sessionId: "s-index-golden",
+      trajectorySteps: steps,
+      auditEntries: [],
+      integrityLeakCounts: { audit: 0, report: 0 },
+    });
+    expect(write.ok).toBe(true);
+    expect(indexed.length).toBe(1);
+    expect(indexed[0]?.map((doc) => doc.data?.sourceKind)).toEqual([
+      "trajectory",
+      "session_marker",
+    ]);
+    expect(removed).toEqual([]);
+
+    const result = await index.queryDecisions({
+      text: "ship",
+      limit: 5,
+      filter: { kind: "eq", field: "decisionCorrelationId", value: "dcid-golden" },
+    });
+
+    expect(result.ok).toBe(true);
+    const query = retrieves.at(-1);
+    expect(query?.text).toBe("ship");
+    expect(query?.limit).toBe(5);
+    expect(query?.filter).toEqual({
+      kind: "and",
+      filters: [
+        { kind: "ne", field: "sourceKind", value: "session_marker" },
+        { kind: "eq", field: "decisionCorrelationId", value: "dcid-golden" },
+      ],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/decision-graph (standalone — no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/decision-graph", () => {
+  test("materializes a bounded path from session node to outcome node", async () => {
+    const { decisionCorrelationId } = await import("@koi/core");
+    const { createInMemoryDecisionGraphStore, materializeDecisionGraph } = await import(
+      "@koi/decision-graph"
+    );
+    type Step = import("@koi/core/rich-trajectory").RichTrajectoryStep;
+    type Outcome = import("@koi/core").OutcomeReport;
+
+    const steps: readonly Step[] = [
+      {
+        stepIndex: 0,
+        timestamp: 1_700_000_000_000,
+        source: "agent",
+        kind: "model_call",
+        identifier: "model",
+        outcome: "success",
+        durationMs: 5,
+        response: { text: "approved" },
+        metadata: { decisionCorrelationId: "dcid-graph-golden" },
+      },
+    ];
+    const outcomes: readonly Outcome[] = [
+      {
+        correlationId: decisionCorrelationId("dcid-graph-golden"),
+        outcome: "positive",
+        description: "Approval produced a positive outcome",
+        metrics: { saved_minutes: 18 },
+        reportedBy: "golden",
+        timestamp: 1_700_000_000_100,
+      },
+    ];
+
+    const graph = materializeDecisionGraph({
+      sessionId: "s-graph-golden",
+      trajectorySteps: steps,
+      auditEntries: [],
+      outcomeReports: outcomes,
+      integrityLeakCounts: { audit: 0, report: 0 },
+    });
+    const store = createInMemoryDecisionGraphStore();
+    const write = await store.upsertGraph(graph);
+    expect(write.ok).toBe(true);
+
+    const sessionNode = graph.nodes.find((node) => node.kind === "session");
+    expect(sessionNode).toBeDefined();
+    if (sessionNode === undefined) return;
+
+    const subgraph = await store.getSubgraph({
+      sessionId: "s-graph-golden",
+      nodeIds: [sessionNode.id],
+      hops: 2,
+    });
+
+    expect(subgraph.ok).toBe(true);
+    if (!subgraph.ok) return;
+    expect(subgraph.value.nodes.map((node) => node.kind)).toContain("outcome");
+    expect(subgraph.value.edges.map((edge) => edge.kind)).toContain("produced");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/search-nexus (standalone — no LLM required)
 // ---------------------------------------------------------------------------
 
