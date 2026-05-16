@@ -2597,7 +2597,16 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // that match known secret formats (API keys, tokens, credentials).
   // Must be in the middleware stack to protect shell and web_fetch from leaking
   // workspace secrets — omitting it is a security regression.
-  const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
+  //
+  // KOI_EXFIL_ACTION (block|redact|warn) overrides the default "block" action.
+  // Useful for CI/benchmark scenarios where workspace fixtures contain mock
+  // credentials and the agent must still complete the task.
+  const exfilAction = process.env.KOI_EXFIL_ACTION;
+  const exfiltrationGuardMw = createExfiltrationGuardMiddleware(
+    exfilAction === "redact" || exfilAction === "warn" || exfilAction === "block"
+      ? { action: exfilAction }
+      : undefined,
+  );
 
   // --- @koi/middleware-tool-error-formatter: convert tool throws to model-readable responses ---
   // Catches throws via wrapToolCall (priority 170, resolve phase) and returns a

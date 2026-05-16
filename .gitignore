@@ -43,3 +43,13 @@ tasks/
 varfolders/
 .koi/memory/
 .worktrees/
+
+# clawbench harness: ignore bulky run artifacts, the python venv, and the
+# accidental dirs some task setup.sh scripts write into the repo root.
+clawbench/results/
+.venv-clawbench/
+/$WORKSPACE/
+/environment/
+# ...but DO track the clawbench manifests despite the global koi*.yaml ignore.
+!clawbench/koi.yaml
+!clawbench/koi-sonnet.yaml
