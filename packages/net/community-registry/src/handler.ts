@@ -215,16 +215,26 @@ async function handleVersions(
   return jsonResponse({ items });
 }
 
-export function createCommunityRegistryHandler(
-  config: CommunityRegistryConfig,
-): CommunityRegistryHandler {
-  let disposed = false;
+class CommunityRegistryHandlerImpl implements CommunityRegistryHandler {
+  private disposed = false;
+  private readonly config: CommunityRegistryConfig;
 
-  async function handler(request: Request): Promise<Response | null> {
-    if (disposed) {
+  constructor(config: CommunityRegistryConfig) {
+    this.config = config;
+  }
+
+  async handler(request: Request): Promise<Response | null> {
+    if (this.disposed) {
       return errorResponse("Service unavailable", 503);
     }
+    return this.route(request);
+  }
 
+  dispose(): void {
+    this.disposed = true;
+  }
+
+  private async route(request: Request): Promise<Response | null> {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
     const path = url.pathname;
@@ -234,12 +244,12 @@ export function createCommunityRegistryHandler(
     }
 
     if (method === "POST" && path === "/v1/publish") {
-      return handlePublish(request, config);
+      return handlePublish(request, this.config);
     }
 
     if (method === "GET" && path === "/v1/discovery") {
       return jsonResponse(
-        await config.backend.discovery({
+        await this.config.backend.discovery({
           category: url.searchParams.get("category") ?? undefined,
         }),
       );
@@ -248,38 +258,42 @@ export function createCommunityRegistryHandler(
     if (method === "GET" && path === "/v1/search") {
       const query = mapSearchQuery(url);
       if (query instanceof Response) return query;
-      return jsonResponse(await config.backend.search(query));
+      return jsonResponse(await this.config.backend.search(query));
     }
 
     if (method === "POST" && path === "/v1/install") {
-      return handleInstall(request, config);
+      return handleInstall(request, this.config);
     }
 
+    if (method !== "GET") return null;
+    return this.routePackageGet(path, url);
+  }
+
+  private routePackageGet(path: string, url: URL): Promise<Response | null> {
     const versionsMatch = path.match(/^\/v1\/packages\/([^/]+)\/([^/]+)\/versions$/);
-    if (method === "GET" && versionsMatch !== null) {
-      const kindText = versionsMatch[1];
-      const name = versionsMatch[2];
-      if (kindText === undefined || name === undefined) return null;
-      return handleVersions(kindText, name, config);
-    }
-
+    if (versionsMatch !== null) return this.handleMatchedVersions(versionsMatch);
     const packageMatch = path.match(/^\/v1\/packages\/([^/]+)\/([^/]+)$/);
-    if (method === "GET" && packageMatch !== null) {
-      const kindText = packageMatch[1];
-      const name = packageMatch[2];
-      if (kindText === undefined || name === undefined) return null;
-      return handleGetPackage(kindText, name, url, config);
-    }
-
-    return null;
+    if (packageMatch !== null) return this.handleMatchedPackage(packageMatch, url);
+    return Promise.resolve(null);
   }
 
-  function dispose(): void {
-    disposed = true;
+  private handleMatchedVersions(match: RegExpMatchArray): Promise<Response | null> {
+    const kindText = match[1];
+    const name = match[2];
+    if (kindText === undefined || name === undefined) return Promise.resolve(null);
+    return handleVersions(kindText, name, this.config);
   }
 
-  return {
-    handler,
-    dispose,
-  };
+  private handleMatchedPackage(match: RegExpMatchArray, url: URL): Promise<Response | null> {
+    const kindText = match[1];
+    const name = match[2];
+    if (kindText === undefined || name === undefined) return Promise.resolve(null);
+    return handleGetPackage(kindText, name, url, this.config);
+  }
+}
+
+export function createCommunityRegistryHandler(
+  config: CommunityRegistryConfig,
+): CommunityRegistryHandler {
+  return new CommunityRegistryHandlerImpl(config);
 }

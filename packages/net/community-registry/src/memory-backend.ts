@@ -89,36 +89,32 @@ function createDiscovery(
   };
 }
 
-export function createInMemoryCommunityRegistryBackend(
-  initialEntries: readonly MarketplacePublishRequest[] = [],
-): CommunityRegistryBackend {
-  // let: private store is intentionally replaced with fresh Maps after mutations.
-  let entries = new Map<string, MarketplaceEntry>();
+class InMemoryCommunityRegistryBackend implements CommunityRegistryBackend {
+  private entries = new Map<string, MarketplaceEntry>();
 
-  for (const request of initialEntries) {
-    const entry = mapToEntry(validatePublishRequest(request), new Date());
-    entries = new Map([...entries, [entry.id, entry]]);
+  constructor(initialEntries: readonly MarketplacePublishRequest[]) {
+    for (const request of initialEntries) {
+      const entry = mapToEntry(validatePublishRequest(request), new Date());
+      this.upsert(entry);
+    }
   }
 
-  async function publish(
-    request: MarketplacePublishRequest,
-    now = new Date(),
-  ): Promise<MarketplaceEntry> {
+  async publish(request: MarketplacePublishRequest, now = new Date()): Promise<MarketplaceEntry> {
     const validated = validatePublishRequest(request);
     const entry = mapToEntry(validated, now);
-    if (entries.has(entry.id)) {
+    if (this.entries.has(entry.id)) {
       throw new Error(`${entry.kind} ${entry.name}@${entry.version} already exists`);
     }
-    entries = new Map([...entries, [entry.id, entry]]);
+    this.upsert(entry);
     return entry;
   }
 
-  async function get(
+  async get(
     kind: MarketplaceEntry["kind"],
     name: string,
     version?: string,
   ): Promise<MarketplaceEntry | null> {
-    const matches = [...entries.values()]
+    const matches = [...this.entries.values()]
       .filter(
         (entry) =>
           entry.kind === kind &&
@@ -129,17 +125,17 @@ export function createInMemoryCommunityRegistryBackend(
     return matches[0] ?? null;
   }
 
-  async function versions(
+  async versions(
     kind: MarketplaceEntry["kind"],
     name: string,
   ): Promise<MarketplaceVersionPage["items"]> {
-    return [...entries.values()]
+    return [...this.entries.values()]
       .filter((entry) => entry.kind === kind && entry.name === name)
       .sort(compareVersionDesc);
   }
 
-  async function search(query: MarketplaceSearchQuery): Promise<MarketplaceSearchPage> {
-    const matches = [...entries.values()]
+  async search(query: MarketplaceSearchQuery): Promise<MarketplaceSearchPage> {
+    const matches = [...this.entries.values()]
       .filter((entry) => matchesMarketplaceQuery(entry, query))
       .sort(
         (left, right) =>
@@ -150,18 +146,18 @@ export function createInMemoryCommunityRegistryBackend(
     return paginate(matches, query);
   }
 
-  async function discovery(
+  async discovery(
     query: { readonly category?: string | undefined } = {},
   ): Promise<MarketplaceDiscovery> {
-    return createDiscovery([...entries.values()], query.category);
+    return createDiscovery([...this.entries.values()], query.category);
   }
 
-  async function recordInstall(
+  async recordInstall(
     kind: MarketplaceEntry["kind"],
     name: string,
     version: string,
   ): Promise<MarketplaceEntry | null> {
-    const existing = await get(kind, name, version);
+    const existing = await this.get(kind, name, version);
     if (existing === null) return null;
     const downloads = existing.downloads + 1;
     const updated: MarketplaceEntry = {
@@ -175,16 +171,17 @@ export function createInMemoryCommunityRegistryBackend(
       }),
       updatedAt: new Date().toISOString(),
     };
-    entries = new Map([...entries, [updated.id, updated]]);
+    this.upsert(updated);
     return updated;
   }
 
-  return {
-    publish,
-    get,
-    versions,
-    search,
-    discovery,
-    recordInstall,
-  };
+  private upsert(entry: MarketplaceEntry): void {
+    this.entries = new Map([...this.entries, [entry.id, entry]]);
+  }
+}
+
+export function createInMemoryCommunityRegistryBackend(
+  initialEntries: readonly MarketplacePublishRequest[] = [],
+): CommunityRegistryBackend {
+  return new InMemoryCommunityRegistryBackend(initialEntries);
 }
