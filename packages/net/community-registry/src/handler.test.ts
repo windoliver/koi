@@ -155,6 +155,39 @@ describe("community registry handler", () => {
     );
   });
 
+  test("publish rejects duplicate package versions without replacing existing entries", async () => {
+    const backend = createInMemoryCommunityRegistryBackend();
+    const service = createCommunityRegistryHandler({ backend });
+
+    const first = await service.handler(
+      new Request("https://registry.example/v1/publish", {
+        method: "POST",
+        body: JSON.stringify(validSkillPublish()),
+      }),
+    );
+    const duplicate = await service.handler(
+      new Request("https://registry.example/v1/publish", {
+        method: "POST",
+        body: JSON.stringify(
+          validSkillPublish({
+            description: "Replacement entry should not overwrite the original.",
+            skill: {
+              name: "context-scout",
+              description: "Replacement entry should not overwrite the original.",
+            },
+          }),
+        ),
+      }),
+    );
+    const existing = await backend.get("skill", "context-scout", "1.2.0");
+
+    expect(first?.status).toBe(201);
+    expect(duplicate?.status).toBe(400);
+    expect(existing?.description).toBe(
+      "Searches a workspace for the right context before a coding task.",
+    );
+  });
+
   test("search ranks relevant entries by full-text match", async () => {
     const backend = createInMemoryCommunityRegistryBackend();
     const service = createCommunityRegistryHandler({ backend });
@@ -305,6 +338,41 @@ describe("community registry handler", () => {
     );
 
     expect(response?.status).toBe(200);
+  });
+
+  test("install respects semver caret compatibility for zero-major patch ranges", async () => {
+    const backend = createInMemoryCommunityRegistryBackend();
+    await backend.publish(validSkillPublish({ compatibility: { koi: "^0.0.3" } }));
+
+    const service = createCommunityRegistryHandler({
+      backend,
+      installer: { install: async () => ({ installId: "install-1" }) },
+      fetch: async () => new Response("skill archive"),
+    });
+
+    const compatible = await service.handler(
+      new Request("https://registry.example/v1/install", {
+        method: "POST",
+        body: JSON.stringify({
+          kind: "skill",
+          name: "context-scout",
+          koiVersion: "0.0.3",
+        }),
+      }),
+    );
+    const incompatible = await service.handler(
+      new Request("https://registry.example/v1/install", {
+        method: "POST",
+        body: JSON.stringify({
+          kind: "skill",
+          name: "context-scout",
+          koiVersion: "0.0.4",
+        }),
+      }),
+    );
+
+    expect(compatible?.status).toBe(200);
+    expect(incompatible?.status).toBe(409);
   });
 
   test("install rejects checksum mismatch", async () => {

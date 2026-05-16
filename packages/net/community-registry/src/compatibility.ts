@@ -34,7 +34,9 @@ function checkComparator(version: VersionParts, comparator: string): boolean {
     const upper =
       target.major > 0
         ? { major: target.major + 1, minor: 0, patch: 0 }
-        : { major: 0, minor: target.minor + 1, patch: 0 };
+        : target.minor > 0
+          ? { major: 0, minor: target.minor + 1, patch: 0 }
+          : { major: 0, minor: 0, patch: target.patch + 1 };
     return compareVersions(version, target) >= 0 && compareVersions(version, upper) < 0;
   }
 

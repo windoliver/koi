@@ -106,6 +106,9 @@ export function createInMemoryCommunityRegistryBackend(
   ): Promise<MarketplaceEntry> {
     const validated = validatePublishRequest(request);
     const entry = mapToEntry(validated, now);
+    if (entries.has(entry.id)) {
+      throw new Error(`${entry.kind} ${entry.name}@${entry.version} already exists`);
+    }
     entries = new Map([...entries, [entry.id, entry]]);
     return entry;
   }
