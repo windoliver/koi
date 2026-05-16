@@ -1612,6 +1612,7 @@
         "@koi/dashboard-client": "workspace:*",
         "@koi/dashboard-types": "workspace:*",
         "@koi/debug": "workspace:*",
+        "@koi/decision-index": "workspace:*",
         "@koi/decision-ledger": "workspace:*",
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",

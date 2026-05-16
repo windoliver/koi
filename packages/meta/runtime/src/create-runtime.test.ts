@@ -1,13 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import type {
   Agent,
+  AuditEntry,
   EngineAdapter,
   EngineEvent,
   EngineInput,
   FileSystemBackend,
+  IndexDocument,
+  KoiError,
   KoiMiddleware,
+  Result,
+  SearchBackend,
+  SearchFilter,
+  SearchPage,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
+import type { DecisionIndexDocumentData } from "@koi/decision-index";
 import { createRuntime } from "./create-runtime.js";
 import { PHASE1_MIDDLEWARE_NAMES } from "./stubs/stub-middleware.js";
 import { DEFAULT_ACTIVITY_MAX_DURATION_MS } from "./types.js";
@@ -55,6 +63,77 @@ function createFakeAgent(): Agent {
     query: () => new Map(),
     components: () => new Map(),
   };
+}
+
+function createInMemoryDecisionSearch(): SearchBackend<DecisionIndexDocumentData> {
+  const docs = new Map<string, IndexDocument<DecisionIndexDocumentData>>();
+
+  return {
+    async index(documents: readonly IndexDocument<DecisionIndexDocumentData>[]) {
+      for (const doc of documents) {
+        docs.set(doc.id, doc);
+      }
+      return { ok: true, value: undefined };
+    },
+    async remove(ids: readonly string[]) {
+      for (const id of ids) {
+        docs.delete(id);
+      }
+      return { ok: true, value: undefined };
+    },
+    async retrieve(query): Promise<Result<SearchPage<DecisionIndexDocumentData>, KoiError>> {
+      const terms = query.text.toLowerCase().split(/\s+/).filter(Boolean);
+      const matches = [...docs.values()].filter(
+        (doc) =>
+          matchesSearchFilter(doc.metadata ?? {}, query.filter) &&
+          terms.every((term) => doc.content.toLowerCase().includes(term)),
+      );
+      return {
+        ok: true,
+        value: {
+          results: matches.slice(0, query.limit).map((doc) => ({
+            id: doc.id,
+            score: 1,
+            content: doc.content,
+            metadata: doc.metadata ?? {},
+            source: "memory",
+            ...(doc.data !== undefined ? { data: doc.data } : {}),
+          })),
+          total: matches.length,
+          hasMore: matches.length > query.limit,
+        },
+      };
+    },
+  };
+}
+
+function matchesSearchFilter(
+  metadata: Readonly<Record<string, unknown>>,
+  filter: SearchFilter | undefined,
+): boolean {
+  if (filter === undefined) return true;
+  switch (filter.kind) {
+    case "eq":
+      return metadata[filter.field] === filter.value;
+    case "ne":
+      return metadata[filter.field] !== filter.value;
+    case "in":
+      return filter.values.includes(metadata[filter.field]);
+    case "and":
+      return filter.filters.every((child) => matchesSearchFilter(metadata, child));
+    case "or":
+      return filter.filters.some((child) => matchesSearchFilter(metadata, child));
+    case "not":
+      return !matchesSearchFilter(metadata, filter.filter);
+    case "gt": {
+      const value = metadata[filter.field];
+      return typeof value === "number" && value > filter.value;
+    }
+    case "lt": {
+      const value = metadata[filter.field];
+      return typeof value === "number" && value < filter.value;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -785,6 +864,63 @@ describe("createRuntime", () => {
   test("trajectoryStore is undefined when trajectoryDir is not provided", () => {
     const runtime = createRuntime();
     expect(runtime.trajectoryStore).toBeUndefined();
+    expect(runtime.createDecisionIndex).toBeUndefined();
+  });
+
+  test("createDecisionIndex indexes the runtime-backed decision ledger", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const tmp = mkdtempSync(join(tmpdir(), "decision-index-runtime-"));
+    const runtime = createRuntime({
+      adapter: "stub",
+      channel: "stub",
+      trajectoryDir: tmp,
+    });
+    try {
+      expect(typeof runtime.createDecisionIndex).toBe("function");
+      if (runtime.createDecisionIndex === undefined) {
+        throw new Error("createDecisionIndex not exposed");
+      }
+
+      const auditEntries: readonly AuditEntry[] = [
+        {
+          schema_version: 1,
+          timestamp: 100,
+          sessionId: "session-idx",
+          agentId: "agent-a",
+          turnIndex: 1,
+          kind: "tool_call",
+          toolName: "approval_gate",
+          request: { text: "approve deployment" },
+          durationMs: 2,
+        },
+      ];
+      const auditSink = {
+        log: async (): Promise<void> => {},
+        query: async (): Promise<readonly AuditEntry[]> => auditEntries,
+      };
+      const decisionIndex = runtime.createDecisionIndex({
+        backend: createInMemoryDecisionSearch(),
+        auditSink,
+      });
+
+      const indexed = await decisionIndex.indexSession("session-idx");
+      expect(indexed.ok).toBe(true);
+
+      const queried = await decisionIndex.queryDecisions({
+        text: "approve deployment",
+        sessionId: "session-idx",
+      });
+      expect(queried.ok).toBe(true);
+      if (!queried.ok) return;
+      expect(queried.value.results).toHaveLength(1);
+      expect(queried.value.results[0]?.sessionId).toBe("session-idx");
+      expect(queried.value.results[0]?.sourceKind).toBe("audit");
+    } finally {
+      await runtime.dispose();
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test("trajectoryStore is created when trajectoryNexus is provided", () => {

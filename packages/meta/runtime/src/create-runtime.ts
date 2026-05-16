@@ -59,6 +59,7 @@ const DEFAULT_PROCESS_SPAWN_LEDGER = createInMemorySpawnLedger(
   DEFAULT_SPAWN_POLICY.maxTotalProcesses,
 );
 
+import { createDecisionIndex as createSearchDecisionIndex } from "@koi/decision-index";
 import type { DebugInstrumentation, RecomposedChains } from "@koi/engine-compose";
 import {
   createDebugInstrumentation,
@@ -98,7 +99,7 @@ import { createAtifDocumentStore } from "./trajectory/atif-store.js";
 import { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
 import { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
 import { createNexusOutcomeDelegate } from "./trajectory/outcome-nexus-delegate.js";
-import type { RuntimeConfig, RuntimeHandle } from "./types.js";
+import type { RuntimeConfig, RuntimeDecisionIndexHandle, RuntimeHandle } from "./types.js";
 import { DEFAULT_ACTIVITY_MAX_DURATION_MS, DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
 
 const DEFAULT_AGENT_NAME = "koi-runtime";
@@ -1474,6 +1475,29 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
           }
         : undefined;
 
+    const decisionIndexFactory =
+      decisionLedgerFactory !== undefined
+        ? (
+            indexConfig: Parameters<NonNullable<RuntimeHandle["createDecisionIndex"]>>[0],
+          ): RuntimeDecisionIndexHandle => {
+            const index = createSearchDecisionIndex({ backend: indexConfig.backend });
+            const ledger = decisionLedgerFactory({
+              ...(indexConfig.auditSink !== undefined ? { auditSink: indexConfig.auditSink } : {}),
+              ...(indexConfig.reportStore !== undefined
+                ? { reportStore: indexConfig.reportStore }
+                : {}),
+            });
+            return {
+              indexSession: async (sessionId) => {
+                const snapshot = await ledger.getLedger(sessionId);
+                if (!snapshot.ok) return snapshot;
+                return index.indexSession(snapshot.value);
+              },
+              queryDecisions: index.queryDecisions,
+            };
+          }
+        : undefined;
+
     return {
       adapter,
       channel,
@@ -1539,6 +1563,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             }
           : undefined,
       createDecisionLedger: decisionLedgerFactory,
+      createDecisionIndex: decisionIndexFactory,
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles
         unsubApprovalSink?.();
