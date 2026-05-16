@@ -42,7 +42,6 @@ export type {
   TeamRecord,
   TeamSpawnRequest,
   TeamSpawnResult,
-  TeamSummary,
   TeamTaskAssignment,
   TeamTaskRecord,
   TeamTaskReport,
@@ -51,13 +50,7 @@ export type {
   TeamValueResult,
   TeamVoidResult,
 } from "./manager.js";
-export {
-  createTeamAssignTaskTool,
-  createTeamCreateTool,
-  createTeamDeleteTool,
-  createTeamManager,
-  createTeamReportTaskTool,
-} from "./manager.js";
+export { createTeamManager } from "./manager.js";
 export type {
   InProcessTeammateAppStateLike,
   InProcessTeammateTaskLike,
@@ -92,6 +85,13 @@ export type {
 export { validateTeamSpec } from "./spec.js";
 export type { TeamRuntimeBoard, TeamRuntimeSnapshot, TeamRuntimeTask } from "./state.js";
 export { reduceTeamEvents } from "./state.js";
+export type { TeamSummary } from "./tools.js";
+export {
+  createTeamAssignTaskTool,
+  createTeamCreateTool,
+  createTeamDeleteTool,
+  createTeamReportTaskTool,
+} from "./tools.js";
 export {
   createResourceSerializer,
   serializeSharedResource,

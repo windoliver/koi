@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
+import { createTeamManager } from "./manager.js";
 import {
   createTeamAssignTaskTool,
   createTeamCreateTool,
   createTeamDeleteTool,
-  createTeamManager,
   createTeamReportTaskTool,
-} from "./manager.js";
+} from "./tools.js";
 
 test("team manager creates teams, rejects duplicate names, and deletes cleanly", async () => {
   const manager = createTeamManager();
