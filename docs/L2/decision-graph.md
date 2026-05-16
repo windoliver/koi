@@ -12,6 +12,8 @@ The first implementation provides:
 
 - `materializeDecisionGraph(snapshot)`
 - `createInMemoryDecisionGraphStore()`
+- `createNexusVfsDecisionGraphStore()`
+- `createNexusRecordStoreDecisionGraphStore()`
 - `DecisionGraphStore` interface for durable stores
 - neighbor and subgraph query APIs
 
@@ -41,8 +43,17 @@ const neighbors = await graph?.getNeighbors({
 
 ## Durable Store Boundary
 
-The current package defines the durable `DecisionGraphStore` boundary and ships
-an in-memory implementation. A Nexus or RecordStore adapter can implement the
-same `upsertGraph`, `getGraph`, `getNeighbors`, and `getSubgraph` methods
-without changing runtime wiring. The package deliberately fails closed on
-integrity-leaky snapshots before materialization.
+The package defines the durable `DecisionGraphStore` boundary and ships three
+implementations:
+
+- in-memory store for tests and process-local diagnostics
+- Nexus VFS store that persists session graphs plus per-node/per-edge artifacts
+- Nexus RecordStore HTTP adapter for graph-neighbor and subgraph queries
+
+The RecordStore adapter calls the Koi-specific
+`POST /api/v2/graph/decision-artifacts` write endpoint for `upsertGraph`. If a
+Nexus deployment does not expose that endpoint yet, 404 and 405 responses return
+an `EXTERNAL` error with `Nexus decision graph write endpoint unavailable`.
+
+The package deliberately fails closed on integrity-leaky snapshots before
+materialization.

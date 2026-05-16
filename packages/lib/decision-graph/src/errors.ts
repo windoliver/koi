@@ -8,3 +8,12 @@ export function validationError(message: string): KoiError {
     retryable: RETRYABLE_DEFAULTS.VALIDATION,
   };
 }
+
+export function externalError(message: string, cause?: unknown): KoiError {
+  return {
+    code: "EXTERNAL",
+    message,
+    retryable: RETRYABLE_DEFAULTS.EXTERNAL,
+    ...(cause !== undefined ? { cause } : {}),
+  };
+}
