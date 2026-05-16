@@ -123,19 +123,30 @@ fi
 _with_timeout() {
   # $1 = seconds; rest = command (NOT a pipeline). Uses coreutils
   # timeout/gtimeout when available (exit 124 on timeout, SIGKILL 10s after
-  # SIGTERM); otherwise runs unbounded with a one-time warning so the harness
-  # still works on a bare macOS host. Operators running an untrusted task set
-  # should install coreutils or containerize for guaranteed bounds.
+  # SIGTERM). When neither exists, a built-in sleep+kill watchdog enforces an
+  # equivalent hard cap, so EVERY untrusted step is bounded on every host
+  # (no silent unbounded path). Timeout via watchdog returns a non-zero
+  # (signal) status, which all callers already treat as failure.
   local secs="$1"; shift
   if [ -n "$_TIMEOUT_BIN" ]; then
     "$_TIMEOUT_BIN" -k 10 "$secs" "$@"
-  else
-    if [ -z "${_TIMEOUT_WARNED:-}" ]; then
-      echo "WARN: no timeout/gtimeout on PATH — untrusted steps run UNBOUNDED" >&2
-      _TIMEOUT_WARNED=1
-    fi
-    "$@"
+    return $?
   fi
+  "$@" &
+  local cmd_pid=$!
+  (
+    sleep "$secs"
+    kill -TERM "$cmd_pid" 2>/dev/null
+    sleep 10
+    kill -KILL "$cmd_pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
+  local wd_pid=$!
+  local rc=0
+  wait "$cmd_pid" 2>/dev/null || rc=$?
+  # Command finished (or was killed): retire the watchdog promptly.
+  kill -TERM "$wd_pid" 2>/dev/null || true
+  wait "$wd_pid" 2>/dev/null || true
+  return "$rc"
 }
 
 # Try setup.sh with workspace arg; some scripts ignore $1 and write to

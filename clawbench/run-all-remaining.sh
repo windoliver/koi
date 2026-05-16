@@ -39,9 +39,15 @@ for d in "${_domain_dirs[@]}"; do
   shopt -u nullglob
   live_task_count="${#_task_dirs[@]}"
 
-  # Live task-set fingerprint, computed IDENTICALLY to run-domain.sh.
-  live_fp=$(for x in "$d"*/; do [ -d "$x" ] && basename "$x"; done \
-    | LC_ALL=C sort | shasum -a 256 | cut -c1-16)
+  # Live CONTENT fingerprint, computed BYTE-IDENTICALLY to run-domain.sh
+  # (paths relative to the domain dir via subshell cd; the absolute prefix /
+  # trailing slash must not perturb the hash).
+  live_fp=$( ( cd "${d%/}" 2>/dev/null \
+      && find . -type f ! -name '*.pyc' \
+        -not -path '*/__pycache__/*' -not -path '*/.pytest_cache/*' \
+        -not -path '*/workspace/*' -print0 \
+      | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null ) \
+    | shasum -a 256 | cut -c1-16)
 
   # Skip a domain ONLY when its summary's terminal line is the structured
   # completion sentinel "=== COMPLETE tasks=<n> fp=<h> ===" AND BOTH <n> and
@@ -49,10 +55,11 @@ for d in "${_domain_dirs[@]}"; do
   #   - a bare/forged "===" line (old format or written by a hostile task)
   #   - a stale summary from a partial run (count/fp mismatch -> reprocess)
   #   - a same-cardinality task-set swap/reorder (fp mismatch -> reprocess)
+  #   - an in-place task CONTENT edit (content fp changes -> reprocess)
   # Residual risk: a same-uid agent with shell access could still forge the
-  # exact-correct line (the fp is derived from public task-dir names); fully
-  # closing that requires OS-level sandboxing of the agent (container/uid
-  # separation), out of scope for this shell harness. The fingerprint
+  # exact-correct line (the fp is derived from world-readable source files);
+  # fully closing that requires OS-level sandboxing of the agent (container/
+  # uid separation), out of scope for this shell harness. The fingerprint
   # eliminates accidental/partial/stale false-greens.
   if [ -f "$summary" ] && [ "$live_task_count" -gt 0 ]; then
     last_line=$(tail -1 "$summary" 2>/dev/null)

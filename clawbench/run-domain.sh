@@ -67,13 +67,19 @@ fi
 
 if [ "$domain_failures" -eq 0 ]; then
   # Structured completion sentinel carrying provenance: the processed task
-  # count AND a fingerprint of the sorted task-id set. run-all-remaining.sh
-  # skips a domain ONLY when this line is present AND both count and
-  # fingerprint match the live source, so a bare/forged "===", a stale
-  # partial count, or a same-cardinality task-set swap/reorder cannot forge
-  # completion. (Must be computed identically in run-all-remaining.sh.)
-  task_fp=$(for x in "$TASKS_DOMAIN_DIR"/*/; do [ -d "$x" ] && basename "$x"; done \
-    | LC_ALL=C sort | shasum -a 256 | cut -c1-16)
+  # count AND a CONTENT fingerprint of every source file in the domain
+  # (paths relative to the domain dir, so the absolute prefix / trailing
+  # slash is irrelevant). run-all-remaining.sh skips a domain ONLY when this
+  # line is present AND both count and fingerprint match the live source, so
+  # a bare/forged "===", a stale partial count, a same-cardinality task-set
+  # swap/reorder, OR an in-place task content edit cannot forge completion.
+  # (Must be computed byte-identically in run-all-remaining.sh.)
+  task_fp=$( ( cd "$TASKS_DOMAIN_DIR" 2>/dev/null \
+      && find . -type f ! -name '*.pyc' \
+        -not -path '*/__pycache__/*' -not -path '*/.pytest_cache/*' \
+        -not -path '*/workspace/*' -print0 \
+      | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null ) \
+    | shasum -a 256 | cut -c1-16)
   echo "=== COMPLETE tasks=$tasks_processed fp=$task_fp ===" >> "$SUMMARY_TMP"
 else
   # Distinct terminal line (not the COMPLETE sentinel): run-all-remaining.sh
