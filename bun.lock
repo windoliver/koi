@@ -427,6 +427,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/decision-index": {
+      "name": "@koi/decision-index",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/decision-ledger": {
       "name": "@koi/decision-ledger",
       "version": "0.0.0",
@@ -2818,6 +2825,8 @@
     "@koi/dashboard-ui": ["@koi/dashboard-ui@workspace:packages/ui/dashboard-ui"],
 
     "@koi/debug": ["@koi/debug@workspace:packages/lib/debug"],
+
+    "@koi/decision-index": ["@koi/decision-index@workspace:packages/lib/decision-index"],
 
     "@koi/decision-ledger": ["@koi/decision-ledger@workspace:packages/lib/decision-ledger"],
 
