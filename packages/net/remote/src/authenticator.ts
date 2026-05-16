@@ -34,7 +34,9 @@ export type RemoteAuthResult =
       readonly ok: true;
       readonly subject: string;
       readonly deviceId: string;
+      readonly agentId?: string | undefined;
       readonly permissions: readonly PermissionQuery[];
+      readonly metadata: Readonly<Record<string, unknown>>;
     }
   | { readonly ok: false; readonly reason: RemoteAuthRejectReason };
 
@@ -64,7 +66,9 @@ export async function authenticateRemoteRequest(
     ok: true,
     subject: jwt.claims.subject,
     deviceId: jwt.claims.deviceId,
+    agentId: jwt.claims.agentId,
     permissions: permissions.queries,
+    metadata: jwt.claims.metadata,
   };
 }
 

@@ -80,6 +80,7 @@ describe("authenticateRemoteRequest", () => {
       ok: true,
       subject: "user-1",
       deviceId: "device-1",
+      agentId: undefined,
       permissions: [
         {
           principal: "remote",
@@ -88,6 +89,31 @@ describe("authenticateRemoteRequest", () => {
           context: { remotePermission: "remote:read" },
         },
       ],
+      metadata: { label: "laptop" },
+    });
+  });
+
+  test("returns optional agent id and metadata from verified JWT claims", async () => {
+    const result = await authenticateRemoteRequest(
+      {
+        bearerToken: await sign({
+          ...validPayload,
+          agent_id: "agent-1",
+          metadata: { label: "tablet", nested: { os: "koi-os" } },
+        }),
+        transport: "websocket",
+        operation: "read",
+        url: "wss://remote.example.com/session",
+      },
+      createOptions(),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      subject: "user-1",
+      deviceId: "device-1",
+      agentId: "agent-1",
+      metadata: { label: "tablet", nested: { os: "koi-os" } },
     });
   });
 
