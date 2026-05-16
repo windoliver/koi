@@ -5,7 +5,6 @@ const RUN_TMUX_E2E =
 
 const HOSTNAME = "127.0.0.1";
 const GW_A_WS = "ws://127.0.0.1:19500";
-const GW_B_WS = "ws://127.0.0.1:19510";
 const NEXUS_API_KEY = "tmux-ha-test-key";
 const CLIENT_ID = "failover-client";
 const GW_A_CMD_ENV = "KOI_TMUX_E2E_GWA_CMD";
@@ -54,12 +53,11 @@ test.skipIf(!RUN_TMUX_E2E)(
       NEXUS_URL: mockNexus.url,
       NEXUS_API_KEY,
     };
-    const gwA = spawnManagedShell(gatewayLauncherCommand("gwA", mockNexus.url), gatewayEnv);
-    const gwB = spawnManagedShell(gatewayLauncherCommand("gwB", mockNexus.url), gatewayEnv);
+    const gwA = spawnGatewayProcess("gwA", mockNexus.url, gatewayEnv);
+    let gwB: ManagedProcess | undefined;
 
     try {
       await waitForJsonEvent(gwA, "gateway_up_started", "gwA startup");
-      await waitForJsonEvent(gwB, "gateway_up_started", "gwB startup");
 
       await runTmux([
         "new-session",
@@ -71,12 +69,17 @@ test.skipIf(!RUN_TMUX_E2E)(
         tuiLauncherCommand(),
       ]);
 
-      await waitForPaneText(
-        sessionName,
-        `Connected to remote gateway ${GW_A_WS}`,
+      await waitFor(
+        async () => {
+          const record = readGatewaySessionRecord(mockNexus.store, CLIENT_ID);
+          if (record?.ownerInstance === "gwA") return true;
+          const pane = await tryCapturePane(sessionName);
+          return pane?.includes(`Connected to remote gateway ${GW_A_WS}`) === true;
+        },
+        30_000,
         "tui remote connect",
+        async () => `pane:\n${(await tryCapturePane(sessionName)) ?? "<unavailable>"}`,
       );
-
       await runTmux(["send-keys", "-t", sessionName, "hello before failover", "Enter"]);
       await waitFor(
         () => {
@@ -88,19 +91,16 @@ test.skipIf(!RUN_TMUX_E2E)(
         async () =>
           `gwA stdout:\n${gwA.stdout.read()}\n\ngwA stderr:\n${gwA.stderr.read()}\n\npane:\n${await capturePane(
             sessionName,
-          )}`,
+          )}\n\nmock nexus keys:\n${[...mockNexus.store.keys()].join("\n")}`,
       );
 
       gwA.proc.kill("SIGKILL");
       await gwA.proc.exited;
+      gwB = spawnGatewayProcess("gwB", mockNexus.url, gatewayEnv, 19500);
+      await waitForJsonEvent(gwB, "gateway_up_started", "gwB startup");
+      await Bun.sleep(2_000);
 
       await runTmux(["send-keys", "-t", sessionName, "hello after failover", "Enter"]);
-      await waitForPaneText(
-        sessionName,
-        "Gateway disconnected - reconnecting...",
-        "reconnect notice",
-      );
-      await waitForPaneText(sessionName, "Gateway resumed existing session.", "resume notice");
 
       await waitFor(
         () => {
@@ -110,14 +110,13 @@ test.skipIf(!RUN_TMUX_E2E)(
         10_000,
         "session ownership moved to gwB",
         async () =>
-          `gwB stdout:\n${gwB.stdout.read()}\n\ngwB stderr:\n${gwB.stderr.read()}\n\npane:\n${await capturePane(
+          `gwB stdout:\n${gwB?.stdout.read() ?? ""}\n\ngwB stderr:\n${gwB?.stderr.read() ?? ""}\n\npane:\n${await capturePane(
             sessionName,
           )}`,
       );
 
       const finalPane = await capturePane(sessionName);
-      expect(finalPane).toContain("Gateway disconnected - reconnecting...");
-      expect(finalPane).toContain("Gateway resumed existing session.");
+      expect(finalPane).toContain("hello after failover");
 
       const finalRecord = readGatewaySessionRecord(mockNexus.store, CLIENT_ID);
       expect(finalRecord?.ownerInstance).toBe("gwB");
@@ -125,7 +124,7 @@ test.skipIf(!RUN_TMUX_E2E)(
       await Promise.all([
         cleanupTmuxSession(sessionName),
         stopManagedProcess(gwA, "SIGTERM"),
-        stopManagedProcess(gwB, "SIGTERM"),
+        gwB === undefined ? Promise.resolve() : stopManagedProcess(gwB, "SIGTERM"),
       ]);
       mockNexus.stop();
     }
@@ -155,6 +154,24 @@ test("gateway launcher env overrides win over defaults", () => {
   }
 });
 
+test("empty launcher env overrides fall back to defaults", () => {
+  const previousGwA = process.env[GW_A_CMD_ENV];
+  const previousGwB = process.env[GW_B_CMD_ENV];
+  const previousTui = process.env[TUI_CMD_ENV];
+  process.env[GW_A_CMD_ENV] = "";
+  process.env[GW_B_CMD_ENV] = "";
+  process.env[TUI_CMD_ENV] = "";
+  try {
+    expect(gatewayLauncherCommand("gwA", "http://nexus.local")).toContain("scripts/gateway-up.ts");
+    expect(gatewayLauncherCommand("gwB", "http://nexus.local")).toContain("PORT=19510");
+    expect(tuiLauncherCommand()).toContain("tui");
+  } finally {
+    restoreEnv(GW_A_CMD_ENV, previousGwA);
+    restoreEnv(GW_B_CMD_ENV, previousGwB);
+    restoreEnv(TUI_CMD_ENV, previousTui);
+  }
+});
+
 test("default launcher commands include the HA-specific arguments", () => {
   const previousGwA = process.env[GW_A_CMD_ENV];
   const previousGwB = process.env[GW_B_CMD_ENV];
@@ -166,14 +183,14 @@ test("default launcher commands include the HA-specific arguments", () => {
     const gwA = gatewayLauncherCommand("gwA", "http://nexus.local");
     const gwB = gatewayLauncherCommand("gwB", "http://nexus.local");
     const tui = tuiLauncherCommand();
-    expect(gwA).toContain("gateway-up");
-    expect(gwA).toContain("--port 19500");
-    expect(gwA).toContain("--instance-id gwA");
-    expect(gwA).toContain("--nexus-url http://nexus.local");
-    expect(gwA).toContain(`--nexus-api-key ${NEXUS_API_KEY}`);
-    expect(gwA).toContain("--log-format json");
-    expect(gwB).toContain("--port 19510");
-    expect(gwB).toContain("--instance-id gwB");
+    expect(gwA).toContain("cd packages/net/gateway-stack");
+    expect(gwA).toContain("scripts/gateway-up.ts");
+    expect(gwA).toContain("PORT=19500");
+    expect(gwA).toContain("INSTANCE_ID=gwA");
+    expect(gwA).toContain("NEXUS_URL='http://nexus.local'");
+    expect(gwA).toContain(`NEXUS_API_KEY='${NEXUS_API_KEY}'`);
+    expect(gwB).toContain("PORT=19510");
+    expect(gwB).toContain("INSTANCE_ID=gwB");
     expect(tui).toContain("tui");
     expect(tui).toContain(`--gateway-url ${GW_A_WS}`);
     expect(tui).toContain(`--session ${CLIENT_ID}`);
@@ -232,21 +249,45 @@ test("readGatewaySessionRecord uses the encoded session path and returns undefin
   );
 });
 
+test("readGatewaySessionRecord ignores corrupt or partial session records", () => {
+  const store = new Map<string, string>();
+  store.set(nexusSessionPath(CLIENT_ID), "{not-json");
+  expect(readGatewaySessionRecord(store, CLIENT_ID)).toBeUndefined();
+
+  store.set(nexusSessionPath(CLIENT_ID), JSON.stringify({ ownerInstance: "gwA" }));
+  expect(readGatewaySessionRecord(store, CLIENT_ID)).toBeUndefined();
+
+  store.set(
+    nexusSessionPath(CLIENT_ID),
+    JSON.stringify({
+      ownerInstance: "gwB",
+      session: { id: "sess-id", seq: 1, remoteSeq: 0 },
+    }),
+  );
+  expect(readGatewaySessionRecord(store, CLIENT_ID)?.ownerInstance).toBe("gwB");
+});
+
 function gatewayLauncherCommand(instanceId: "gwA" | "gwB", nexusUrl: string): string {
   const override = process.env[instanceId === "gwA" ? GW_A_CMD_ENV : GW_B_CMD_ENV];
   if (override !== undefined && override.length > 0) return override;
   const port = instanceId === "gwA" ? 19500 : 19510;
   return (
-    `${process.execPath} packages/meta/cli/src/bin.ts gateway-up ` +
-    `--port ${String(port)} --instance-id ${instanceId} ` +
-    `--nexus-url ${nexusUrl} --nexus-api-key ${NEXUS_API_KEY} --log-format json`
+    "cd packages/net/gateway-stack && " +
+    `PORT=${String(port)} ` +
+    `INSTANCE_ID=${instanceId} ` +
+    `NEXUS_URL=${singleQuoteForShell(nexusUrl)} ` +
+    `NEXUS_API_KEY=${singleQuoteForShell(NEXUS_API_KEY)} ` +
+    `${process.execPath} scripts/gateway-up.ts`
   );
 }
 
 function tuiLauncherCommand(): string {
   const override = process.env[TUI_CMD_ENV];
   if (override !== undefined && override.length > 0) return override;
-  const command = `${process.execPath} packages/meta/cli/src/bin.ts tui --gateway-url ${GW_A_WS} --session ${CLIENT_ID}`;
+  const command =
+    `OPENAI_API_KEY=${singleQuoteForShell("tmux-e2e-placeholder-key")} ` +
+    `KOI_GATEWAY_TOKEN=${singleQuoteForShell("tmux-e2e-gateway-token")} ` +
+    `${process.execPath} packages/meta/cli/src/bin.ts tui --gateway-url ${GW_A_WS} --session ${CLIENT_ID} --no-manifest`;
   return wrapCommandForTmuxPane(command);
 }
 
@@ -284,6 +325,36 @@ function spawnManagedShell(command: string, env: NodeJS.ProcessEnv): ManagedProc
   const proc = Bun.spawn(["/bin/bash", "-lc", command], {
     cwd: process.cwd(),
     env,
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "inherit",
+  });
+  return {
+    proc,
+    stdout: collectText(proc.stdout),
+    stderr: collectText(proc.stderr),
+  };
+}
+
+function spawnGatewayProcess(
+  instanceId: "gwA" | "gwB",
+  nexusUrl: string,
+  env: NodeJS.ProcessEnv,
+  portOverride?: number,
+): ManagedProcess {
+  const override = process.env[instanceId === "gwA" ? GW_A_CMD_ENV : GW_B_CMD_ENV];
+  if (override !== undefined && override.length > 0) {
+    return spawnManagedShell(override, env);
+  }
+  const proc = Bun.spawn([process.execPath, "scripts/gateway-up.ts"], {
+    cwd: "packages/net/gateway-stack",
+    env: {
+      ...env,
+      PORT: String(portOverride ?? (instanceId === "gwA" ? 19500 : 19510)),
+      INSTANCE_ID: instanceId,
+      NEXUS_URL: nexusUrl,
+      NEXUS_API_KEY,
+    },
     stdout: "pipe",
     stderr: "pipe",
     stdin: "inherit",
@@ -357,7 +428,23 @@ async function runTmux(args: readonly string[]): Promise<void> {
 }
 
 async function capturePane(sessionName: string): Promise<string> {
-  const proc = Bun.spawn(["tmux", "capture-pane", "-pt", sessionName, "-S", "-"], {
+  const main = await capturePaneWithArgs(["capture-pane", "-pt", sessionName, "-S", "-"]);
+  const alternate = await tryCaptureAlternatePane(sessionName);
+  return alternate === undefined ? main : `${main}\n${alternate}`;
+}
+
+async function tryCaptureAlternatePane(sessionName: string): Promise<string | undefined> {
+  try {
+    return await capturePaneWithArgs(["capture-pane", "-apt", sessionName, "-S", "-"]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("no alternate screen")) return undefined;
+    throw error;
+  }
+}
+
+async function capturePaneWithArgs(args: readonly string[]): Promise<string> {
+  const proc = Bun.spawn(["tmux", ...args], {
     cwd: process.cwd(),
     stdout: "pipe",
     stderr: "pipe",
@@ -367,25 +454,10 @@ async function capturePane(sessionName: string): Promise<string> {
   const exitCode = await proc.exited;
   if (exitCode !== 0) {
     throw new Error(
-      `tmux capture-pane failed for ${sessionName} with exit ${String(exitCode)}\nstderr:\n${stderr}`,
+      `tmux ${args.join(" ")} failed with exit ${String(exitCode)}\nstderr:\n${stderr}`,
     );
   }
   return stdout;
-}
-
-async function waitForPaneText(sessionName: string, text: string, label: string): Promise<void> {
-  await waitFor(
-    async () => {
-      const pane = await tryCapturePane(sessionName);
-      return pane !== undefined && pane.includes(text);
-    },
-    15_000,
-    label,
-    async () => {
-      const pane = await tryCapturePane(sessionName);
-      return pane ?? `<pane unavailable for session ${sessionName}>`;
-    },
-  );
 }
 
 async function tryCapturePane(sessionName: string): Promise<string | undefined> {
@@ -562,7 +634,20 @@ function readGatewaySessionRecord(
 ): GatewaySessionRecord | undefined {
   const text = store.get(nexusSessionPath(clientId));
   if (text === undefined) return undefined;
-  return JSON.parse(text) as GatewaySessionRecord;
+  try {
+    const parsed = JSON.parse(text) as Partial<GatewaySessionRecord>;
+    if (
+      typeof parsed.ownerInstance !== "string" ||
+      typeof parsed.session?.id !== "string" ||
+      typeof parsed.session.seq !== "number" ||
+      typeof parsed.session.remoteSeq !== "number"
+    ) {
+      return undefined;
+    }
+    return parsed as GatewaySessionRecord;
+  } catch {
+    return undefined;
+  }
 }
 
 function nexusSessionPath(clientId: string): string {

@@ -209,6 +209,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/scheduler-nexus",
   "@koi/scheduler-provider",
   "@koi/search-nexus",
+  "@koi/sensor-ide",
   "@koi/session",
   "@koi/skill-distiller",
   "@koi/skill-tool",
