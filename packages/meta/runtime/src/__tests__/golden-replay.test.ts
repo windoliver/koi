@@ -6649,7 +6649,6 @@ describe("Golden: @koi/team-runtime", () => {
       createTaskReportMessage,
       findInProcessTeammateTaskId,
       handlePlanApprovalResponse,
-      isPlanApprovalRequestMessage,
       isPlanModeRequired,
       parseTeamProtocolMessage,
       setAwaitingPlanApproval,
@@ -6707,7 +6706,10 @@ describe("Golden: @koi/team-runtime", () => {
         "task_assignment",
         "task_report",
       ]);
-      expect(isPlanApprovalRequestMessage(messages[0]?.text ?? "")?.planContent).toContain("Build");
+      const planApprovalRequest = parsed.find(
+        (message) => message?.type === "plan_approval_request",
+      );
+      expect(planApprovalRequest?.planContent).toContain("Build");
 
       await mailbox.markRead(
         "Lead Agent",
