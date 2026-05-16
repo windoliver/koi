@@ -8,6 +8,7 @@ import type {
 } from "@koi/core";
 import { DEFAULT_SEARCH_LIMIT, type Result } from "@koi/core";
 import { internalError, validationError } from "./errors.js";
+import { runReportDocuments } from "./run-report-documents.js";
 import type {
   DecisionIndex,
   DecisionIndexConfig,
@@ -17,7 +18,6 @@ import type {
   DecisionIndexPage,
   DecisionIndexQuery,
   DecisionIndexSearchResult,
-  DecisionIndexSourceKind,
   DecisionLedgerSnapshot,
 } from "./types.js";
 
@@ -267,92 +267,6 @@ function sessionMarkerDocument(
       indexedDocumentIds,
     },
   };
-}
-
-function runReportDocuments(
-  snapshot: DecisionLedgerSnapshot,
-  indexedAtMs: number,
-): readonly IndexDocument<DecisionIndexDocumentData>[] {
-  const report = snapshot.runReport;
-  if (report === undefined) return [];
-
-  const sourceKind: DecisionIndexSourceKind = "run_report";
-  const baseData = {
-    sessionId: snapshot.sessionId,
-    sourceKind,
-  };
-  const baseMetadata = {
-    sessionId: snapshot.sessionId,
-    sourceKind,
-    source: "run_report",
-    indexedAtMs,
-  };
-  const summaryId = `summary:${report.runId}`;
-  const summary: IndexDocument<DecisionIndexDocumentData> = {
-    id: decisionDocumentId(snapshot.sessionId, "run_report", summaryId),
-    content: compactContent([report.summary, report.objective]),
-    metadata: {
-      ...baseMetadata,
-      sourceId: summaryId,
-      reportSection: "summary",
-      timestamp: report.duration.completedAt,
-    },
-    data: {
-      ...baseData,
-      sourceId: summaryId,
-      title: "run report summary",
-      timestamp: report.duration.completedAt,
-      reportSection: "summary",
-    },
-  };
-
-  const issueDocs = report.issues.map<IndexDocument<DecisionIndexDocumentData>>((issue, index) => {
-    const sourceId = `issue:${report.runId}:${index}`;
-    const reportSection = "issue";
-    return {
-      id: decisionDocumentId(snapshot.sessionId, "run_report", sourceId),
-      content: compactContent([issue.severity, issue.message, issue.resolution]),
-      metadata: {
-        ...baseMetadata,
-        sourceId,
-        reportSection,
-        timestamp: report.duration.completedAt,
-      },
-      data: {
-        ...baseData,
-        sourceId,
-        title: `run report issue:${issue.severity}`,
-        timestamp: report.duration.completedAt,
-        reportSection,
-      },
-    };
-  });
-
-  const recommendationDocs = report.recommendations.map<IndexDocument<DecisionIndexDocumentData>>(
-    (recommendation, index) => {
-      const sourceId = `recommendation:${report.runId}:${index}`;
-      const reportSection = "recommendation";
-      return {
-        id: decisionDocumentId(snapshot.sessionId, "run_report", sourceId),
-        content: recommendation,
-        metadata: {
-          ...baseMetadata,
-          sourceId,
-          reportSection,
-          timestamp: report.duration.completedAt,
-        },
-        data: {
-          ...baseData,
-          sourceId,
-          title: "run report recommendation",
-          timestamp: report.duration.completedAt,
-          reportSection,
-        },
-      };
-    },
-  );
-
-  return [summary, ...issueDocs, ...recommendationDocs];
 }
 
 function decisionDocumentId(

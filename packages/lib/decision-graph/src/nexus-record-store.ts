@@ -42,59 +42,79 @@ export function createNexusRecordStoreDecisionGraphStore(
 ): DecisionGraphStore {
   const fetchImpl: FetchLike = config.fetch ?? fetch;
   const baseUrl = normalizeUrl(config.url);
+  const context = { apiKey: config.apiKey, baseUrl, fetchImpl };
 
   return {
-    async upsertGraph(graph) {
-      const response = await fetchImpl(`${baseUrl}/api/v2/graph/decision-artifacts`, {
-        method: "POST",
-        headers: headers(config.apiKey, { "content-type": "application/json" }),
-        body: JSON.stringify({
-          sessionId: graph.sessionId,
-          nodes: graph.nodes,
-          edges: graph.edges,
-        }),
-      });
-      if (response.status === 404 || response.status === 405) {
-        return {
-          ok: false,
-          error: externalError("Nexus decision graph write endpoint unavailable"),
-        };
-      }
-      if (!response.ok) return responseError(response, "Nexus decision graph write failed");
-      return { ok: true, value: undefined };
-    },
-    async getGraph(sessionId) {
-      const url = new URL(`${baseUrl}/api/v2/graph/search`);
-      url.searchParams.set("q", sessionId);
-      const response = await fetchImpl(url, { headers: headers(config.apiKey) });
-      if (response.status === 404) return { ok: true, value: undefined };
-      if (!response.ok) return responseError(response, "Nexus decision graph fetch failed");
-      const graph = toDecisionGraph(sessionId, await response.json());
-      return { ok: true, value: graph };
-    },
-    async getNeighbors(query) {
-      const url = new URL(
-        `${baseUrl}/api/v2/graph/entity/${encodeURIComponent(query.nodeId)}/neighbors`,
-      );
-      url.searchParams.set("hops", String(query.hops ?? 1));
-      url.searchParams.set("direction", query.direction ?? "both");
-      const response = await fetchImpl(url, { headers: headers(config.apiKey) });
-      if (!response.ok) return responseError(response, "Nexus decision graph neighbors failed");
-      return { ok: true, value: toDecisionGraph(query.sessionId, await response.json()) };
-    },
-    async getSubgraph(query) {
-      const response = await fetchImpl(`${baseUrl}/api/v2/graph/subgraph`, {
-        method: "POST",
-        headers: headers(config.apiKey, { "content-type": "application/json" }),
-        body: JSON.stringify({
-          entity_ids: query.nodeIds,
-          hops: query.hops ?? 0,
-        }),
-      });
-      if (!response.ok) return responseError(response, "Nexus decision graph subgraph failed");
-      return { ok: true, value: toDecisionGraph(query.sessionId, await response.json()) };
-    },
+    upsertGraph: (graph) => upsertGraph(context, graph),
+    getGraph: (sessionId) => getGraph(context, sessionId),
+    getNeighbors: (query) => getNeighbors(context, query),
+    getSubgraph: (query) => getSubgraph(context, query),
   };
+}
+
+interface NexusRecordStoreContext {
+  readonly apiKey?: string | undefined;
+  readonly baseUrl: string;
+  readonly fetchImpl: FetchLike;
+}
+
+async function upsertGraph(
+  context: NexusRecordStoreContext,
+  graph: DecisionGraph,
+): ReturnType<DecisionGraphStore["upsertGraph"]> {
+  const response = await context.fetchImpl(`${context.baseUrl}/api/v2/graph/decision-artifacts`, {
+    method: "POST",
+    headers: headers(context.apiKey, { "content-type": "application/json" }),
+    body: JSON.stringify({ sessionId: graph.sessionId, nodes: graph.nodes, edges: graph.edges }),
+  });
+  if (response.status === 404 || response.status === 405) {
+    return {
+      ok: false,
+      error: externalError("Nexus decision graph write endpoint unavailable"),
+    };
+  }
+  if (!response.ok) return responseError(response, "Nexus decision graph write failed");
+  return { ok: true, value: undefined };
+}
+
+async function getGraph(
+  context: NexusRecordStoreContext,
+  sessionId: string,
+): ReturnType<DecisionGraphStore["getGraph"]> {
+  const url = new URL(`${context.baseUrl}/api/v2/graph/search`);
+  url.searchParams.set("q", sessionId);
+  const response = await context.fetchImpl(url, { headers: headers(context.apiKey) });
+  if (response.status === 404) return { ok: true, value: undefined };
+  if (!response.ok) return responseError(response, "Nexus decision graph fetch failed");
+  const graph = toDecisionGraph(sessionId, await response.json());
+  return { ok: true, value: graph };
+}
+
+async function getNeighbors(
+  context: NexusRecordStoreContext,
+  query: Parameters<DecisionGraphStore["getNeighbors"]>[0],
+): ReturnType<DecisionGraphStore["getNeighbors"]> {
+  const url = new URL(
+    `${context.baseUrl}/api/v2/graph/entity/${encodeURIComponent(query.nodeId)}/neighbors`,
+  );
+  url.searchParams.set("hops", String(query.hops ?? 1));
+  url.searchParams.set("direction", query.direction ?? "both");
+  const response = await context.fetchImpl(url, { headers: headers(context.apiKey) });
+  if (!response.ok) return responseError(response, "Nexus decision graph neighbors failed");
+  return { ok: true, value: toDecisionGraph(query.sessionId, await response.json()) };
+}
+
+async function getSubgraph(
+  context: NexusRecordStoreContext,
+  query: Parameters<DecisionGraphStore["getSubgraph"]>[0],
+): ReturnType<DecisionGraphStore["getSubgraph"]> {
+  const response = await context.fetchImpl(`${context.baseUrl}/api/v2/graph/subgraph`, {
+    method: "POST",
+    headers: headers(context.apiKey, { "content-type": "application/json" }),
+    body: JSON.stringify({ entity_ids: query.nodeIds, hops: query.hops ?? 0 }),
+  });
+  if (!response.ok) return responseError(response, "Nexus decision graph subgraph failed");
+  return { ok: true, value: toDecisionGraph(query.sessionId, await response.json()) };
 }
 
 function toDecisionGraph(sessionId: string, response: unknown): DecisionGraph {

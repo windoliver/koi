@@ -21,22 +21,43 @@ export function materializeDecisionGraph(snapshot: DecisionGraphLedgerSnapshot):
   const edges: DecisionGraphEdge[] = [];
 
   const sortedSteps = [...snapshot.trajectorySteps].sort((a, b) => a.stepIndex - b.stepIndex);
+  addTrajectoryNodes(snapshot.sessionId, sortedSteps, nodes, edges);
+  addAuditNodes(snapshot, sortedSteps, nodes, edges);
+  addOutcomeNodes(snapshot, sortedSteps, nodes, edges);
+  addRunReportNodes(snapshot, nodes, edges);
+
+  return { sessionId: snapshot.sessionId, nodes, edges: dedupeEdges(edges) };
+}
+
+function addTrajectoryNodes(
+  sessionId: string,
+  sortedSteps: readonly DecisionGraphLedgerSnapshot["trajectorySteps"][number][],
+  nodes: DecisionGraphNode[],
+  edges: DecisionGraphEdge[],
+): void {
   for (const step of sortedSteps) {
-    const node = trajectoryNode(snapshot.sessionId, step);
+    const node = trajectoryNode(sessionId, step);
     nodes.push(node);
-    edges.push(edge(snapshot.sessionId, "contains", sessionNodeId(snapshot.sessionId), node.id));
+    edges.push(edge(sessionId, "contains", sessionNodeId(sessionId), node.id));
   }
   for (let i = 1; i < sortedSteps.length; i += 1) {
     edges.push(
       edge(
-        snapshot.sessionId,
+        sessionId,
         "precedes",
-        trajectoryNodeId(snapshot.sessionId, sortedSteps[i - 1]?.stepIndex ?? 0),
-        trajectoryNodeId(snapshot.sessionId, sortedSteps[i]?.stepIndex ?? 0),
+        trajectoryNodeId(sessionId, sortedSteps[i - 1]?.stepIndex ?? 0),
+        trajectoryNodeId(sessionId, sortedSteps[i]?.stepIndex ?? 0),
       ),
     );
   }
+}
 
+function addAuditNodes(
+  snapshot: DecisionGraphLedgerSnapshot,
+  sortedSteps: readonly DecisionGraphLedgerSnapshot["trajectorySteps"][number][],
+  nodes: DecisionGraphNode[],
+  edges: DecisionGraphEdge[],
+): void {
   for (const [index, entry] of snapshot.auditEntries.entries()) {
     const node = auditNode(snapshot.sessionId, entry, index);
     nodes.push(node);
@@ -48,74 +69,90 @@ export function materializeDecisionGraph(snapshot: DecisionGraphLedgerSnapshot):
           )
         : undefined;
     if (matchingStep !== undefined) {
-      edges.push(
-        edge(
-          snapshot.sessionId,
-          "corroborates",
-          node.id,
-          trajectoryNodeId(snapshot.sessionId, matchingStep.stepIndex),
-        ),
-      );
+      edges.push(corroboratesEdge(snapshot.sessionId, node.id, matchingStep.stepIndex));
     }
   }
+}
 
+function addOutcomeNodes(
+  snapshot: DecisionGraphLedgerSnapshot,
+  sortedSteps: readonly DecisionGraphLedgerSnapshot["trajectorySteps"][number][],
+  nodes: DecisionGraphNode[],
+  edges: DecisionGraphEdge[],
+): void {
   for (const outcome of snapshot.outcomeReports ?? []) {
     const node = outcomeNode(snapshot.sessionId, outcome);
     nodes.push(node);
+    edges.push(edge(snapshot.sessionId, "contains", sessionNodeId(snapshot.sessionId), node.id));
     const matchingStep = sortedSteps.find(
       (step) => metadataString(step.metadata, "decisionCorrelationId") === outcome.correlationId,
     );
-    edges.push(edge(snapshot.sessionId, "contains", sessionNodeId(snapshot.sessionId), node.id));
     if (matchingStep !== undefined) {
-      edges.push(
-        edge(
-          snapshot.sessionId,
-          "produced",
-          trajectoryNodeId(snapshot.sessionId, matchingStep.stepIndex),
-          node.id,
-        ),
-      );
+      edges.push(producedEdge(snapshot.sessionId, matchingStep.stepIndex, node.id));
     }
   }
+}
 
+function addRunReportNodes(
+  snapshot: DecisionGraphLedgerSnapshot,
+  nodes: DecisionGraphNode[],
+  edges: DecisionGraphEdge[],
+): void {
   const report = snapshot.runReport;
-  if (report !== undefined) {
-    const reportNode = runReportNode(snapshot.sessionId, report);
-    nodes.push(reportNode);
-    edges.push(
-      edge(snapshot.sessionId, "summarizes", reportNode.id, sessionNodeId(snapshot.sessionId)),
-    );
-    for (const [index, issue] of report.issues.entries()) {
-      const issueId = issueNodeId(snapshot.sessionId, report.runId, index);
-      nodes.push({
-        id: issueId,
-        sessionId: snapshot.sessionId,
-        kind: "issue",
-        label: issue.message,
-        timestamp: report.duration.completedAt,
-        metadata: {
-          severity: issue.severity,
-          turnIndex: issue.turnIndex,
-          resolved: issue.resolved,
-          ...(issue.resolution !== undefined ? { resolution: issue.resolution } : {}),
-        },
-      });
-      edges.push(edge(snapshot.sessionId, "raises", reportNode.id, issueId));
-    }
-    for (const [index, recommendation] of report.recommendations.entries()) {
-      const recommendationId = recommendationNodeId(snapshot.sessionId, report.runId, index);
-      nodes.push({
-        id: recommendationId,
-        sessionId: snapshot.sessionId,
-        kind: "recommendation",
-        label: recommendation,
-        timestamp: report.duration.completedAt,
-      });
-      edges.push(edge(snapshot.sessionId, "recommends", reportNode.id, recommendationId));
-    }
-  }
+  if (report === undefined) return;
+  const reportNode = runReportNode(snapshot.sessionId, report);
+  nodes.push(reportNode);
+  edges.push(
+    edge(snapshot.sessionId, "summarizes", reportNode.id, sessionNodeId(snapshot.sessionId)),
+  );
+  addIssueNodes(snapshot.sessionId, report, reportNode.id, nodes, edges);
+  addRecommendationNodes(snapshot.sessionId, report, reportNode.id, nodes, edges);
+}
 
-  return { sessionId: snapshot.sessionId, nodes, edges: dedupeEdges(edges) };
+function addIssueNodes(
+  sessionId: string,
+  report: NonNullable<DecisionGraphLedgerSnapshot["runReport"]>,
+  reportNodeIdValue: string,
+  nodes: DecisionGraphNode[],
+  edges: DecisionGraphEdge[],
+): void {
+  for (const [index, issue] of report.issues.entries()) {
+    const issueId = issueNodeId(sessionId, report.runId, index);
+    nodes.push({
+      id: issueId,
+      sessionId,
+      kind: "issue",
+      label: issue.message,
+      timestamp: report.duration.completedAt,
+      metadata: {
+        severity: issue.severity,
+        turnIndex: issue.turnIndex,
+        resolved: issue.resolved,
+        ...(issue.resolution !== undefined ? { resolution: issue.resolution } : {}),
+      },
+    });
+    edges.push(edge(sessionId, "raises", reportNodeIdValue, issueId));
+  }
+}
+
+function addRecommendationNodes(
+  sessionId: string,
+  report: NonNullable<DecisionGraphLedgerSnapshot["runReport"]>,
+  reportNodeIdValue: string,
+  nodes: DecisionGraphNode[],
+  edges: DecisionGraphEdge[],
+): void {
+  for (const [index, recommendation] of report.recommendations.entries()) {
+    const recommendationId = recommendationNodeId(sessionId, report.runId, index);
+    nodes.push({
+      id: recommendationId,
+      sessionId,
+      kind: "recommendation",
+      label: recommendation,
+      timestamp: report.duration.completedAt,
+    });
+    edges.push(edge(sessionId, "recommends", reportNodeIdValue, recommendationId));
+  }
 }
 
 function validateSnapshot(snapshot: DecisionGraphLedgerSnapshot): void {
@@ -241,6 +278,18 @@ function edge(
     from,
     to,
   };
+}
+
+function corroboratesEdge(
+  sessionId: string,
+  auditNodeIdValue: string,
+  stepIndex: number,
+): DecisionGraphEdge {
+  return edge(sessionId, "corroborates", auditNodeIdValue, trajectoryNodeId(sessionId, stepIndex));
+}
+
+function producedEdge(sessionId: string, stepIndex: number, outcomeNodeIdValue: string) {
+  return edge(sessionId, "produced", trajectoryNodeId(sessionId, stepIndex), outcomeNodeIdValue);
 }
 
 function dedupeEdges(edges: readonly DecisionGraphEdge[]): readonly DecisionGraphEdge[] {

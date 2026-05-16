@@ -27,59 +27,112 @@ export function createNexusVfsDecisionGraphStore(
 ): DecisionGraphStore {
   const basePath = normalizeBasePath(config.basePath ?? DEFAULT_BASE_PATH);
   const transport = config.transport;
+  const context = { basePath, transport };
 
   return {
-    async upsertGraph(graph) {
-      const graphResult = await writeJson(transport, sessionPath(basePath, graph.sessionId), graph);
-      if (!graphResult.ok) return graphResult;
-      for (const node of graph.nodes) {
-        const result = await writeJson(transport, nodePath(basePath, node.id), node);
-        if (!result.ok) return result;
-      }
-      for (const edge of graph.edges) {
-        const result = await writeJson(transport, edgePath(basePath, edge.id), edge);
-        if (!result.ok) return result;
-      }
-      for (const node of graph.nodes) {
-        const edgeIds = graph.edges
-          .filter((edge) => edge.from === node.id || edge.to === node.id)
-          .map((edge) => edge.id);
-        const result = await writeJson(transport, byNodePath(basePath, node.id), edgeIds);
-        if (!result.ok) return result;
-      }
-      return { ok: true, value: undefined };
-    },
-    async getGraph(sessionId) {
-      const result = await readJson<DecisionGraph>(transport, sessionPath(basePath, sessionId));
-      if (!result.ok) {
-        if (result.error.code === "NOT_FOUND") return { ok: true, value: undefined };
-        return result;
-      }
-      return result;
-    },
-    async getNeighbors(query) {
-      const graph = await loadGraph(transport, basePath, query.sessionId);
-      if (!graph.ok) return graph;
-      if (graph.value === undefined) {
-        return { ok: true, value: { sessionId: query.sessionId, nodes: [], edges: [] } };
-      }
-      const memory = createInMemoryDecisionGraphStore();
-      const upserted = await memory.upsertGraph(graph.value);
-      if (!upserted.ok) return upserted;
-      return memory.getNeighbors(query);
-    },
-    async getSubgraph(query) {
-      const graph = await loadGraph(transport, basePath, query.sessionId);
-      if (!graph.ok) return graph;
-      if (graph.value === undefined) {
-        return { ok: true, value: { sessionId: query.sessionId, nodes: [], edges: [] } };
-      }
-      const memory = createInMemoryDecisionGraphStore();
-      const upserted = await memory.upsertGraph(graph.value);
-      if (!upserted.ok) return upserted;
-      return memory.getSubgraph(query);
-    },
+    upsertGraph: (graph) => upsertGraph(context, graph),
+    getGraph: (sessionId) => getGraph(context, sessionId),
+    getNeighbors: (query) => getNeighbors(context, query),
+    getSubgraph: (query) => getSubgraph(context, query),
   };
+}
+
+interface NexusVfsStoreContext {
+  readonly basePath: string;
+  readonly transport: NexusVfsTransport;
+}
+
+async function upsertGraph(
+  context: NexusVfsStoreContext,
+  graph: DecisionGraph,
+): ReturnType<DecisionGraphStore["upsertGraph"]> {
+  const graphResult = await writeJson(
+    context.transport,
+    sessionPath(context.basePath, graph.sessionId),
+    graph,
+  );
+  if (!graphResult.ok) return graphResult;
+  const members = await writeGraphMembers(context, graph);
+  if (!members.ok) return members;
+  return writeNodeEdgeIndexes(context, graph);
+}
+
+async function writeGraphMembers(
+  context: NexusVfsStoreContext,
+  graph: DecisionGraph,
+): Promise<Result<void, KoiError>> {
+  for (const node of graph.nodes) {
+    const result = await writeJson(context.transport, nodePath(context.basePath, node.id), node);
+    if (!result.ok) return result;
+  }
+  for (const edge of graph.edges) {
+    const result = await writeJson(context.transport, edgePath(context.basePath, edge.id), edge);
+    if (!result.ok) return result;
+  }
+  return { ok: true, value: undefined };
+}
+
+async function writeNodeEdgeIndexes(
+  context: NexusVfsStoreContext,
+  graph: DecisionGraph,
+): Promise<Result<void, KoiError>> {
+  for (const node of graph.nodes) {
+    const edgeIds = graph.edges
+      .filter((edge) => edge.from === node.id || edge.to === node.id)
+      .map((edge) => edge.id);
+    const result = await writeJson(
+      context.transport,
+      byNodePath(context.basePath, node.id),
+      edgeIds,
+    );
+    if (!result.ok) return result;
+  }
+  return { ok: true, value: undefined };
+}
+
+async function getGraph(
+  context: NexusVfsStoreContext,
+  sessionId: string,
+): ReturnType<DecisionGraphStore["getGraph"]> {
+  const result = await readJson<DecisionGraph>(
+    context.transport,
+    sessionPath(context.basePath, sessionId),
+  );
+  if (!result.ok) {
+    if (result.error.code === "NOT_FOUND") return { ok: true, value: undefined };
+    return result;
+  }
+  return result;
+}
+
+async function getNeighbors(
+  context: NexusVfsStoreContext,
+  query: Parameters<DecisionGraphStore["getNeighbors"]>[0],
+): ReturnType<DecisionGraphStore["getNeighbors"]> {
+  return queryLoadedGraph(context, query, (memory) => memory.getNeighbors(query));
+}
+
+async function getSubgraph(
+  context: NexusVfsStoreContext,
+  query: Parameters<DecisionGraphStore["getSubgraph"]>[0],
+): ReturnType<DecisionGraphStore["getSubgraph"]> {
+  return queryLoadedGraph(context, query, (memory) => memory.getSubgraph(query));
+}
+
+async function queryLoadedGraph<T>(
+  context: NexusVfsStoreContext,
+  query: { readonly sessionId: string },
+  run: (memory: DecisionGraphStore) => Promise<Result<T, KoiError>>,
+): Promise<Result<T, KoiError>> {
+  const graph = await loadGraph(context.transport, context.basePath, query.sessionId);
+  if (!graph.ok) return graph;
+  if (graph.value === undefined) {
+    return { ok: true, value: { sessionId: query.sessionId, nodes: [], edges: [] } as T };
+  }
+  const memory = createInMemoryDecisionGraphStore();
+  const upserted = await memory.upsertGraph(graph.value);
+  if (!upserted.ok) return upserted;
+  return run(memory);
 }
 
 async function loadGraph(
