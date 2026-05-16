@@ -32,13 +32,30 @@ for d in "${_domain_dirs[@]}"; do
   [ "$domain" = "__pycache__" ] && continue
 
   summary="$REPO_ROOT/clawbench/results/SUMMARY-$domain.txt"
-  # Only skip a domain whose summary is COMPLETE: run-domain.sh writes the
-  # summary atomically and terminates it with a lone "===" sentinel line.
-  # A missing file or one without the sentinel means the domain was never
-  # finished, so it must be (re)processed rather than silently skipped.
-  if [ -f "$summary" ] && [ "$(tail -1 "$summary" 2>/dev/null)" = "===" ]; then
-    echo "SKIP $domain (already has complete summary)" | tee -a "$PROGRESS"
-    continue
+  # Live task count from the (read-only) source, recomputed every pass so a
+  # stale or partial summary cannot satisfy the check.
+  shopt -s nullglob
+  _task_dirs=("$d"*/)
+  shopt -u nullglob
+  live_task_count="${#_task_dirs[@]}"
+
+  # Skip a domain ONLY when its summary's terminal line is the structured
+  # completion sentinel "=== COMPLETE tasks=<n> ===" AND <n> equals the live
+  # source task count. This defeats:
+  #   - a bare/forged "===" line (old format or written by a hostile task)
+  #   - a stale summary from a partial run (count mismatch -> reprocess)
+  # Residual risk: a same-uid agent with shell access could still forge the
+  # exact-correct line; fully closing that requires OS-level sandboxing of
+  # the agent (container/uid separation), which is out of scope for this
+  # shell harness. Provenance keyed to the live source raises the bar and
+  # eliminates accidental/partial false-greens.
+  if [ -f "$summary" ] && [ "$live_task_count" -gt 0 ]; then
+    last_line=$(tail -1 "$summary" 2>/dev/null)
+    expected="=== COMPLETE tasks=$live_task_count ==="
+    if [ "$last_line" = "$expected" ]; then
+      echo "SKIP $domain (complete: $live_task_count tasks)" | tee -a "$PROGRESS"
+      continue
+    fi
   fi
 
   echo ">>> START $domain ($(date +%H:%M:%S))" | tee -a "$PROGRESS"

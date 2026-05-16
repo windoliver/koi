@@ -23,10 +23,12 @@ trap 'rm -f "$SUMMARY_TMP"' EXIT
 : > "$SUMMARY_TMP"
 
 domain_failures=0
+tasks_processed=0
 for task_dir in "$TASKS_DOMAIN_DIR"/*/; do
   [ -d "$task_dir" ] || continue
   task_dir="${task_dir%/}"
   id=$(basename "$task_dir")
+  tasks_processed=$((tasks_processed + 1))
   echo ">>> $id" >&2
   # run-task.sh's exit status is authoritative (it exits with the verifier's
   # pytest rc). Capture it instead of swallowing it with `|| true`.
@@ -51,16 +53,29 @@ for task_dir in "$TASKS_DOMAIN_DIR"/*/; do
   fi
 done
 
+# Empty/glob-miss guard: if the loop never ran, the task source under
+# $TASKS_DOMAIN_DIR is missing or truncated. Zero processed tasks is NOT a
+# passing domain — refuse to write a completion sentinel for it.
+if [ "$tasks_processed" -eq 0 ]; then
+  echo "=== INCOMPLETE: 0 tasks found under $TASKS_DOMAIN_DIR ===" >> "$SUMMARY_TMP"
+  mv -f "$SUMMARY_TMP" "$SUMMARY"
+  trap - EXIT
+  cat "$SUMMARY"
+  echo "run-domain.sh: $DOMAIN had no tasks (corrupt/missing source)" >&2
+  exit 1
+fi
+
 if [ "$domain_failures" -eq 0 ]; then
-  # Lone "===" sentinel marks a fully-passing, fully-processed domain.
-  # run-all-remaining.sh skips a domain ONLY when its summary ends in this
-  # exact line, so it is never written when any task failed.
-  echo "===" >> "$SUMMARY_TMP"
+  # Structured completion sentinel carrying the processed task count as a
+  # provenance marker. run-all-remaining.sh skips a domain ONLY when this
+  # line is present AND tasks=<n> matches the live source task count, so a
+  # bare/forged "===" or a stale partial count cannot forge completion.
+  echo "=== COMPLETE tasks=$tasks_processed ===" >> "$SUMMARY_TMP"
 else
-  # Distinct terminal line (NOT the bare "===" sentinel): run-all-remaining.sh
+  # Distinct terminal line (not the COMPLETE sentinel): run-all-remaining.sh
   # will reprocess this domain on the next pass instead of skipping it
   # forever with its failures hidden behind a false-complete summary.
-  echo "=== INCOMPLETE: $domain_failures task(s) failed ===" >> "$SUMMARY_TMP"
+  echo "=== INCOMPLETE: $domain_failures of $tasks_processed task(s) failed ===" >> "$SUMMARY_TMP"
 fi
 # Atomic promote: results are visible, but completion is encoded in the
 # terminal line above, not in the file's mere existence.
