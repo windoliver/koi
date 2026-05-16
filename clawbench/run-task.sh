@@ -72,6 +72,16 @@ SAFE_ENV=(
   "PYTHONDONTWRITEBYTECODE=1"
 )
 
+# Allowlist for the verifier (pytest). test_output.py is untrusted task code,
+# so it must NOT inherit operator/CI secrets from the ambient environment.
+# It needs only the runtime essentials plus the workspace path vars some
+# upstream verifiers read at import time.
+VERIFY_ENV=(
+  "${SAFE_ENV[@]}"
+  "WORKSPACE=$WORKSPACE"
+  "CLAW_WORKSPACE=$WORKSPACE"
+)
+
 # Try setup.sh with workspace arg; some scripts ignore $1 and write to TASK_DIR/workspace.
 # Always also copy environment/data directly as fallback to guarantee seeding.
 env -i "${SAFE_ENV[@]}" bash "$TASK_DIR/environment/setup.sh" "$WORKSPACE" 2>&1 | tail -5 >&2 || true
@@ -171,14 +181,14 @@ for iter in $(seq 1 $MAX_ITER); do
     fi
   fi
 
-  # Dry verify (no log persistence yet)
-  # Some upstream verifiers resolve the workspace from $WORKSPACE/$CLAW_WORKSPACE
-  # in module-level code (before pytest parses --workspace), so a fixture-only
-  # --workspace is not enough. Export both so that fallback finds real output.
-  export WORKSPACE CLAW_WORKSPACE="$WORKSPACE"
+  # Dry verify (no log persistence yet). Run under `env -i` + VERIFY_ENV:
+  # the verifier is untrusted task code and must not see ambient secrets.
+  # VERIFY_ENV carries WORKSPACE/CLAW_WORKSPACE for verifiers that resolve
+  # the workspace in module-level code before pytest parses --workspace.
   cd "$REPO_ROOT"
   set +e
-  fails=$("$REPO_ROOT/.venv-clawbench/bin/python" -m pytest \
+  fails=$(env -i "${VERIFY_ENV[@]}" \
+    "$REPO_ROOT/.venv-clawbench/bin/python" -m pytest \
     --rootdir=/tmp/claw-bench-src/tasks \
     --workspace="$WORKSPACE" \
     "$TASK_DIR/verifier/test_output.py" \
@@ -219,11 +229,14 @@ echo "=== Verifying $TASK_ID ===" >&2
 find "$WORKSPACE" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 find "$WORKSPACE" -name "*.pyc" -delete 2>/dev/null || true
 cd "$REPO_ROOT"
-source .venv-clawbench/bin/activate
-# conftest.py lives at /tmp/claw-bench-src/tasks/conftest.py and registers --workspace.
-# Run pytest with the tasks dir as rootdir so conftest is picked up.
+# conftest.py lives at /tmp/claw-bench-src/tasks/conftest.py and registers
+# --workspace; run pytest with the tasks dir as rootdir so it is picked up.
+# `env -i` + VERIFY_ENV: test_output.py is untrusted task code and must not
+# inherit operator/CI secrets. The venv python is invoked by absolute path
+# (no `source activate` needed — the interpreter resolves its own site).
 set +e
-python -m pytest \
+env -i "${VERIFY_ENV[@]}" \
+  "$REPO_ROOT/.venv-clawbench/bin/python" -m pytest \
   --rootdir=/tmp/claw-bench-src/tasks \
   --workspace="$WORKSPACE" \
   "$TASK_DIR/verifier/test_output.py" \

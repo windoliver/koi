@@ -66,11 +66,15 @@ if [ "$tasks_processed" -eq 0 ]; then
 fi
 
 if [ "$domain_failures" -eq 0 ]; then
-  # Structured completion sentinel carrying the processed task count as a
-  # provenance marker. run-all-remaining.sh skips a domain ONLY when this
-  # line is present AND tasks=<n> matches the live source task count, so a
-  # bare/forged "===" or a stale partial count cannot forge completion.
-  echo "=== COMPLETE tasks=$tasks_processed ===" >> "$SUMMARY_TMP"
+  # Structured completion sentinel carrying provenance: the processed task
+  # count AND a fingerprint of the sorted task-id set. run-all-remaining.sh
+  # skips a domain ONLY when this line is present AND both count and
+  # fingerprint match the live source, so a bare/forged "===", a stale
+  # partial count, or a same-cardinality task-set swap/reorder cannot forge
+  # completion. (Must be computed identically in run-all-remaining.sh.)
+  task_fp=$(for x in "$TASKS_DOMAIN_DIR"/*/; do [ -d "$x" ] && basename "$x"; done \
+    | LC_ALL=C sort | shasum -a 256 | cut -c1-16)
+  echo "=== COMPLETE tasks=$tasks_processed fp=$task_fp ===" >> "$SUMMARY_TMP"
 else
   # Distinct terminal line (not the COMPLETE sentinel): run-all-remaining.sh
   # will reprocess this domain on the next pass instead of skipping it

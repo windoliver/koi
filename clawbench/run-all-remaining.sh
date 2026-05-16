@@ -39,21 +39,26 @@ for d in "${_domain_dirs[@]}"; do
   shopt -u nullglob
   live_task_count="${#_task_dirs[@]}"
 
+  # Live task-set fingerprint, computed IDENTICALLY to run-domain.sh.
+  live_fp=$(for x in "$d"*/; do [ -d "$x" ] && basename "$x"; done \
+    | LC_ALL=C sort | shasum -a 256 | cut -c1-16)
+
   # Skip a domain ONLY when its summary's terminal line is the structured
-  # completion sentinel "=== COMPLETE tasks=<n> ===" AND <n> equals the live
-  # source task count. This defeats:
+  # completion sentinel "=== COMPLETE tasks=<n> fp=<h> ===" AND BOTH <n> and
+  # <h> match the live source (recomputed every pass). This defeats:
   #   - a bare/forged "===" line (old format or written by a hostile task)
-  #   - a stale summary from a partial run (count mismatch -> reprocess)
+  #   - a stale summary from a partial run (count/fp mismatch -> reprocess)
+  #   - a same-cardinality task-set swap/reorder (fp mismatch -> reprocess)
   # Residual risk: a same-uid agent with shell access could still forge the
-  # exact-correct line; fully closing that requires OS-level sandboxing of
-  # the agent (container/uid separation), which is out of scope for this
-  # shell harness. Provenance keyed to the live source raises the bar and
-  # eliminates accidental/partial false-greens.
+  # exact-correct line (the fp is derived from public task-dir names); fully
+  # closing that requires OS-level sandboxing of the agent (container/uid
+  # separation), out of scope for this shell harness. The fingerprint
+  # eliminates accidental/partial/stale false-greens.
   if [ -f "$summary" ] && [ "$live_task_count" -gt 0 ]; then
     last_line=$(tail -1 "$summary" 2>/dev/null)
-    expected="=== COMPLETE tasks=$live_task_count ==="
+    expected="=== COMPLETE tasks=$live_task_count fp=$live_fp ==="
     if [ "$last_line" = "$expected" ]; then
-      echo "SKIP $domain (complete: $live_task_count tasks)" | tee -a "$PROGRESS"
+      echo "SKIP $domain (complete: $live_task_count tasks, fp=$live_fp)" | tee -a "$PROGRESS"
       continue
     fi
   fi
