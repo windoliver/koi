@@ -19,7 +19,12 @@ without interfering with each other or the host repo. This package provides:
 ## Public API
 
 ```typescript
-import { createGitWorktreeBackend, createWorkspaceProvider } from "@koi/workspace";
+import {
+  createGitWorktreeBackend,
+  createGitWorktreeOverlayManager,
+  createOverlayFileSystem,
+  createWorkspaceProvider,
+} from "@koi/workspace";
 
 // 1. Build a backend
 const backend = createGitWorktreeBackend({ repoPath: "/path/to/repo" });
@@ -32,6 +37,29 @@ const provider = createWorkspaceProvider({
 
 // 3. Register provider during koi assembly — agent gets WORKSPACE component
 ```
+
+---
+
+## Workspace Overlays
+
+`createGitWorktreeOverlayManager(config)` creates short-lived git worktree
+overlays for reviewable isolation on top of the real repository. Each overlay is
+anchored to the repository's current `HEAD` as `baseCommit` and is tracked in an
+in-memory manager registry until it is accepted or rejected.
+
+- `create()` creates an `overlay/<id>` branch in the overlay base path
+- `accept(id)` copies overlay changes back into the real repository and removes
+the overlay worktree
+- `reject(id)` removes the overlay worktree without copying changes back
+- Accept detects conflicts when the real repository changed the same path since
+  the overlay base commit
+- Git-detected renames are applied as both a source deletion and destination
+  write so accepting a rename does not leave stale files behind
+
+`createOverlayFileSystem({ real, overlay })` exposes a merged
+`FileSystemBackend`: reads fall through from overlay to real, writes and edits
+land in the overlay, and deletes create tombstones that mask real paths until the
+overlay is accepted or discarded.
 
 ---
 
@@ -100,3 +128,5 @@ interface WorkspaceProviderConfig {
 
 - 2026-04-24 — Initial v2 implementation (issue #1370)
 - 2026-05-08 — Wired into shared `@koi/workspace-conformance` suite alongside `@koi/workspace-nexus`; behavior unchanged (issue #1373)
+- 2026-05-16 — Added git worktree overlays and overlay filesystem masking for
+  staged workspace edits, including conflict detection and rename-safe accept
