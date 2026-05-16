@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 146 | 772 | 127 |
+| lib | 146 | 775 | 127 |
 | meta | 6 | 119 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
@@ -178,7 +178,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/task-spawn` (packages/lib/task-spawn) - Lightweight task tool for zero-friction subagent spawning + copilot routing. Tests: 8. Docs: docs/L2/task-spawn.md.
 - `@koi/task-tools` (packages/lib/task-tools) - LLM-callable task management tools — create, get, update, list, stop, output (L2). Tests: 2. Docs: docs/L2/task-tools.md.
 - `@koi/tasks` (packages/lib/tasks) - Pluggable task board persistence — in-memory and file-based backends. Tests: 12. Docs: docs/L2/tasks.md.
-- `@koi/team-runtime` (packages/lib/team-runtime) - Parallel multi-agent team orchestration with event replay, dependency-aware scheduling, and resource locking. Tests: 9. Docs: docs/L2/team-runtime.md.
+- `@koi/team-runtime` (packages/lib/team-runtime) - Parallel multi-agent team orchestration with event replay, dependency-aware scheduling, and resource locking. Tests: 12. Docs: docs/L2/team-runtime.md.
 - `@koi/test` (packages/lib/test) - Test doubles, context factories, event collectors, and assertion helpers for Koi agent tests. Tests: 11. Docs: -.
 - `@koi/tool-browser` (packages/lib/tool-browser) - Browser automation tools via accessibility-tree-first BrowserDriver. Tests: 20. Docs: docs/L2/tool-browser.md.
 - `@koi/tool-exec` (packages/lib/tool-exec) - execute_code: runs model scripts via Koi tools in an isolated Bun Worker, returning only the final result (L2). Tests: 3. Docs: docs/L2/tool-exec.md.
