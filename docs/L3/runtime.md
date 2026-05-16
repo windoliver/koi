@@ -4,6 +4,14 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+- 2026-05-15: `@koi/team-runtime` team tools wired (#1416). Runtime now depends
+  on the issue #1416 coordination surface: `createTeamManager`,
+  `createTeamToolProviders`, file-backed team mailboxes, and plan-approval
+  mailbox helpers. Golden replay adds standalone coverage for manager/provider
+  exposure and mailbox protocol behavior, including lead-only assignment and
+  reporter identity checks. No cassette trajectory is recorded because the team
+  manager and mailbox contracts are deterministic and unit-testable without an
+  LLM call. See `docs/L2/team-runtime.md` for the tool protocol.
 - 2026-05-15: `@koi/federation` adds vector-clock ordering metadata and
   conflict reporting for concurrent shared-resource writes (#1408). Runtime
   dependency set unchanged. Sync cursors now preserve merged vector clocks, and

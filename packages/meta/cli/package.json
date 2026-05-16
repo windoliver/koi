@@ -123,6 +123,7 @@
     "@koi/spawn-tools": "workspace:*",
     "@koi/task-tools": "workspace:*",
     "@koi/tasks": "workspace:*",
+    "@koi/team-runtime": "workspace:*",
     "@koi/token-estimator": "workspace:*",
     "@koi/tool-browser": "workspace:*",
     "@koi/tool-exec": "workspace:*",

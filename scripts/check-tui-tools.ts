@@ -20,6 +20,13 @@ export const GOLDEN_INTERACTION_TOOLS = ["TodoWrite"] as const;
 
 export const GOLDEN_TASK_TOOLS = ["task_create", "task_delegate"] as const;
 
+export const GOLDEN_TEAM_TOOLS = [
+  "TeamCreate",
+  "TeamDelete",
+  "TeamAssignTask",
+  "TeamReportTask",
+] as const;
+
 // agent_spawn is intentionally NOT in TUI until workers route through createKoi
 // with full middleware (Bash, web_fetch, exfiltration guard, permissions) — tracked in #1582.
 // Without createKoi, child workers only have Glob/Grep (read-only) but the prompt
@@ -29,6 +36,7 @@ export const GOLDEN_SPAWN_TOOLS: readonly string[] = [] as const;
 export const ALL_GOLDEN_TOOLS = [
   ...GOLDEN_INTERACTION_TOOLS,
   ...GOLDEN_TASK_TOOLS,
+  ...GOLDEN_TEAM_TOOLS,
   ...GOLDEN_SPAWN_TOOLS,
 ] as const;
 

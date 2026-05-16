@@ -11,6 +11,57 @@ export type {
   TeamEvent,
   TeamEventBase,
 } from "./events.js";
+export type {
+  FileTeamMailbox,
+  FileTeamMailboxConfig,
+  PlanApprovalRequestMessage,
+  PlanApprovalResponseMessage,
+  TaskAssignmentMessage,
+  TaskReportMessage,
+  TeamMailboxMessage,
+  TeamMailboxWriteInput,
+  TeamPermissionMode,
+  TeamProtocolMessage,
+} from "./mailbox.js";
+export {
+  createFileTeamMailbox,
+  createPlanApprovalRequestMessage,
+  createPlanApprovalResponseMessage,
+  createTaskAssignmentMessage,
+  createTaskReportMessage,
+  isPlanApprovalRequestMessage,
+  isPlanApprovalResponseMessage,
+  parseTeamProtocolMessage,
+} from "./mailbox.js";
+export type {
+  TeamCreateInput,
+  TeamManager,
+  TeamManagerConfig,
+  TeamMember,
+  TeamMemberRole,
+  TeamRecord,
+  TeamSpawnRequest,
+  TeamSpawnResult,
+  TeamTaskAssignment,
+  TeamTaskRecord,
+  TeamTaskReport,
+  TeamTaskStatus,
+  TeamTool,
+  TeamValueResult,
+  TeamVoidResult,
+} from "./manager.js";
+export { createTeamManager } from "./manager.js";
+export type {
+  InProcessTeammateAppStateLike,
+  InProcessTeammateTaskLike,
+  SetAppState,
+} from "./plan-approval.js";
+export {
+  findInProcessTeammateTaskId,
+  handlePlanApprovalResponse,
+  isPlanModeRequired,
+  setAwaitingPlanApproval,
+} from "./plan-approval.js";
 export { planRunnableTasks } from "./planner.js";
 export { replayTeamRun } from "./replay.js";
 export type {
@@ -34,6 +85,13 @@ export type {
 export { validateTeamSpec } from "./spec.js";
 export type { TeamRuntimeBoard, TeamRuntimeSnapshot, TeamRuntimeTask } from "./state.js";
 export { reduceTeamEvents } from "./state.js";
+export type { TeamSummary } from "./tools.js";
+export {
+  createTeamAssignTaskTool,
+  createTeamCreateTool,
+  createTeamDeleteTool,
+  createTeamReportTaskTool,
+} from "./tools.js";
 export {
   createResourceSerializer,
   serializeSharedResource,

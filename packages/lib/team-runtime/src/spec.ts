@@ -1,6 +1,7 @@
 export interface TeamAgentSpec {
   readonly agentType: string;
   readonly maxParallel?: number | undefined;
+  readonly planModeRequired?: boolean | undefined;
 }
 
 export interface TeamTaskSpec {
