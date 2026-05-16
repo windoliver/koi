@@ -97,6 +97,22 @@ describe("createGitWorktreeOverlayManager", () => {
     await expect(stat(created.value.path)).rejects.toThrow();
   });
 
+  test("accept applies git-detected renames by deleting the old real repo path", async () => {
+    const manager = createGitWorktreeOverlayManager({ repoPath, overlayBasePath });
+    const created = await manager.create();
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await run(["git", "mv", "README.md", "RENAMED.md"], created.value.path);
+    const accepted = await manager.accept(created.value.id);
+
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) return;
+    expect(accepted.value.changedPaths).toEqual(["README.md", "RENAMED.md"]);
+    await expect(Bun.file(join(repoPath, "README.md")).exists()).resolves.toBe(false);
+    expect(await readFile(join(repoPath, "RENAMED.md"), "utf8")).toBe("base\n");
+  });
+
   test("accept reports a conflict when real repo and overlay changed the same path", async () => {
     const manager = createGitWorktreeOverlayManager({ repoPath, overlayBasePath });
     const created = await manager.create();
@@ -145,13 +161,13 @@ describe("createGitWorktreeOverlayManager", () => {
     await writeFile(join(first.value.path, "first.txt"), "first\n", "utf8");
     await writeFile(join(second.value.path, "second.txt"), "second\n", "utf8");
 
-    expect(Bun.file(join(first.value.path, "second.txt")).exists()).resolves.toBe(false);
-    expect(Bun.file(join(second.value.path, "first.txt")).exists()).resolves.toBe(false);
+    await expect(Bun.file(join(first.value.path, "second.txt")).exists()).resolves.toBe(false);
+    await expect(Bun.file(join(second.value.path, "first.txt")).exists()).resolves.toBe(false);
 
     const accepted = await manager.accept(first.value.id);
     expect(accepted.ok).toBe(true);
-    expect(Bun.file(join(repoPath, "first.txt")).exists()).resolves.toBe(true);
-    expect(Bun.file(join(repoPath, "second.txt")).exists()).resolves.toBe(false);
+    await expect(Bun.file(join(repoPath, "first.txt")).exists()).resolves.toBe(true);
+    await expect(Bun.file(join(repoPath, "second.txt")).exists()).resolves.toBe(false);
 
     const rejected = await manager.reject(second.value.id);
     expect(rejected.ok).toBe(true);
@@ -205,12 +221,12 @@ describe("createGitWorktreeOverlayManager", () => {
 
     const deleted = await fs.delete?.("README.md");
     expect(deleted?.ok).toBe(true);
-    expect(Bun.file(join(created.value.path, "README.md")).exists()).resolves.toBe(false);
-    expect(Bun.file(join(repoPath, "README.md")).exists()).resolves.toBe(true);
+    await expect(Bun.file(join(created.value.path, "README.md")).exists()).resolves.toBe(false);
+    await expect(Bun.file(join(repoPath, "README.md")).exists()).resolves.toBe(true);
 
     const accepted = await manager.accept(created.value.id);
     expect(accepted.ok).toBe(true);
-    expect(Bun.file(join(repoPath, "README.md")).exists()).resolves.toBe(false);
+    await expect(Bun.file(join(repoPath, "README.md")).exists()).resolves.toBe(false);
   });
 });
 

@@ -92,8 +92,10 @@ function parsePorcelainPaths(output: string): readonly string[] {
   const paths = entries.flatMap((entry, index, all) => {
     const status = entry.slice(0, 2);
     if (status[0] === "R" || status[0] === "C") {
+      const sourcePath = entry[2] === " " ? entry.slice(3) : entry.slice(2);
       const renamedTo = all[index + 1];
-      return renamedTo === undefined ? [] : [renamedTo];
+      if (renamedTo === undefined) return [];
+      return status[0] === "R" ? [sourcePath, renamedTo] : [renamedTo];
     }
     if (index > 0) {
       const previousStatus = all[index - 1]?.slice(0, 2);
