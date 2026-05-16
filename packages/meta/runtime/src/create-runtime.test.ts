@@ -15,6 +15,7 @@ import type {
   SearchPage,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
+import { createInMemoryDecisionGraphStore } from "@koi/decision-graph";
 import type { DecisionIndexDocumentData } from "@koi/decision-index";
 import { createRuntime } from "./create-runtime.js";
 import { PHASE1_MIDDLEWARE_NAMES } from "./stubs/stub-middleware.js";
@@ -865,6 +866,7 @@ describe("createRuntime", () => {
     const runtime = createRuntime();
     expect(runtime.trajectoryStore).toBeUndefined();
     expect(runtime.createDecisionIndex).toBeUndefined();
+    expect(runtime.createDecisionGraph).toBeUndefined();
   });
 
   test("createDecisionIndex indexes the runtime-backed decision ledger", async () => {
@@ -917,6 +919,58 @@ describe("createRuntime", () => {
       expect(queried.value.results).toHaveLength(1);
       expect(queried.value.results[0]?.sessionId).toBe("session-idx");
       expect(queried.value.results[0]?.sourceKind).toBe("audit");
+    } finally {
+      await runtime.dispose();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("createDecisionGraph materializes and stores the runtime-backed decision ledger", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const tmp = mkdtempSync(join(tmpdir(), "decision-graph-runtime-"));
+    const runtime = createRuntime({
+      adapter: "stub",
+      channel: "stub",
+      trajectoryDir: tmp,
+    });
+    try {
+      expect(typeof runtime.createDecisionGraph).toBe("function");
+      if (runtime.createDecisionGraph === undefined) {
+        throw new Error("createDecisionGraph not exposed");
+      }
+      const auditEntries: readonly AuditEntry[] = [
+        {
+          schema_version: 1,
+          timestamp: 100,
+          sessionId: "session-graph",
+          agentId: "agent-a",
+          turnIndex: 1,
+          kind: "tool_call",
+          toolName: "apply_patch",
+          durationMs: 2,
+        },
+      ];
+      const auditSink = {
+        log: async (): Promise<void> => {},
+        query: async (): Promise<readonly AuditEntry[]> => auditEntries,
+      };
+      const graphHandle = runtime.createDecisionGraph({
+        store: createInMemoryDecisionGraphStore(),
+        auditSink,
+      });
+
+      const materialized = await graphHandle.materializeSession("session-graph");
+      expect(materialized.ok).toBe(true);
+      if (!materialized.ok) return;
+      expect(materialized.value.nodes.some((node) => node.kind === "session")).toBe(true);
+      expect(materialized.value.nodes.some((node) => node.kind === "audit_entry")).toBe(true);
+
+      const stored = await graphHandle.getGraph("session-graph");
+      expect(stored.ok).toBe(true);
+      if (!stored.ok) return;
+      expect(stored.value?.sessionId).toBe("session-graph");
     } finally {
       await runtime.dispose();
       rmSync(tmp, { recursive: true, force: true });

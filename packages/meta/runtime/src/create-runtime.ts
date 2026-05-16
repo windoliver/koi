@@ -59,6 +59,7 @@ const DEFAULT_PROCESS_SPAWN_LEDGER = createInMemorySpawnLedger(
   DEFAULT_SPAWN_POLICY.maxTotalProcesses,
 );
 
+import { materializeDecisionGraph } from "@koi/decision-graph";
 import { createDecisionIndex as createSearchDecisionIndex } from "@koi/decision-index";
 import type { DebugInstrumentation, RecomposedChains } from "@koi/engine-compose";
 import {
@@ -99,7 +100,12 @@ import { createAtifDocumentStore } from "./trajectory/atif-store.js";
 import { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
 import { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
 import { createNexusOutcomeDelegate } from "./trajectory/outcome-nexus-delegate.js";
-import type { RuntimeConfig, RuntimeDecisionIndexHandle, RuntimeHandle } from "./types.js";
+import type {
+  RuntimeConfig,
+  RuntimeDecisionGraphHandle,
+  RuntimeDecisionIndexHandle,
+  RuntimeHandle,
+} from "./types.js";
 import { DEFAULT_ACTIVITY_MAX_DURATION_MS, DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
 
 const DEFAULT_AGENT_NAME = "koi-runtime";
@@ -1498,6 +1504,33 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
           }
         : undefined;
 
+    const decisionGraphFactory =
+      decisionLedgerFactory !== undefined
+        ? (
+            graphConfig: Parameters<NonNullable<RuntimeHandle["createDecisionGraph"]>>[0],
+          ): RuntimeDecisionGraphHandle => {
+            const ledger = decisionLedgerFactory({
+              ...(graphConfig.auditSink !== undefined ? { auditSink: graphConfig.auditSink } : {}),
+              ...(graphConfig.reportStore !== undefined
+                ? { reportStore: graphConfig.reportStore }
+                : {}),
+            });
+            return {
+              materializeSession: async (sessionId) => {
+                const snapshot = await ledger.getLedger(sessionId);
+                if (!snapshot.ok) return snapshot;
+                const graph = materializeDecisionGraph(snapshot.value);
+                const stored = await graphConfig.store.upsertGraph(graph);
+                if (!stored.ok) return stored;
+                return { ok: true, value: graph };
+              },
+              getGraph: graphConfig.store.getGraph,
+              getNeighbors: graphConfig.store.getNeighbors,
+              getSubgraph: graphConfig.store.getSubgraph,
+            };
+          }
+        : undefined;
+
     return {
       adapter,
       channel,
@@ -1564,6 +1597,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
           : undefined,
       createDecisionLedger: decisionLedgerFactory,
       createDecisionIndex: decisionIndexFactory,
+      createDecisionGraph: decisionGraphFactory,
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles
         unsubApprovalSink?.();

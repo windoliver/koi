@@ -45,6 +45,7 @@
     "@koi/dashboard-client": "workspace:*",
     "@koi/dashboard-types": "workspace:*",
     "@koi/debug": "workspace:*",
+    "@koi/decision-graph": "workspace:*",
     "@koi/decision-index": "workspace:*",
     "@koi/decision-ledger": "workspace:*",
     "@koi/engine": "workspace:*",

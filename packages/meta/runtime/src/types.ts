@@ -38,6 +38,12 @@ import type {
   TrajectoryDocumentStore,
 } from "@koi/core";
 import type {
+  DecisionGraph,
+  DecisionGraphNeighborsQuery,
+  DecisionGraphStore,
+  DecisionGraphSubgraphQuery,
+} from "@koi/decision-graph";
+import type {
   DecisionIndexDocumentData,
   DecisionIndexPage,
   DecisionIndexQuery,
@@ -793,6 +799,14 @@ export interface RuntimeDecisionIndexHandle {
   readonly queryDecisions: (query: DecisionIndexQuery) => Promise<Result<DecisionIndexPage>>;
 }
 
+/** Runtime-backed decision graph facade. */
+export interface RuntimeDecisionGraphHandle {
+  readonly materializeSession: (sessionId: string) => Promise<Result<DecisionGraph>>;
+  readonly getGraph: (sessionId: string) => Promise<Result<DecisionGraph | undefined>>;
+  readonly getNeighbors: (query: DecisionGraphNeighborsQuery) => Promise<Result<DecisionGraph>>;
+  readonly getSubgraph: (query: DecisionGraphSubgraphQuery) => Promise<Result<DecisionGraph>>;
+}
+
 /** The assembled runtime returned by createRuntime. */
 export interface RuntimeHandle {
   readonly adapter: EngineAdapter;
@@ -930,6 +944,22 @@ export interface RuntimeHandle {
         readonly auditSink?: AuditSink | undefined;
         readonly reportStore?: ReportStore | undefined;
       }) => RuntimeDecisionIndexHandle)
+    | undefined;
+
+  /**
+   * Factory for materialized decision trace graphs over the runtime's live
+   * ledger. Undefined when `trajectoryStore` is not configured.
+   *
+   * Callers supply the graph store. The default package includes an in-memory
+   * store, while durable RecordStore/Nexus-backed implementations can satisfy
+   * the same structural interface.
+   */
+  readonly createDecisionGraph:
+    | ((config: {
+        readonly store: DecisionGraphStore;
+        readonly auditSink?: AuditSink | undefined;
+        readonly reportStore?: ReportStore | undefined;
+      }) => RuntimeDecisionGraphHandle)
     | undefined;
 
   /**
