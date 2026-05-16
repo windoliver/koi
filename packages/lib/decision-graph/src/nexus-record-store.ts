@@ -139,6 +139,7 @@ function nodeKind(labels: readonly string[] | undefined): DecisionGraphNode["kin
   if (labels?.includes("trajectory_step")) return "trajectory_step";
   if (labels?.includes("audit_entry")) return "audit_entry";
   if (labels?.includes("run_report")) return "run_report";
+  if (labels?.includes("outcome")) return "outcome";
   if (labels?.includes("issue")) return "issue";
   if (labels?.includes("recommendation")) return "recommendation";
   return "session";
@@ -147,6 +148,7 @@ function nodeKind(labels: readonly string[] | undefined): DecisionGraphNode["kin
 function edgeKind(type: string | undefined): DecisionGraphEdge["kind"] {
   if (type === "precedes") return "precedes";
   if (type === "corroborates") return "corroborates";
+  if (type === "produced") return "produced";
   if (type === "summarizes") return "summarizes";
   if (type === "raises") return "raises";
   if (type === "recommends") return "recommends";

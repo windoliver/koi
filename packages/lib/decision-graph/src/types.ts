@@ -1,10 +1,18 @@
-import type { AuditEntry, KoiError, Result, RichTrajectoryStep, RunReport } from "@koi/core";
+import type {
+  AuditEntry,
+  KoiError,
+  OutcomeReport,
+  Result,
+  RichTrajectoryStep,
+  RunReport,
+} from "@koi/core";
 
 export type DecisionGraphNodeKind =
   | "session"
   | "trajectory_step"
   | "audit_entry"
   | "run_report"
+  | "outcome"
   | "issue"
   | "recommendation";
 
@@ -12,6 +20,7 @@ export type DecisionGraphEdgeKind =
   | "contains"
   | "precedes"
   | "corroborates"
+  | "produced"
   | "summarizes"
   | "raises"
   | "recommends";
@@ -25,6 +34,7 @@ export interface DecisionGraphLedgerSnapshot {
   readonly sessionId: string;
   readonly trajectorySteps: readonly RichTrajectoryStep[];
   readonly auditEntries: readonly AuditEntry[];
+  readonly outcomeReports?: readonly OutcomeReport[] | undefined;
   readonly runReport?: RunReport | undefined;
   readonly integrityLeakCounts: DecisionGraphIntegrityLeakCounts;
 }

@@ -58,6 +58,25 @@ export function materializeDecisionGraph(snapshot: DecisionGraphLedgerSnapshot):
     }
   }
 
+  for (const outcome of snapshot.outcomeReports ?? []) {
+    const node = outcomeNode(snapshot.sessionId, outcome);
+    nodes.push(node);
+    const matchingStep = sortedSteps.find(
+      (step) => metadataString(step.metadata, "decisionCorrelationId") === outcome.correlationId,
+    );
+    edges.push(edge(snapshot.sessionId, "contains", sessionNodeId(snapshot.sessionId), node.id));
+    if (matchingStep !== undefined) {
+      edges.push(
+        edge(
+          snapshot.sessionId,
+          "produced",
+          trajectoryNodeId(snapshot.sessionId, matchingStep.stepIndex),
+          node.id,
+        ),
+      );
+    }
+  }
+
   const report = snapshot.runReport;
   if (report !== undefined) {
     const reportNode = runReportNode(snapshot.sessionId, report);
@@ -180,6 +199,34 @@ function runReportNode(
   };
 }
 
+function outcomeNode(
+  sessionId: string,
+  outcome: {
+    readonly correlationId: string;
+    readonly outcome: string;
+    readonly description: string;
+    readonly timestamp: number;
+    readonly reportedBy: string;
+    readonly metrics: Readonly<Record<string, number>>;
+    readonly metadata?: JsonObject | undefined;
+  },
+): DecisionGraphNode {
+  return {
+    id: outcomeNodeId(sessionId, outcome.correlationId),
+    sessionId,
+    kind: "outcome",
+    label: outcome.description,
+    timestamp: outcome.timestamp,
+    metadata: {
+      correlationId: outcome.correlationId,
+      outcome: outcome.outcome,
+      reportedBy: outcome.reportedBy,
+      metrics: outcome.metrics,
+      ...(outcome.metadata !== undefined ? { outcomeMetadata: outcome.metadata } : {}),
+    },
+  };
+}
+
 function edge(
   sessionId: string,
   kind: DecisionGraphEdge["kind"],
@@ -225,4 +272,13 @@ function issueNodeId(sessionId: string, runId: string, index: number): string {
 
 function recommendationNodeId(sessionId: string, runId: string, index: number): string {
   return `recommendation:${encodeURIComponent(sessionId)}:${encodeURIComponent(runId)}:${index}`;
+}
+
+function outcomeNodeId(sessionId: string, correlationId: string): string {
+  return `outcome:${encodeURIComponent(sessionId)}:${encodeURIComponent(correlationId)}`;
+}
+
+function metadataString(metadata: JsonObject | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : undefined;
 }

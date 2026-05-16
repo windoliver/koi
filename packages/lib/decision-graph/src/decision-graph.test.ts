@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { AuditEntry, RichTrajectoryStep } from "@koi/core";
-import { agentId, runId, sessionId } from "@koi/core";
+import { agentId, decisionCorrelationId, runId, sessionId } from "@koi/core";
 import { createInMemoryDecisionGraphStore } from "./in-memory-store.js";
 import { materializeDecisionGraph } from "./materialize.js";
 import type { DecisionGraphLedgerSnapshot } from "./types.js";
 
 function makeStep(index: number, identifier: string): RichTrajectoryStep {
-  return {
+  const step: RichTrajectoryStep = {
     stepIndex: index,
     timestamp: 1_700_000_000_000 + index,
     source: "agent",
@@ -17,6 +17,7 @@ function makeStep(index: number, identifier: string): RichTrajectoryStep {
     request: { text: identifier },
     response: { text: "ok" },
   };
+  return index === 1 ? { ...step, metadata: { decisionCorrelationId: "dcid-1" } } : step;
 }
 
 function makeAudit(toolName: string): AuditEntry {
@@ -37,6 +38,16 @@ function makeSnapshot(session = "session-a"): DecisionGraphLedgerSnapshot {
     sessionId: session,
     trajectorySteps: [makeStep(0, "read_file"), makeStep(1, "apply_patch")],
     auditEntries: [makeAudit("apply_patch")],
+    outcomeReports: [
+      {
+        correlationId: decisionCorrelationId("dcid-1"),
+        outcome: "positive",
+        description: "Customer impact improved",
+        metrics: { conversion_delta: 0.12 },
+        reportedBy: "test",
+        timestamp: 1_700_000_000_020,
+      },
+    ],
     runReport: {
       agentId: agentId("agent-a"),
       sessionId: sessionId(session),
@@ -67,11 +78,24 @@ describe("materializeDecisionGraph", () => {
     expect(graph.nodes.map((node) => node.kind)).toContain("session");
     expect(graph.nodes.map((node) => node.kind)).toContain("trajectory_step");
     expect(graph.nodes.map((node) => node.kind)).toContain("audit_entry");
+    expect(graph.nodes.map((node) => node.kind)).toContain("outcome");
     expect(graph.nodes.map((node) => node.kind)).toContain("run_report");
     expect(graph.nodes.map((node) => node.kind)).toContain("issue");
     expect(graph.nodes.map((node) => node.kind)).toContain("recommendation");
     expect(graph.edges.map((edge) => edge.kind)).toContain("precedes");
     expect(graph.edges.map((edge) => edge.kind)).toContain("corroborates");
+    expect(graph.edges.map((edge) => edge.kind)).toContain("produced");
+    const outcome = graph.nodes.find((node) => node.kind === "outcome");
+    const producer = graph.nodes.find(
+      (node) => node.kind === "trajectory_step" && node.stepIndex === 1,
+    );
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        kind: "produced",
+        from: producer?.id,
+        to: outcome?.id,
+      }),
+    );
   });
 
   test("refuses snapshots with integrity leaks", () => {

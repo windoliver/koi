@@ -85,6 +85,8 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/dashboard-client` (packages/lib/dashboard-client) - Typed HTTP + SSE client SDK for the Koi dashboard API. Tests: 4. Docs: docs/L2/dashboard-client.md.
 - `@koi/dashboard-types` (packages/lib/dashboard-types) - Dashboard contracts: AgentStatus, SessionSummary, MetricPoint, TraceView, REST envelope, WS subscribe protocol. Tests: 1. Docs: docs/L2/dashboard-types.md.
 - `@koi/debug` (packages/lib/debug) - Debug package — step-through agent execution, breakpoints, and state inspection. Tests: 4. Docs: docs/L2/debug.md.
+- `@koi/decision-graph` (packages/lib/decision-graph) - Materialized decision trace graph with in-memory, Nexus VFS, and Nexus RecordStore stores. Tests: 3. Docs: docs/L2/decision-graph.md.
+- `@koi/decision-index` (packages/lib/decision-index) - Search-backed cross-session decision index over structural ledger snapshots and pluggable `SearchBackend` implementations. Tests: 1. Docs: docs/L2/decision-index.md.
 - `@koi/decision-ledger` (packages/lib/decision-ledger) - Per-session decision ledger projection — read-only join over trajectory + audit with run report as a sidecar summary. Tests: 1. Docs: docs/L2/decision-ledger.md.
 - `@koi/edit-match` (packages/lib/edit-match) - Search and replace files using cascading match strategies from exact to fuzzy. Tests: 4. Docs: -.
 - `@koi/errors` (packages/lib/errors) - Provide KoiRuntimeError class, circuit breaker, retry logic, and filesystem error mapping. Tests: 7. Docs: -.
