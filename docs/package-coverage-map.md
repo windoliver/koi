@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 148 | 779 | 129 |
+| lib | 148 | 780 | 129 |
 | meta | 6 | 119 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 11 | 92 | 11 |
@@ -194,7 +194,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/validation` (packages/lib/validation) - Validate brick artifacts, pipelines, fitness scores, and config schemas. Tests: 17. Docs: -.
 - `@koi/variant-selection` (packages/lib/variant-selection) - Selection strategies for degenerate tool/brick variants. L0u utility package.. Tests: 7. Docs: -.
 - `@koi/watch-patterns` (packages/lib/watch-patterns) - Linear-time regex matcher, line buffer, and pending-match store for reactive shell notifications. Tests: 5. Docs: docs/L2/watch-patterns.md.
-- `@koi/workspace` (packages/lib/workspace) - Git worktree WorkspaceBackend and ComponentProvider for agent isolation. Tests: 3. Docs: docs/L2/workspace.md.
+- `@koi/workspace` (packages/lib/workspace) - Git worktree WorkspaceBackend and ComponentProvider for agent isolation. Tests: 4. Docs: docs/L2/workspace.md.
 - `@koi/workspace-conformance` (packages/lib/workspace-conformance) - Shared bun:test conformance suite for WorkspaceBackend implementations. Tests: 1. Docs: docs/L2/workspace-conformance.md.
 - `@koi/workspace-nexus` (packages/lib/workspace-nexus) - Nexus-backed WorkspaceBackend with optional local fallback. Tests: 4. Docs: docs/L2/workspace-nexus.md.
 
