@@ -132,28 +132,45 @@ _with_timeout() {
     "$_TIMEOUT_BIN" -k 10 "$secs" "$@"
     return $?
   fi
+  # Fallback watchdog. Launch under job control (`set -m`) so the command
+  # becomes a process-group leader (pgid == pid); the watchdog then signals
+  # the WHOLE group with `kill -- -PGID`, so descendants (bun, python, any
+  # subprocess setup.sh/the agent spawned) die with it instead of leaking
+  # past the budget into later runs.
+  local _mflag=""
+  case "$-" in *m*) _mflag="on" ;; esac
+  set -m
   "$@" &
   local cmd_pid=$!
+  [ "$_mflag" = "on" ] || set +m
   (
     sleep "$secs"
-    kill -TERM "$cmd_pid" 2>/dev/null
+    kill -TERM "-$cmd_pid" 2>/dev/null
     sleep 10
-    kill -KILL "$cmd_pid" 2>/dev/null
+    kill -KILL "-$cmd_pid" 2>/dev/null
   ) >/dev/null 2>&1 &
   local wd_pid=$!
   local rc=0
   wait "$cmd_pid" 2>/dev/null || rc=$?
-  # Command finished (or was killed): retire the watchdog promptly.
+  # Command finished (or its group was killed): retire the watchdog and
+  # sweep any stragglers in the command's process group.
   kill -TERM "$wd_pid" 2>/dev/null || true
   wait "$wd_pid" 2>/dev/null || true
+  kill -KILL "-$cmd_pid" 2>/dev/null || true
   return "$rc"
 }
 
 # Try setup.sh with workspace arg; some scripts ignore $1 and write to
 # TASK_DIR/workspace. Always also copy environment/data directly as fallback
 # to guarantee seeding. Time-bounded: a hanging setup.sh must not wedge CI.
-_with_timeout "$SETUP_TIMEOUT" env -i "${SAFE_ENV[@]}" \
-  bash "$TASK_DIR/environment/setup.sh" "$WORKSPACE" \
+# Run with cwd = $WORKSPACE so the script's *default* (relative-path) writes
+# land in the task workspace rather than the harness/repo tree. NOTE: this
+# scopes the common case only — a hostile script can still absolute-path or
+# `cd` out. True filesystem confinement (chroot/mount-ns/container) is the
+# same OS-sandbox boundary documented at SAFE_ENV and is out of scope for a
+# shell harness; operators running an untrusted task set should containerize.
+( cd "$WORKSPACE" && _with_timeout "$SETUP_TIMEOUT" env -i "${SAFE_ENV[@]}" \
+  bash "$TASK_DIR/environment/setup.sh" "$WORKSPACE" ) \
   > "$RESULTS_DIR/setup.log" 2>&1 || true
 tail -5 "$RESULTS_DIR/setup.log" >&2 2>/dev/null || true
 if [ -d "$TASK_DIR/environment/data" ]; then
