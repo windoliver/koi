@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 223 workspace packages
+- 224 workspace packages
 - 11 package families
-- 223 packages with local test files
-- 199 packages with dedicated package docs
+- 224 packages with local test files
+- 200 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 145 | 771 | 126 |
+| lib | 146 | 772 | 127 |
 | meta | 6 | 119 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
@@ -47,7 +47,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 7. Docs: -.
 - `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 22. Docs: -.
 
-## lib (145)
+## lib (146)
 
 - `@koi/ace-types` (packages/lib/ace-types) - Shared domain types for ACE (Adaptive Continuous Enhancement) middleware and stores. Tests: 1. Docs: -.
 - `@koi/agent-discovery` (packages/lib/agent-discovery) - Runtime discovery of external coding agents (CLI, filesystem registry, MCP). Tests: 8. Docs: docs/L2/agent-discovery.md.
@@ -164,6 +164,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/scratchpad-nexus` (packages/lib/scratchpad-nexus) - Nexus-backed ScratchpadComponent with optional local fallback. Tests: 4. Docs: docs/L2/scratchpad-nexus.md.
 - `@koi/search-nexus` (packages/lib/search-nexus) - Nexus-backed SearchBackend — Retriever + Indexer via Nexus search RPC. Tests: 3. Docs: docs/L2/search-nexus.md.
 - `@koi/secure-storage` (packages/lib/secure-storage) - OS keychain token storage with file-based locking for concurrent access. Tests: 3. Docs: -.
+- `@koi/sensor-ide` (packages/lib/sensor-ide) - Low-overhead IDE activity sensor for typing, diagnostics, file switching, and flow signals. Tests: 1. Docs: docs/L2/sensor-ide.md.
 - `@koi/session` (packages/lib/session) - Session persistence (SQLite/WAL) and transcript (append-only JSONL) for crash recovery. Tests: 9. Docs: docs/L2/session.md.
 - `@koi/settings` (packages/lib/settings) - Hierarchical settings cascade: user → project → local → flag → policy. Tests: 4. Docs: docs/L2/settings.md.
 - `@koi/shutdown` (packages/lib/shutdown) - Handle graceful shutdown signals and map exit codes for CLI and deploy. Tests: 3. Docs: -.

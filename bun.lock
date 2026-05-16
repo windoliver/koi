@@ -1102,6 +1102,13 @@
       "name": "@koi/secure-storage",
       "version": "0.0.0",
     },
+    "packages/lib/sensor-ide": {
+      "name": "@koi/sensor-ide",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/session": {
       "name": "@koi/session",
       "version": "0.0.0",
@@ -3083,6 +3090,8 @@
     "@koi/search-nexus": ["@koi/search-nexus@workspace:packages/lib/search-nexus"],
 
     "@koi/secure-storage": ["@koi/secure-storage@workspace:packages/lib/secure-storage"],
+
+    "@koi/sensor-ide": ["@koi/sensor-ide@workspace:packages/lib/sensor-ide"],
 
     "@koi/session": ["@koi/session@workspace:packages/lib/session"],
 
