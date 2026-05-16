@@ -21,6 +21,8 @@ export function validateFederationConfig(
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_FEDERATION_CONFIG.pollIntervalMs;
   const offlineAfterFailures =
     config.offlineAfterFailures ?? DEFAULT_FEDERATION_CONFIG.offlineAfterFailures;
+  const conflictResolution =
+    config.conflictResolution ?? DEFAULT_FEDERATION_CONFIG.conflictResolution;
 
   if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
     return {
@@ -34,6 +36,16 @@ export function validateFederationConfig(
       error: validation("offlineAfterFailures must be a positive integer"),
     };
   }
+  if (
+    conflictResolution !== "lww" &&
+    conflictResolution !== "merge" &&
+    conflictResolution !== "manual"
+  ) {
+    return {
+      ok: false,
+      error: validation("conflictResolution must be one of: lww, merge, manual"),
+    };
+  }
 
   return {
     ok: true,
@@ -42,6 +54,7 @@ export function validateFederationConfig(
       remoteZones: config.remoteZones ?? [],
       pollIntervalMs,
       offlineAfterFailures,
+      conflictResolution,
     },
   };
 }

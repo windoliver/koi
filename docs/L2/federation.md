@@ -5,10 +5,10 @@ discover each other, delegate tasks cross-zone, and sync state. Edge deployments
 sync back to cloud when connected via event-sourced replication keyed on a
 monotonic per-zone sequence number.
 
-> **Phase 3 baseline (this doc):** zone registry, fixed-poll sync engine,
-> sequence-cursor deduplication, and cross-zone tool routing. Vector clocks,
-> LWW conflict resolution, adaptive polling, snapshot truncation, and clock
-> pruning are **deferred to #1410 (Phase 4e)**.
+> **Current contract:** zone registry, fixed-poll sync engine, sequence-cursor
+> deduplication, optional vector-clock metadata, concurrent shared-resource
+> conflict reports (`lww`, `merge`, `manual`), and cross-zone tool routing.
+> Adaptive polling and durable snapshot/truncation policy remain future work.
 
 ---
 
@@ -52,16 +52,22 @@ L2  @koi/forge               ─ consumer (zone scope enforcement)
 ```
 index.ts                  ← public re-exports
 │
-├── types.ts              ← SyncCursor, FederationSyncEvent,
-│                            FederationConfig, DEFAULT_FEDERATION_CONFIG
+├── types.ts              ← SyncCursor, FederationSyncEvent, VectorClock,
+│                            ConflictReport, FederationConfig,
+│                            DEFAULT_FEDERATION_CONFIG
 │
 ├── config.ts             ← validateFederationConfig()
 │
 ├── sync-protocol.ts      ← SyncClient interface, createNexusSyncClient(),
-│                            advanceCursor(), deduplicateEvents()
+│                            advanceCursor(), deduplicateEvents(),
+│                            vector-clock cursor merge
 │
 ├── sync-engine.ts        ← createSyncEngine() — fixed-interval polling,
-│                            health monitor, graceful disconnect
+│                            conflict reports, health monitor,
+│                            graceful disconnect
+│
+├── vector-clock.ts       ← increment/merge/compare/prune clocks,
+│                            detect and resolve event conflicts
 │
 ├── zone-registry-nexus.ts ← createZoneRegistryNexus() — Nexus-backed
 │                             ZoneRegistry with in-memory projection
@@ -147,8 +153,29 @@ event { seq: 3 }               ← deduplicateEvents (seq > lastSequence)
                                 ← notifyHandlers
 ```
 
-Each remote-zone cursor tracks a **monotonic `lastSequence`**; sync polls at a
-**fixed interval** (`pollIntervalMs`).
+Each remote-zone cursor tracks a **monotonic `lastSequence`** and may also carry
+a merged **`vectorClock`**. Sequence numbers remain the delivery and
+deduplication authority. Vector clocks describe causal ordering across zones and
+are merged into the cursor as accepted events arrive. Sync polls at a **fixed
+interval** (`pollIntervalMs`).
+
+### Concurrent conflict reporting
+
+Events may include `vectorClock` metadata. When two events from different zones
+declare the same shared resource (`data.resourceKey`) and their vector clocks are
+concurrent, the sync engine records a `ConflictReport` and invokes any
+`onConflict` subscribers. The `conflictResolution` strategy controls the local
+resolution result:
+
+| Strategy | Behavior |
+|----------|----------|
+| `lww` | Default. Pick the later `timestamp`; tie-break by `originZoneId`. |
+| `merge` | Shallow-merge `data` and merge both vector clocks. |
+| `manual` | Report the conflict without choosing a winner. |
+
+`getConflictReports()` returns a snapshot of observed reports for UI surfaces
+and diagnostics. Conflict handler errors are swallowed so advisory reporting
+cannot break sync progress.
 
 ### Health monitor
 
@@ -159,16 +186,15 @@ sends a `federation.zone_disconnect` notification (best-effort, errors swallowed
 so the Nexus hub can mark the zone `draining` immediately rather than waiting
 for the heartbeat timeout.
 
-### Deferred to #1410 (Phase 4e)
+### Deferred follow-ups
 
-The following sub-systems are **out of scope** for this Phase 3 baseline:
+The following sub-systems are still outside the current package contract:
 
-- **Vector clocks** — replaced by monotonic `SyncCursor.lastSequence`.
-- **LWW conflict resolution** — Phase 3 events are append-only; conflicts are
-  not yet observable.
 - **Adaptive polling** — fixed `pollIntervalMs` only.
-- **Snapshot + truncation** — event log retained in full for the session.
-- **Vector-clock pruning** — N/A without vector clocks.
+- **Durable snapshot + truncation policy** — event log retention remains an
+  in-process engine concern.
+- **Automated vector-clock retention policy** — `pruneVectorClock` is available
+  as a helper, but the sync engine does not yet run a durable pruning policy.
 
 ---
 
@@ -256,6 +282,7 @@ const engine = createSyncEngine({
   ]),
   pollIntervalMs: 5000,
   offlineAfterFailures: 3,
+  conflictResolution: "lww",
 });
 
 // Manual sync
@@ -304,14 +331,15 @@ const mw = createFederationMiddleware({
 
 ## Sync cursor
 
-Phase 3 uses a **monotonic per-zone sequence cursor**. Vector-clock based causal
-ordering is deferred to #1410.
+Federation sync uses a **monotonic per-zone sequence cursor** with optional
+vector-clock causal metadata.
 
 ```typescript
 interface SyncCursor {
   readonly zoneId: ZoneId;
   readonly lastSequence: number;
   readonly lastSyncAt: number;
+  readonly vectorClock?: VectorClock;
 }
 ```
 
@@ -319,7 +347,9 @@ interface SyncCursor {
 highest **contiguous** prefix starting at `cursor.lastSequence + 1`. Gaps
 or out-of-order batches are a protocol fault — the cursor stays put and
 the engine counts a failure. `deduplicateEvents(events, cursor)` keeps
-only events with `sequence > cursor.lastSequence`.
+only events with `sequence > cursor.lastSequence`. When accepted events contain
+`vectorClock`, `advanceCursor` merges those components into the returned cursor.
+Vector-clock components must be non-negative integers.
 
 This is **federation wire-protocol v1** (`FEDERATION_PROTOCOL_VERSION = 1`),
 established by this Phase 3 baseline. All RPC calls
@@ -343,6 +373,7 @@ const result = validateFederationConfig({
   // All optional — defaults applied:
   pollIntervalMs: 5000,           // default: 5000
   offlineAfterFailures: 3,        // default: 3
+  conflictResolution: "lww",      // default: "lww"
 });
 
 if (!result.ok) {
@@ -383,7 +414,7 @@ isVisibleToAgent(brick, "agent-1", "us-east-1");
 | Scenario | Behavior |
 |----------|----------|
 | Partition recovery | Zone catches up on all missed events after reconnect |
-| Concurrent writes | Phase 3 baseline: append-only; LWW deferred to #1410 |
+| Concurrent writes | Same-resource concurrent vector clocks emit `ConflictReport`; `lww` is default |
 | Duplicate delivery | `deduplicateEvents` filters by `sequence > cursor.lastSequence` |
 | Out-of-order events | Only events with `sequence > cursor.lastSequence` processed |
 | Zone joins mid-sync | New zone starts from sequence 0, catches up fully |
@@ -399,7 +430,7 @@ isVisibleToAgent(brick, "agent-1", "us-east-1");
 | Function | Returns | Description |
 |----------|---------|-------------|
 | `createZoneRegistryNexus(config)` | `ZoneRegistry` | Nexus-backed zone registry |
-| `createSyncEngine(config)` | `SyncEngineHandle` | Adaptive polling sync engine |
+| `createSyncEngine(config)` | `SyncEngineHandle` | Fixed-interval sync engine with conflict reporting |
 | `createNexusSyncClient(config)` | `SyncClient` | Nexus-backed sync client |
 | `createFederationMiddleware(config)` | `KoiMiddleware` | Cross-zone tool call routing |
 | `validateFederationConfig(config)` | `Result<FederationConfig>` | Config validation with defaults |
@@ -410,10 +441,13 @@ isVisibleToAgent(brick, "agent-1", "us-east-1");
 |----------|-------------|
 | `advanceCursor(cursor, events)` | Advance cursor through highest contiguous prefix (gaps stop progression) |
 | `deduplicateEvents(events, cursor)` | Filter already-seen events (seq > lastSequence) |
-
-> Vector-clock helpers (`incrementClock`, `mergeClock`, `compareClock`,
-> `isAfterCursor`, `pruneClock`) and `resolveConflict` are **deferred to #1410
-> (Phase 4e)**.
+| `incrementVectorClock(clock, zoneId)` | Return a clock with the zone component incremented |
+| `mergeVectorClock(left, right)` | Return the component-wise maximum clock |
+| `compareVectorClock(left, right)` | Classify clocks as before, after, equal, or concurrent |
+| `pruneVectorClock(clock, activeZones)` | Drop components for zones no longer active |
+| `getConflictResourceKey(event)` | Extract the shared conflict key from event data |
+| `detectEventConflict(left, right)` | Detect same-resource concurrent event writes |
+| `resolveEventConflict(report, strategy)` | Produce `lww`, `merge`, or `manual` conflict results |
 
 ### Exported constants
 

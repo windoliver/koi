@@ -1,13 +1,12 @@
 /**
- * Sync engine — fixed-interval sequence-cursor federation sync (Phase 3 baseline).
+ * Sync engine — fixed-interval sequence-cursor federation sync.
  *
  * Polls each remote SyncClient on a fixed interval. Tracks consecutive failures
  * per remote and marks zones offline locally after `offlineAfterFailures`
  * threshold. On dispose, sends a best-effort `federation.zone_disconnect`
  * notification to the local-zone-bound transport (if provided).
  *
- * Adaptive polling, snapshot truncation, vector clocks, and clock pruning are
- * deferred to #1410 (Phase 4e).
+ * Tracks vector-clock metadata and reports concurrent shared-resource writes.
  */
 
 import type { ZoneId, ZoneStatus } from "@koi/core";
@@ -15,8 +14,18 @@ import { zoneId } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import type { SyncClient } from "./sync-protocol.js";
 import { advanceCursor, deduplicateEvents, isFederationSyncEvent } from "./sync-protocol.js";
-import type { FederationSyncEvent, SyncCursor } from "./types.js";
+import type {
+  ConflictResolutionStrategy,
+  FederationSyncEvent,
+  ReportedConflict,
+  SyncCursor,
+} from "./types.js";
 import { FEDERATION_PROTOCOL_VERSION } from "./types.js";
+import {
+  detectEventConflict,
+  getConflictResourceKey,
+  resolveEventConflict,
+} from "./vector-clock.js";
 
 // ---------------------------------------------------------------------------
 // Sync engine config
@@ -85,6 +94,11 @@ export interface SyncEngineConfig {
    */
   readonly eventLogMaxPerZone?: number;
   /**
+   * Strategy used when vector clocks reveal concurrent writes to the
+   * same declared shared resource. Defaults to last-writer-wins.
+   */
+  readonly conflictResolution?: ConflictResolutionStrategy;
+  /**
    * Optional transport bound to the federation hub. Used on dispose() to send
    * `federation.zone_disconnect` so the hub can mark this local zone draining
    * immediately rather than waiting for the heartbeat timeout.
@@ -126,6 +140,10 @@ export interface SyncEngineHandle extends AsyncDisposable {
   readonly getHealth: (remoteZoneId: string) => RemoteHealth | undefined;
   /** Subscribe to incoming sync events. Returns unsubscribe function. */
   readonly onEvent: (handler: (event: FederationSyncEvent) => void) => () => void;
+  /** Subscribe to conflict reports. Returns unsubscribe function. */
+  readonly onConflict: (handler: (report: ReportedConflict) => void) => () => void;
+  /** Get conflict reports observed by this engine. */
+  readonly getConflictReports: () => readonly ReportedConflict[];
   /**
    * Operator-visible recovery for a wedged remote: clears any
    * outstanding fetch slot for the zone so the next sync cycle can
@@ -154,6 +172,7 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
   const fetchTimeoutMs = config.fetchTimeoutMs ?? 30_000;
   const eventLogMaxPerZone = config.eventLogMaxPerZone ?? 10_000;
   const outstandingFetchMaxAgeMs = config.outstandingFetchMaxAgeMs ?? fetchTimeoutMs * 5;
+  const conflictResolution = config.conflictResolution ?? "lww";
 
   // Validate the new tunables — silent misconfiguration here can
   // recreate the overlap/stall hazards the timeout machinery is
@@ -193,10 +212,16 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       `createSyncEngine: offlineAfterFailures must be a positive integer (got ${offlineAfterFailures})`,
     );
   }
+  if (!isConflictResolutionStrategy(conflictResolution)) {
+    throw new Error(
+      `createSyncEngine: conflictResolution must be one of lww, merge, manual (got ${String(conflictResolution)})`,
+    );
+  }
 
   // Per-zone state
   const cursors = new Map<string, SyncCursor>();
   const eventLogs = new Map<string, readonly FederationSyncEvent[]>();
+  const conflictReports: ReportedConflict[] = [];
   const truncatedCounts = new Map<string, number>();
   const failures = new Map<string, number>();
   const statuses = new Map<string, ZoneStatus>();
@@ -245,6 +270,11 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
           `createSyncEngine: initialCursors["${remoteId}"].lastSyncAt must be a finite non-negative number (got ${seed.lastSyncAt})`,
         );
       }
+      if (seed.vectorClock !== undefined && !isValidVectorClock(seed.vectorClock)) {
+        throw new Error(
+          `createSyncEngine: initialCursors["${remoteId}"].vectorClock must contain only non-negative integer components`,
+        );
+      }
     }
   }
 
@@ -268,6 +298,8 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
 
   // let: reassigned on subscribe/unsubscribe (immutable swap pattern)
   let handlers: ReadonlySet<(event: FederationSyncEvent) => void> = new Set();
+  // let: reassigned on subscribe/unsubscribe (immutable swap pattern)
+  let conflictHandlers: ReadonlySet<(report: ReportedConflict) => void> = new Set();
 
   /**
    * Deliver an event to every subscribed handler. Returns `true` only
@@ -289,6 +321,41 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       }
     }
     return allOk;
+  }
+
+  function notifyConflictHandlers(report: ReportedConflict): void {
+    for (const handler of conflictHandlers) {
+      try {
+        handler(report);
+      } catch (_: unknown) {
+        // Conflict reporting is advisory for UI/telemetry; event delivery
+        // and cursor advancement must not depend on a view callback.
+      }
+    }
+  }
+
+  function reportConflicts(events: readonly FederationSyncEvent[]): void {
+    const existingEvents = [...eventLogs.values()].flat();
+    for (const remote of events) {
+      for (const local of existingEvents) {
+        if (!detectEventConflict(local, remote)) continue;
+        const resolution = resolveEventConflict(local, remote, conflictResolution);
+        const resourceKey =
+          resolution.kind === "manual"
+            ? resolution.report.resourceKey
+            : (getConflictResourceKey(local) ?? getConflictResourceKey(remote) ?? "");
+        const report: ReportedConflict = {
+          resourceKey,
+          order: "concurrent",
+          local,
+          remote,
+          strategy: conflictResolution,
+          resolution,
+        };
+        conflictReports.push(report);
+        notifyConflictHandlers(report);
+      }
+    }
   }
 
   // let: reassigned on each poll cycle, cleared on dispose
@@ -538,6 +605,7 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       }
       return;
     }
+    reportConflicts(accepted);
     const log = eventLogs.get(remoteId) ?? [];
     const merged = [...log, ...accepted];
     // Optional ring-buffer cap. Default is unbounded — opt in by setting
@@ -603,6 +671,8 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
 
     getTruncatedCount: (remoteZoneId) => truncatedCounts.get(remoteZoneId) ?? 0,
 
+    getConflictReports: () => [...conflictReports],
+
     getHealth: (remoteZoneId) => {
       const cursor = cursors.get(remoteZoneId);
       const status = statuses.get(remoteZoneId);
@@ -620,6 +690,15 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
         const next = new Set(handlers);
         next.delete(handler);
         handlers = next;
+      };
+    },
+
+    onConflict: (handler) => {
+      conflictHandlers = new Set([...conflictHandlers, handler]);
+      return () => {
+        const next = new Set(conflictHandlers);
+        next.delete(handler);
+        conflictHandlers = next;
       };
     },
 
@@ -644,8 +723,10 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
         timerId = undefined;
       }
       handlers = new Set();
+      conflictHandlers = new Set();
       cursors.clear();
       eventLogs.clear();
+      conflictReports.length = 0;
       failures.clear();
       statuses.clear();
 
@@ -718,7 +799,8 @@ function sameEvent(a: FederationSyncEvent, b: FederationSyncEvent): boolean {
     a.kind !== b.kind ||
     a.originZoneId !== b.originZoneId ||
     a.sequence !== b.sequence ||
-    a.emittedAt !== b.emittedAt
+    a.emittedAt !== b.emittedAt ||
+    stableStringify(a.vectorClock ?? {}) !== stableStringify(b.vectorClock ?? {})
   ) {
     return false;
   }
@@ -735,4 +817,15 @@ function stableStringify(value: unknown): string {
     a < b ? -1 : a > b ? 1 : 0,
   );
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
+}
+
+function isConflictResolutionStrategy(value: unknown): value is ConflictResolutionStrategy {
+  return value === "lww" || value === "merge" || value === "manual";
+}
+
+function isValidVectorClock(value: unknown): value is Readonly<Record<string, number>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.values(value).every(
+    (component) => Number.isInteger(component) && Number.isFinite(component) && component >= 0,
+  );
 }
