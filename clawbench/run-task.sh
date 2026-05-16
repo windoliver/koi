@@ -14,30 +14,44 @@ MANIFEST="$REPO_ROOT/clawbench/koi.yaml"
 rm -rf "$RESULTS_DIR"
 mkdir -p "$WORKSPACE"
 
+# Ephemeral, per-run HOME for untrusted children (setup.sh / koi / verifier).
+# Wiped with RESULTS_DIR every run, so they get a fresh scratch home instead
+# of the operator's real ~ (no host dotfile/credential read or persistence).
+SANDBOX_HOME="$RESULTS_DIR/.sandbox-home"
+mkdir -p "$SANDBOX_HOME"
+
 # --- Credential isolation ---------------------------------------------------
 # Untrusted task code runs in this process tree: environment/setup.sh and the
 # agent's own Bash tool execute arbitrary shell. We therefore NEVER source
-# .env into this shell. Instead we read ONLY the single model key koi needs,
-# inside a subshell, and inject it (plus an explicit allowlist) into just the
-# koi invocation via `env -i`. setup.sh receives no credentials at all.
-_read_model_key() {
-  (
-    set -a
-    # shellcheck disable=SC1091
-    . "$REPO_ROOT/.env" 2>/dev/null || true
-    set +a
-    if [ -n "${OPENROUTER_API_KEY:-}" ]; then
-      printf 'OPENROUTER_API_KEY=%s' "$OPENROUTER_API_KEY"
-    elif [ -n "${OPENAI_API_KEY:-}" ]; then
-      printf 'OPENAI_API_KEY=%s' "$OPENAI_API_KEY"
-    fi
-  )
+# .env into this shell — sourcing executes arbitrary code. Instead we parse
+# .env with a strict KEY=VALUE reader, extract ONLY the single model key koi
+# needs, and inject it (plus an explicit allowlist) into just the koi
+# invocation via `env -i`. setup.sh receives no credentials at all.
+_read_env_key() {
+  # Strict reader: never sources/executes .env. Last assignment wins;
+  # tolerates an optional `export ` prefix and one layer of matching quotes.
+  local key="$1" file="$REPO_ROOT/.env" line val
+  [ -f "$file" ] || return 0
+  line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file" 2>/dev/null | tail -1 || true)
+  [ -n "$line" ] || return 0
+  val=${line#*=}
+  case "$val" in
+    \"*\") val=${val#\"}; val=${val%\"} ;;
+    \'*\') val=${val#\'}; val=${val%\'} ;;
+  esac
+  printf '%s' "$val"
 }
-MODEL_KEY_KV="$(_read_model_key)"
-if [ -z "$MODEL_KEY_KV" ]; then
+MODEL_KEY_NAME="OPENROUTER_API_KEY"
+MODEL_KEY_VAL="$(_read_env_key OPENROUTER_API_KEY)"
+if [ -z "$MODEL_KEY_VAL" ]; then
+  MODEL_KEY_NAME="OPENAI_API_KEY"
+  MODEL_KEY_VAL="$(_read_env_key OPENAI_API_KEY)"
+fi
+if [ -z "$MODEL_KEY_VAL" ]; then
   echo "FATAL: no OPENROUTER_API_KEY or OPENAI_API_KEY in $REPO_ROOT/.env" >&2
   exit 1
 fi
+MODEL_KEY_KV="$MODEL_KEY_NAME=$MODEL_KEY_VAL"
 
 # Prevent agent-invoked python from creating __pycache__/.pyc (verifiers flag
 # these). Non-secret; also benefits the in-shell verifier pytest below.
@@ -62,10 +76,18 @@ fi
 # Minimal allowlisted environment for every untrusted child (setup.sh + koi).
 # `env -i` wipes the inherited environment; we re-add only non-sensitive
 # runtime essentials. No secrets here — the model key is added to the koi
-# invocation ONLY, never to setup.sh.
+# invocation ONLY, never to setup.sh. HOME is the ephemeral per-run sandbox
+# dir, not the operator's real home.
+#
+# PATH is the host PATH by necessity: this is an agent benchmark whose whole
+# purpose is running real dev tooling (python, node, git, …) and koi itself
+# resolves `bun` from PATH. Confining the filesystem/command surface beyond
+# this (chroot, command allowlist, uid separation) requires OS-level
+# sandboxing (container/sandbox-exec) and is out of scope for a shell
+# harness — operators running an untrusted task set should containerize.
 SAFE_ENV=(
   "PATH=$PATH"
-  "HOME=$HOME"
+  "HOME=$SANDBOX_HOME"
   "TMPDIR=${TMPDIR:-/tmp}"
   "LANG=${LANG:-C}"
   "TERM=${TERM:-xterm}"

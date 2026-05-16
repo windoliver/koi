@@ -16,16 +16,23 @@ QUICK_IDS=(
 mkdir -p "$REPO_ROOT/clawbench/results"
 : > "$SUMMARY"
 
+failures=0
 for id in "${QUICK_IDS[@]}"; do
   # Find task dir: tasks/*/{id}-*
   task_dir=$(find "$TASKS_ROOT" -mindepth 2 -maxdepth 2 -type d -name "${id}-*" | head -1)
   if [ -z "$task_dir" ]; then
     echo "SKIP $id (not found)" | tee -a "$SUMMARY"
+    failures=$((failures + 1))
     continue
   fi
 
   echo ">>> $id ($task_dir)" >&2
-  "$REPO_ROOT/clawbench/run-task.sh" "$task_dir" > /dev/null 2>&1 || true
+  # run-task.sh's exit status is authoritative (verifier pytest rc).
+  if "$REPO_ROOT/clawbench/run-task.sh" "$task_dir" > /dev/null 2>&1; then
+    task_rc=0
+  else
+    task_rc=$?
+  fi
 
   log="$REPO_ROOT/clawbench/results/$(basename "$task_dir")/verifier.log"
   if [ -f "$log" ]; then
@@ -35,7 +42,18 @@ for id in "${QUICK_IDS[@]}"; do
   else
     echo "$id  NO_VERIFIER_LOG" | tee -a "$SUMMARY"
   fi
+
+  if [ "$task_rc" -ne 0 ] || [ ! -f "$log" ]; then
+    failures=$((failures + 1))
+  fi
 done
 
 echo "===" | tee -a "$SUMMARY"
 echo "Summary written to $SUMMARY" >&2
+
+# Make the aggregate outcome the authoritative exit status so automation
+# consuming this script's exit code cannot get a false green.
+if [ "$failures" -gt 0 ]; then
+  echo "run-quick.sh: $failures task(s) failed/skipped" >&2
+  exit 1
+fi
