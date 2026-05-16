@@ -104,9 +104,47 @@ VERIFY_ENV=(
   "CLAW_WORKSPACE=$WORKSPACE"
 )
 
-# Try setup.sh with workspace arg; some scripts ignore $1 and write to TASK_DIR/workspace.
-# Always also copy environment/data directly as fallback to guarantee seeding.
-env -i "${SAFE_ENV[@]}" bash "$TASK_DIR/environment/setup.sh" "$WORKSPACE" 2>&1 | tail -5 >&2 || true
+# Hard time bounds for untrusted steps. setup.sh and the verifier are task-
+# provided; a malicious/buggy task could hang forever (infinite loop, hung
+# network) and stall run-domain.sh/run-all-remaining.sh indefinitely.
+SETUP_TIMEOUT="${CLAWBENCH_SETUP_TIMEOUT:-120}"
+VERIFY_TIMEOUT="${CLAWBENCH_VERIFY_TIMEOUT:-240}"
+# Outer backstop above koi's own --max-duration-ms (300s) in case the engine
+# overruns its internal budget.
+KOI_TIMEOUT="${CLAWBENCH_KOI_TIMEOUT:-420}"
+
+if command -v timeout >/dev/null 2>&1; then
+  _TIMEOUT_BIN="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  _TIMEOUT_BIN="gtimeout"
+else
+  _TIMEOUT_BIN=""
+fi
+_with_timeout() {
+  # $1 = seconds; rest = command (NOT a pipeline). Uses coreutils
+  # timeout/gtimeout when available (exit 124 on timeout, SIGKILL 10s after
+  # SIGTERM); otherwise runs unbounded with a one-time warning so the harness
+  # still works on a bare macOS host. Operators running an untrusted task set
+  # should install coreutils or containerize for guaranteed bounds.
+  local secs="$1"; shift
+  if [ -n "$_TIMEOUT_BIN" ]; then
+    "$_TIMEOUT_BIN" -k 10 "$secs" "$@"
+  else
+    if [ -z "${_TIMEOUT_WARNED:-}" ]; then
+      echo "WARN: no timeout/gtimeout on PATH — untrusted steps run UNBOUNDED" >&2
+      _TIMEOUT_WARNED=1
+    fi
+    "$@"
+  fi
+}
+
+# Try setup.sh with workspace arg; some scripts ignore $1 and write to
+# TASK_DIR/workspace. Always also copy environment/data directly as fallback
+# to guarantee seeding. Time-bounded: a hanging setup.sh must not wedge CI.
+_with_timeout "$SETUP_TIMEOUT" env -i "${SAFE_ENV[@]}" \
+  bash "$TASK_DIR/environment/setup.sh" "$WORKSPACE" \
+  > "$RESULTS_DIR/setup.log" 2>&1 || true
+tail -5 "$RESULTS_DIR/setup.log" >&2 2>/dev/null || true
 if [ -d "$TASK_DIR/environment/data" ]; then
   cp -r "$TASK_DIR/environment/data/." "$WORKSPACE/" 2>/dev/null || true
 fi
@@ -166,7 +204,7 @@ cap_idx=0
 for iter in $(seq 1 $MAX_ITER); do
   iter_cap="${TOKEN_LADDER[$cap_idx]}"
   echo "--- iter $iter (max_tokens=$iter_cap) ---" >&2
-  env -i "${SAFE_ENV[@]}" \
+  _with_timeout "$KOI_TIMEOUT" env -i "${SAFE_ENV[@]}" \
     "$EXFIL_ACTION_KV" "$EXFIL_DOWNGRADE_KV" \
     "KOI_MAX_TOKENS=$iter_cap" \
     "$MODEL_KEY_KV" \
@@ -209,7 +247,7 @@ for iter in $(seq 1 $MAX_ITER); do
   # the workspace in module-level code before pytest parses --workspace.
   cd "$REPO_ROOT"
   set +e
-  fails=$(env -i "${VERIFY_ENV[@]}" \
+  fails=$(_with_timeout "$VERIFY_TIMEOUT" env -i "${VERIFY_ENV[@]}" \
     "$REPO_ROOT/.venv-clawbench/bin/python" -m pytest \
     --rootdir=/tmp/claw-bench-src/tasks \
     --workspace="$WORKSPACE" \
@@ -257,7 +295,7 @@ cd "$REPO_ROOT"
 # inherit operator/CI secrets. The venv python is invoked by absolute path
 # (no `source activate` needed — the interpreter resolves its own site).
 set +e
-env -i "${VERIFY_ENV[@]}" \
+_with_timeout "$VERIFY_TIMEOUT" env -i "${VERIFY_ENV[@]}" \
   "$REPO_ROOT/.venv-clawbench/bin/python" -m pytest \
   --rootdir=/tmp/claw-bench-src/tasks \
   --workspace="$WORKSPACE" \
