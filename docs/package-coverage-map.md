@@ -4,9 +4,9 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 226 workspace packages
+- 227 workspace packages
 - 11 package families
-- 226 packages with local test files
+- 227 packages with local test files
 - 202 packages with dedicated package docs
 
 ## Family Summary
@@ -19,7 +19,7 @@ Current snapshot:
 | lib | 148 | 779 | 129 |
 | meta | 6 | 119 | 5 |
 | mm | 12 | 54 | 12 |
-| net | 10 | 91 | 10 |
+| net | 11 | 92 | 10 |
 | sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
 | security | 22 | 122 | 22 |
@@ -222,8 +222,9 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/session-repair` (packages/mm/session-repair) - Validate and repair message history through orphan repair, dedup, and merge phases. Tests: 3. Docs: docs/L2/session-repair.md.
 - `@koi/token-estimator` (packages/mm/token-estimator) - Estimate tokens using configurable heuristics (default: 4 chars per token). Tests: 2. Docs: docs/L2/token-estimator.md.
 
-## net (10)
+## net (11)
 
+- `@koi/community-registry` (packages/net/community-registry) - Standalone marketplace HTTP registry for publishing, discovering, searching, and installing Koi skills and plugins. Tests: 1. Docs: -.
 - `@koi/daemon` (packages/net/daemon) - OS-process supervisor and worker backends (subprocess) for long-running agent workers. Tests: 15. Docs: docs/L2/daemon.md.
 - `@koi/gateway` (packages/net/gateway) - WebSocket gateway core — routing, auth, sequencing, backpressure (v2 minimal, no node registry or tool routing). Tests: 9. Docs: docs/L2/gateway.md.
 - `@koi/gateway-canvas` (packages/net/gateway-canvas) - Canvas HTTP server: surface CRUD with ETag CAS and SSE streaming for real-time agent-rendered content. Tests: 3. Docs: docs/L2/gateway-canvas.md.
