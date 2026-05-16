@@ -94,6 +94,8 @@ interface ResolvedConfig {
   readonly frustrationThreshold: number;
 }
 
+type IdeActivitySubscriber = (event: IdeActivityEvent) => void;
+
 const DEFAULT_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_EVENTS = 512;
 const DEFAULT_FLOW_WINDOW_MS = 2 * 60 * 1000;
@@ -255,22 +257,24 @@ function recentEvents(events: readonly IdeActivityEvent[]): readonly IdeActivity
   }));
 }
 
-export function createIdeActivitySensor(config: IdeActivitySensorConfig = {}): IdeActivitySensor {
-  const cfg = resolveConfig(config);
-  const events: IdeActivityEvent[] = [];
-  const subscribers = new Set<(event: IdeActivityEvent) => void>();
-
-  function emit(event: IdeActivityEvent): void {
-    for (const subscriber of subscribers) {
-      try {
-        subscriber({ ...event } as IdeActivityEvent);
-      } catch {
-        // Consumer failures must not interrupt IDE event ingestion.
-      }
+function notifySubscribers(
+  subscribers: ReadonlySet<IdeActivitySubscriber>,
+  event: IdeActivityEvent,
+): void {
+  for (const subscriber of subscribers) {
+    try {
+      subscriber({ ...event } as IdeActivityEvent);
+    } catch {
+      // Consumer failures must not interrupt IDE event ingestion.
     }
   }
+}
 
-  function snapshot(): IdeActivitySnapshot {
+function createSnapshotReader(
+  events: IdeActivityEvent[],
+  cfg: ResolvedConfig,
+): () => IdeActivitySnapshot {
+  return () => {
     const now = cfg.now();
     prune(events, cfg, now);
     const visible = visibleEvents(events, now);
@@ -307,7 +311,14 @@ export function createIdeActivitySensor(config: IdeActivitySensorConfig = {}): I
       sampledAt: now,
       windowMs: cfg.windowMs,
     };
-  }
+  };
+}
+
+export function createIdeActivitySensor(config: IdeActivitySensorConfig = {}): IdeActivitySensor {
+  const cfg = resolveConfig(config);
+  const events: IdeActivityEvent[] = [];
+  const subscribers = new Set<IdeActivitySubscriber>();
+  const snapshot = createSnapshotReader(events, cfg);
 
   return {
     name: cfg.name,
@@ -317,7 +328,7 @@ export function createIdeActivitySensor(config: IdeActivitySensorConfig = {}): I
       events.push(retained);
       events.sort((a, b) => a.timestamp - b.timestamp);
       prune(events, cfg, cfg.now());
-      emit(retained);
+      notifySubscribers(subscribers, retained);
     },
     subscribe(handler) {
       subscribers.add(handler);
