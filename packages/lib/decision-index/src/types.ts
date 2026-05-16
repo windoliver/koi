@@ -33,6 +33,7 @@ export interface DecisionIndexDocumentData {
   readonly title: string;
   readonly timestamp?: number | undefined;
   readonly stepIndex?: number | undefined;
+  readonly decisionCorrelationId?: string | undefined;
   readonly auditKind?: AuditEntry["kind"] | undefined;
   readonly reportSection?: "summary" | "issue" | "recommendation" | undefined;
   readonly indexedDocumentIds?: readonly string[] | undefined;
@@ -70,6 +71,7 @@ export interface DecisionIndexHit {
   readonly title: string;
   readonly timestamp?: number | undefined;
   readonly stepIndex?: number | undefined;
+  readonly decisionCorrelationId?: string | undefined;
   readonly auditKind?: AuditEntry["kind"] | undefined;
   readonly reportSection?: "summary" | "issue" | "recommendation" | undefined;
   readonly metadata: Readonly<Record<string, unknown>>;

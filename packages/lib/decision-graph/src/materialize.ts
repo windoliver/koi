@@ -41,11 +41,12 @@ export function materializeDecisionGraph(snapshot: DecisionGraphLedgerSnapshot):
     const node = auditNode(snapshot.sessionId, entry, index);
     nodes.push(node);
     edges.push(edge(snapshot.sessionId, "contains", sessionNodeId(snapshot.sessionId), node.id));
-    const matchingStep = sortedSteps.find(
-      (step) =>
-        step.timestamp <= entry.timestamp &&
-        (entry.toolName === undefined || step.identifier === entry.toolName),
-    );
+    const matchingStep =
+      entry.toolName !== undefined
+        ? sortedSteps.findLast(
+            (step) => step.timestamp <= entry.timestamp && step.identifier === entry.toolName,
+          )
+        : undefined;
     if (matchingStep !== undefined) {
       edges.push(
         edge(

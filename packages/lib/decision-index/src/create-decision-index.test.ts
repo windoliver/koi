@@ -112,6 +112,17 @@ function makeStep(index: number, text: string): RichTrajectoryStep {
   };
 }
 
+function makeCorrelatedStep(
+  index: number,
+  text: string,
+  correlationId: string,
+): RichTrajectoryStep {
+  return {
+    ...makeStep(index, text),
+    metadata: { decisionCorrelationId: correlationId },
+  };
+}
+
 function makeAudit(session: string, text: string): AuditEntry {
   return {
     schema_version: 1,
@@ -221,6 +232,80 @@ describe("createDecisionIndex", () => {
     if (!result.ok) return;
     expect(result.value.results.length).toBeGreaterThan(0);
     expect(result.value.results.every((hit) => hit.sessionId === "session-b")).toBe(true);
+  });
+
+  test("indexes decisionCorrelationId from trajectory metadata for outcome-linked search", async () => {
+    const backend = createInMemoryBackend();
+    const index = createDecisionIndex({ backend });
+    await index.indexSession({
+      ...makeSnapshot("session-a", "approve deploy"),
+      trajectorySteps: [makeCorrelatedStep(0, "approve deploy", "dcid-a")],
+    });
+    await index.indexSession({
+      ...makeSnapshot("session-b", "approve deploy"),
+      trajectorySteps: [makeCorrelatedStep(0, "approve deploy", "dcid-b")],
+    });
+
+    const result = await index.queryDecisions({
+      text: "approve",
+      limit: 10,
+      filter: { kind: "eq", field: "decisionCorrelationId", value: "dcid-b" },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.results.map((hit) => hit.sessionId)).toEqual(["session-b"]);
+    expect(result.value.results[0]?.metadata.decisionCorrelationId).toBe("dcid-b");
+  });
+
+  test("does not index invalid decisionCorrelationId metadata", async () => {
+    const backend = createInMemoryBackend();
+    const index = createDecisionIndex({ backend });
+    await index.indexSession({
+      ...makeSnapshot("session-a", "approve deploy"),
+      trajectorySteps: [makeCorrelatedStep(0, "approve deploy", " ".repeat(300))],
+    });
+
+    const trajectoryDoc = backend
+      .documents()
+      .find((doc) => doc.metadata?.sourceKind === "trajectory");
+
+    expect(trajectoryDoc?.metadata?.decisionCorrelationId).toBeUndefined();
+    expect(trajectoryDoc?.data?.decisionCorrelationId).toBeUndefined();
+  });
+
+  test("hydrates decisionCorrelationId from metadata-only search hits", async () => {
+    const backend: SearchBackend<DecisionIndexDocumentData> = {
+      index: async () => ({ ok: true, value: undefined }),
+      remove: async () => ({ ok: true, value: undefined }),
+      retrieve: async () => ({
+        ok: true,
+        value: {
+          results: [
+            {
+              id: "hit-1",
+              score: 1,
+              content: "approve deploy",
+              source: "metadata-only",
+              metadata: {
+                sessionId: "session-a",
+                sourceKind: "trajectory",
+                sourceId: "0",
+                decisionCorrelationId: "dcid-meta",
+              },
+            },
+          ],
+          hasMore: false,
+        },
+      }),
+    };
+    const index = createDecisionIndex({ backend });
+
+    const result = await index.queryDecisions({ text: "approve", limit: 10 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.results[0]?.decisionCorrelationId).toBe("dcid-meta");
   });
 
   test("propagates backend failures", async () => {

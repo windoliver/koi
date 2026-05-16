@@ -174,6 +174,7 @@ function trajectoryDocument(
 ): IndexDocument<DecisionIndexDocumentData> {
   const title = `${step.kind}:${step.identifier}`;
   const sourceId = String(step.stepIndex);
+  const decisionCorrelationId = decisionCorrelationIdMetadata(step.metadata);
   return {
     id: decisionDocumentId(sessionId, "trajectory", sourceId),
     content: compactContent([
@@ -191,6 +192,7 @@ function trajectoryDocument(
       stepIndex: step.stepIndex,
       timestamp: step.timestamp,
       indexedAtMs,
+      ...(decisionCorrelationId !== undefined ? { decisionCorrelationId } : {}),
     },
     data: {
       sessionId,
@@ -199,6 +201,7 @@ function trajectoryDocument(
       title,
       timestamp: step.timestamp,
       stepIndex: step.stepIndex,
+      ...(decisionCorrelationId !== undefined ? { decisionCorrelationId } : {}),
     },
   };
 }
@@ -388,6 +391,8 @@ function toHit(result: DecisionIndexSearchResult): Result<DecisionIndexHit, KoiE
   const sessionId = data?.sessionId ?? metadataString(result.metadata, "sessionId");
   const sourceKind = data?.sourceKind ?? metadataSourceKind(result.metadata);
   const sourceId = data?.sourceId ?? metadataString(result.metadata, "sourceId");
+  const decisionCorrelationId =
+    data?.decisionCorrelationId ?? decisionCorrelationIdMetadata(result.metadata);
   if (
     sessionId === undefined ||
     sourceKind === undefined ||
@@ -415,6 +420,7 @@ function toHit(result: DecisionIndexSearchResult): Result<DecisionIndexHit, KoiE
       ...(data?.stepIndex !== undefined ? { stepIndex: data.stepIndex } : {}),
       ...(data?.auditKind !== undefined ? { auditKind: data.auditKind } : {}),
       ...(data?.reportSection !== undefined ? { reportSection: data.reportSection } : {}),
+      ...(decisionCorrelationId !== undefined ? { decisionCorrelationId } : {}),
       metadata: result.metadata,
     },
   };
@@ -426,6 +432,16 @@ function metadataString(
 ): string | undefined {
   const value = metadata[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function decisionCorrelationIdMetadata(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): string | undefined {
+  const value = metadataString(metadata ?? {}, "decisionCorrelationId");
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 256) return undefined;
+  return value;
 }
 
 function metadataSourceKind(

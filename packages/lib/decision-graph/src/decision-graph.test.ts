@@ -106,6 +106,52 @@ describe("materializeDecisionGraph", () => {
       }),
     ).toThrow("integrity leaks");
   });
+
+  test("does not infer audit corroboration from timestamp alone", () => {
+    const audit = makeAudit("apply_patch");
+    const graph = materializeDecisionGraph({
+      ...makeSnapshot(),
+      auditEntries: [
+        {
+          schema_version: audit.schema_version,
+          timestamp: 1_700_000_000_999,
+          sessionId: audit.sessionId,
+          agentId: audit.agentId,
+          turnIndex: audit.turnIndex,
+          kind: audit.kind,
+          durationMs: audit.durationMs,
+        },
+      ],
+    });
+
+    expect(graph.edges.map((edge) => edge.kind)).not.toContain("corroborates");
+  });
+
+  test("corroborates the nearest prior trajectory step with the same tool name", () => {
+    const graph = materializeDecisionGraph({
+      ...makeSnapshot(),
+      trajectorySteps: [makeStep(0, "apply_patch"), makeStep(1, "apply_patch")],
+      auditEntries: [
+        {
+          ...makeAudit("apply_patch"),
+          timestamp: 1_700_000_000_999,
+        },
+      ],
+    });
+
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        kind: "corroborates",
+        to: "trajectory:session-a:1",
+      }),
+    );
+    expect(graph.edges).not.toContainEqual(
+      expect.objectContaining({
+        kind: "corroborates",
+        to: "trajectory:session-a:0",
+      }),
+    );
+  });
 });
 
 describe("createInMemoryDecisionGraphStore", () => {
