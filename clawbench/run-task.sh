@@ -21,8 +21,12 @@ set -a; source "$REPO_ROOT/.env"; set +a
 export PYTHONDONTWRITEBYTECODE=1
 
 # Bench fixtures may contain mock credentials; demote exfil guard from block→warn
-# so the agent can complete the task. Real prod runs leave this unset (block).
+# so the agent can complete the task. This requires BOTH the action var and the
+# explicit downgrade opt-in — the opt-in is what makes a stray inherited
+# KOI_EXFIL_ACTION in a real environment a no-op (stays block). Real prod runs
+# leave both unset.
 export KOI_EXFIL_ACTION="${KOI_EXFIL_ACTION:-warn}"
+export KOI_EXFIL_ALLOW_DOWNGRADE="${KOI_EXFIL_ALLOW_DOWNGRADE:-1}"
 
 # Cap per-request output tokens to stay under OpenRouter daily limits.
 # Most clawbench tasks need <8K tokens per turn; cap at 8K.

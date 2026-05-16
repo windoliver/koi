@@ -2598,14 +2598,30 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // Must be in the middleware stack to protect shell and web_fetch from leaking
   // workspace secrets — omitting it is a security regression.
   //
-  // KOI_EXFIL_ACTION (block|redact|warn) overrides the default "block" action.
-  // Useful for CI/benchmark scenarios where workspace fixtures contain mock
-  // credentials and the agent must still complete the task.
+  // KOI_EXFIL_ACTION (block|redact|warn) may override the default "block".
+  // SECURITY: weakening the guard to "warn"/"redact" is gated behind an
+  // explicit, narrowly-scoped opt-in (KOI_EXFIL_ALLOW_DOWNGRADE=1). The
+  // action var alone is intentionally NOT enough — that prevents an
+  // accidentally-inherited broad `.env`/CI value from silently disabling
+  // secret-exfiltration enforcement on runs that handle real credentials.
+  // Re-asserting "block" explicitly is always allowed (it is the default).
   const exfilAction = process.env.KOI_EXFIL_ACTION;
+  const exfilDowngradeAllowed = process.env.KOI_EXFIL_ALLOW_DOWNGRADE === "1";
+  let resolvedExfilAction: "block" | "redact" | "warn" | undefined;
+  if (exfilAction === "block") {
+    resolvedExfilAction = "block";
+  } else if ((exfilAction === "redact" || exfilAction === "warn") && exfilDowngradeAllowed) {
+    resolvedExfilAction = exfilAction;
+  } else {
+    if (exfilAction === "redact" || exfilAction === "warn") {
+      console.warn(
+        `[koi] ignoring KOI_EXFIL_ACTION=${exfilAction}: set KOI_EXFIL_ALLOW_DOWNGRADE=1 to permit weakening the exfiltration guard; defaulting to block`,
+      );
+    }
+    resolvedExfilAction = undefined; // middleware default (block)
+  }
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware(
-    exfilAction === "redact" || exfilAction === "warn" || exfilAction === "block"
-      ? { action: exfilAction }
-      : undefined,
+    resolvedExfilAction !== undefined ? { action: resolvedExfilAction } : undefined,
   );
 
   // --- @koi/middleware-tool-error-formatter: convert tool throws to model-readable responses ---

@@ -16,8 +16,12 @@ for d in "$TASKS_ROOT"/*/; do
   [ "$domain" = "__pycache__" ] && continue
 
   summary="$REPO_ROOT/clawbench/results/SUMMARY-$domain.txt"
-  if [ -f "$summary" ]; then
-    echo "SKIP $domain (already has summary)" | tee -a "$PROGRESS"
+  # Only skip a domain whose summary is COMPLETE: run-domain.sh writes the
+  # summary atomically and terminates it with a lone "===" sentinel line.
+  # A missing file or one without the sentinel means the domain was never
+  # finished, so it must be (re)processed rather than silently skipped.
+  if [ -f "$summary" ] && [ "$(tail -1 "$summary" 2>/dev/null)" = "===" ]; then
+    echo "SKIP $domain (already has complete summary)" | tee -a "$PROGRESS"
     continue
   fi
 
