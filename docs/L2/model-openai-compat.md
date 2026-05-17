@@ -14,6 +14,12 @@ xAI, and any compatible endpoint.
 
 ## Recent updates
 
+- Request mapping honors a `KOI_MAX_TOKENS` environment variable as an output-token
+  cap. When set to a finite positive integer, the adapter sends
+  `min(request.maxTokens, KOI_MAX_TOKENS)` (or `KOI_MAX_TOKENS` when the request did
+  not specify `maxTokens`). When unset or non-positive it is a no-op and the request's
+  own `maxTokens` is used unchanged. Intended for CI/benchmark runs that must stay
+  within an OpenRouter free-tier daily token budget; production callers leave it unset.
 - Vision-capable adapters can now serialize user image blocks to Chat Completions
   `image_url` parts when `capabilities.vision` is true. Text-only messages keep the
   legacy string content shape, and non-image rich blocks are preserved as textual

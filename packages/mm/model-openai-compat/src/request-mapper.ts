@@ -481,9 +481,17 @@ export function buildRequestBody(
     body.stream_options = { include_usage: true };
   }
 
-  // Max tokens — field name varies by provider
+  // Max tokens — field name varies by provider.
+  // KOI_MAX_TOKENS env var caps the requested output (used by CI/bench to
+  // stay inside OpenRouter free-tier daily limits).
+  const envCap = Number(process.env.KOI_MAX_TOKENS);
+  const hasEnvCap = Number.isFinite(envCap) && envCap > 0;
   if (request.maxTokens !== undefined) {
-    body[config.compat.maxTokensField] = request.maxTokens;
+    body[config.compat.maxTokensField] = hasEnvCap
+      ? Math.min(request.maxTokens, envCap)
+      : request.maxTokens;
+  } else if (hasEnvCap) {
+    body[config.compat.maxTokensField] = envCap;
   }
 
   if (request.temperature !== undefined) {

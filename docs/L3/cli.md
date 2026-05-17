@@ -6,6 +6,13 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **CI/benchmark runtime knobs**: the CLI runtime now reads two env vars, both
+  no-ops when unset so interactive/`tui` behavior is unchanged. (1) Integrated
+  `@koi/model-openai-compat` honors `KOI_MAX_TOKENS` as an output-token cap. (2)
+  `runtime-factory.ts` honors `KOI_EXFIL_ACTION` (`block|redact|warn`) only when
+  `KOI_EXFIL_ALLOW_DOWNGRADE=1` is also set — weakening the exfiltration guard
+  requires an explicit opt-in; `block` is re-assertable unconditionally and an
+  unrecognized/ungated value logs a warning and falls back to the guard default.
 - **Team runtime tools (#1416)**: `@koi/team-runtime` is now a direct CLI
   dependency and the execution preset contributes four TUI-visible tool
   providers: `TeamCreate`, `TeamDelete`, `TeamAssignTask`, and `TeamReportTask`.

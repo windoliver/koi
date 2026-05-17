@@ -1,0 +1,6 @@
+model:
+  name: anthropic/claude-haiku-4.5
+
+filesystem:
+  backend: local
+  operations: [read, write, edit]
