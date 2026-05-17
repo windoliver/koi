@@ -19,7 +19,7 @@ Current snapshot:
 | lib | 149 | 781 | 130 |
 | meta | 7 | 121 | 5 |
 | mm | 12 | 54 | 12 |
-| net | 12 | 98 | 11 |
+| net | 12 | 98 | 12 |
 | sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
 | security | 22 | 122 | 22 |
@@ -237,7 +237,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/mcp` (packages/net/mcp) - MCP transport layer, connection lifecycle, and state management. Tests: 25. Docs: docs/L2/mcp.md.
 - `@koi/mcp-server` (packages/net/mcp-server) - Expose agent tools and platform capabilities via Model Context Protocol. Tests: 3. Docs: docs/L2/mcp-server.md.
 - `@koi/nexus-sandbox` (packages/net/nexus-sandbox) - Spawn local nexus-ai-fs[sandbox] subprocess: zero external services, SQLite + LRU + BM25S. Tests: 4. Docs: docs/L2/nexus-sandbox.md.
-- `@koi/remote` (packages/net/remote) - Authenticate remote Koi clients with JWTs, trusted devices, permission bridging, and transport policy. Tests: 6. Docs: -.
+- `@koi/remote` (packages/net/remote) - Authenticate remote Koi clients with JWTs, trusted devices, permission bridging, and transport policy. Tests: 6. Docs: docs/L2/remote.md.
 
 ## sandbox (12)
 
