@@ -38,4 +38,27 @@ describe("createCodeExecutorProvider", () => {
     const provider = createCodeExecutorProvider({ executor: noopExecutor() });
     expect(provider.name).toBe("code-executor");
   });
+
+  test("threads workspacePath into execute_script context", async () => {
+    const captured: unknown[][] = [];
+    const provider = createCodeExecutorProvider({
+      workspacePath: "/work/repo",
+      executor: {
+        execute: async (code, input, timeoutMs, context) => {
+          captured.push([code, input, timeoutMs, context]);
+          return { ok: true, value: { output: undefined, durationMs: 0 } };
+        },
+      },
+    });
+    const result = await provider.attach(STUB_AGENT);
+    const components =
+      result instanceof Map
+        ? result
+        : (result as { readonly components: ReadonlyMap<string, unknown> }).components;
+    const tool = components.get(toolToken("execute_script") as string) as Tool;
+
+    await tool.execute({ code: "return 1;" });
+
+    expect(captured[0]?.[3]).toMatchObject({ workspacePath: "/work/repo" });
+  });
 });

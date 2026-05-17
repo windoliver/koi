@@ -881,6 +881,14 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/middleware-sandbox": {
+      "name": "@koi/middleware-sandbox",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/middleware-semantic-retry": {
       "name": "@koi/middleware-semantic-retry",
       "version": "0.0.0",
@@ -1422,6 +1430,7 @@
         "@koi/bash-ast": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/checkpoint": "workspace:*",
+        "@koi/code-executor": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
@@ -1467,6 +1476,7 @@
         "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
         "@koi/middleware-tool-error-formatter": "workspace:*",
@@ -1484,6 +1494,7 @@
         "@koi/query-engine": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/runtime": "workspace:*",
+        "@koi/sandbox-docker": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-nexus": "workspace:*",
@@ -1539,6 +1550,14 @@
       "optionalDependencies": {
         "cpu-features": "0.0.10",
         "ssh2": "1.16.0",
+      },
+    },
+    "packages/meta/cloud-agent": {
+      "name": "@koi-agent/cloud",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi-agent/cli": "workspace:*",
+        "@koi/core": "workspace:*",
       },
     },
     "packages/meta/nexus": {
@@ -1690,6 +1709,7 @@
         "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-rlm": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
@@ -2748,6 +2768,8 @@
 
     "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
 
+    "@koi-agent/cloud": ["@koi-agent/cloud@workspace:packages/meta/cloud-agent"],
+
     "@koi/ace-types": ["@koi/ace-types@workspace:packages/lib/ace-types"],
 
     "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/lib/agent-discovery"],
@@ -3015,6 +3037,8 @@
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
 
     "@koi/middleware-rlm": ["@koi/middleware-rlm@workspace:packages/lib/middleware-rlm"],
+
+    "@koi/middleware-sandbox": ["@koi/middleware-sandbox@workspace:packages/lib/middleware-sandbox"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
 

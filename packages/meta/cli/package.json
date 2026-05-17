@@ -47,6 +47,7 @@
     "@koi/audit-sink-sqlite": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/checkpoint": "workspace:*",
+    "@koi/code-executor": "workspace:*",
     "@koi/context-manager": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/file-type": "workspace:*",
@@ -97,6 +98,7 @@
     "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",
     "@koi/middleware-report": "workspace:*",
+    "@koi/middleware-sandbox": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
     "@koi/middleware-task-anchor": "workspace:*",
     "@koi/middleware-tool-error-formatter": "workspace:*",
@@ -110,6 +112,7 @@
     "@koi/query-engine": "workspace:*",
     "@koi/rules-loader": "workspace:*",
     "@koi/runtime": "workspace:*",
+    "@koi/sandbox-docker": "workspace:*",
     "@koi/settings": "workspace:*",
     "@koi/sandbox-os": "workspace:*",
     "@koi/secure-storage": "workspace:*",
@@ -171,6 +174,6 @@
     "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test"
+    "test": "for f in $(find src -name '*.test.ts' -o -name '*.test.tsx' | sort); do bun test \"$f\" || exit 1; done"
   }
 }

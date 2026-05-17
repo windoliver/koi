@@ -1357,6 +1357,21 @@ describe("buildInheritedMiddlewareForChildren", () => {
     expect(result.map((mw) => mw.name)).toEqual(["permissions", "exfiltration-guard", "hooks"]);
   });
 
+  test("inherits sandbox enforcement so spawned children keep sandbox-required filtering", () => {
+    const result = buildInheritedMiddlewareForChildren({
+      permissions: stubMiddleware("permissions"),
+      exfiltrationGuard: stubMiddleware("exfiltration-guard"),
+      sandboxEnforcement: stubMiddleware("sandbox-enforcement"),
+      hook: stubMiddleware("hooks"),
+    });
+    expect(result.map((mw) => mw.name)).toEqual([
+      "permissions",
+      "exfiltration-guard",
+      "sandbox-enforcement",
+      "hooks",
+    ]);
+  });
+
   test("includes systemPrompt when provided, skipped otherwise", () => {
     const withPrompt = buildInheritedMiddlewareForChildren({
       permissions: stubMiddleware("permissions"),

@@ -115,6 +115,23 @@ async function collectEvents(
 // Tests
 // ---------------------------------------------------------------------------
 
+describe("createTranscriptAdapter — dispose", () => {
+  test("forwards to the underlying model adapter", async () => {
+    const dispose = mock(async () => {});
+    const adapter = createTranscriptAdapter({
+      engineId: "test",
+      modelAdapter: { ...makeModelAdapter(), dispose },
+      transcript: [],
+      maxTranscriptMessages: 10,
+      maxTurns: 5,
+    });
+
+    await adapter.dispose?.();
+
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("createTranscriptAdapter — callHandlers guard", () => {
   test("throws when callHandlers is undefined", () => {
     const adapter = createTranscriptAdapter({

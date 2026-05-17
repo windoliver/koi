@@ -34,4 +34,28 @@ describe("validateDockerConfig", () => {
     const result = validateDockerConfig({ client: stubClient, image: "alpine:3.19" });
     expect(result.ok && result.value.image).toBe("alpine:3.19");
   });
+
+  test("trims explicit image overrides before resolving config", () => {
+    const stubClient = {
+      createContainer: async (): Promise<never> => {
+        throw new Error("not implemented");
+      },
+    };
+    const result = validateDockerConfig({ client: stubClient, image: "  alpine:3.19  " });
+    expect(result.ok && result.value.image).toBe("alpine:3.19");
+  });
+
+  test("rejects image references that could be parsed as docker CLI flags", () => {
+    const stubClient = {
+      createContainer: async (): Promise<never> => {
+        throw new Error("not implemented");
+      },
+    };
+    const result = validateDockerConfig({ client: stubClient, image: " --privileged" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("must not start with '-'");
+    }
+  });
 });

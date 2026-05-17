@@ -9,6 +9,105 @@ import { loadManifestConfig, revalidateAuditPathContainment } from "./manifest.j
 // can wire alternate filesystem backends instead of silently falling
 // through to the default local backend.
 
+describe("loadManifestConfig: codeSandbox block (#1550)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-1550-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("accepts docker provider with an optional image", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  provider: docker",
+        "  image: oven/bun:1.3.9",
+      ].join("\n"),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.codeSandbox).toEqual({ provider: "docker", image: "oven/bun:1.3.9" });
+  });
+
+  test("rejects missing provider", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  image: python:3.12-slim",
+      ].join("\n"),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.codeSandbox.provider");
+  });
+
+  test("rejects unsupported provider", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  provider: subprocess",
+      ].join("\n"),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('Supported providers: "docker"');
+  });
+
+  test("rejects unsupported backend options", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  provider: docker",
+        "  credentials: secret",
+      ].join("\n"),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('unknown key "credentials"');
+  });
+
+  test("rejects flag-shaped docker images", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  provider: docker",
+        '  image: "--privileged"',
+      ].join("\n"),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.codeSandbox.image must not start with '-'");
+  });
+});
+
 describe("loadManifestConfig: filesystem block", () => {
   let dir: string;
   const writeManifest = (yaml: string): string => {

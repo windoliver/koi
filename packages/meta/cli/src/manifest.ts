@@ -208,6 +208,11 @@ export interface ManifestMiddlewareEntry {
   readonly enabled: boolean;
 }
 
+export interface ManifestCodeSandboxConfig {
+  readonly provider: string;
+  readonly image?: string | undefined;
+}
+
 export interface ManifestConfig {
   readonly modelName: string;
   readonly instructions: string | undefined;
@@ -269,6 +274,13 @@ export interface ManifestConfig {
    * otherwise be missing). See `runtime-factory.ts`.
    */
   readonly backgroundSubprocesses: boolean | undefined;
+  /**
+   * Optional environment-level code sandbox configuration. No manifest
+   * providers are currently supported; this block is reserved until a
+   * backend can enforce the full sandboxed tool policy, including
+   * filesystem confinement.
+   */
+  readonly codeSandbox: ManifestCodeSandboxConfig | undefined;
   /**
    * Optional filesystem backend configuration. When set, the host
    * resolves it via `@koi/runtime`'s `resolveFileSystemAsync` (for
@@ -655,6 +667,11 @@ export async function loadManifestConfig(
     backgroundSubprocesses = bgSubsRaw;
   }
 
+  const codeSandboxResult = parseManifestCodeSandbox(raw.codeSandbox);
+  if (!codeSandboxResult.ok) {
+    return codeSandboxResult;
+  }
+
   const middlewareResult = parseManifestMiddleware(raw.middleware);
   if (!middlewareResult.ok) {
     return middlewareResult;
@@ -802,6 +819,7 @@ export async function loadManifestConfig(
       stacks,
       plugins,
       backgroundSubprocesses,
+      codeSandbox: codeSandboxResult.value,
       filesystem,
       middleware: middlewareResult.value,
       governance: governanceResult.value,
@@ -812,6 +830,71 @@ export async function loadManifestConfig(
       network: networkResult.value,
       credentials: credentialsResult.value,
       ace: aceResult.value,
+    },
+  };
+}
+
+function parseManifestCodeSandbox(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestCodeSandboxConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: "manifest.codeSandbox must be an object with a non-empty provider string",
+    };
+  }
+
+  const obj = raw as Record<string, unknown>;
+  const provider = obj.provider;
+  if (typeof provider !== "string" || provider.trim().length === 0) {
+    return {
+      ok: false,
+      error: "manifest.codeSandbox.provider is required and must be a non-empty string",
+    };
+  }
+  const providerName = provider.trim();
+  for (const key of Object.keys(obj)) {
+    if (key !== "provider" && key !== "image") {
+      return {
+        ok: false,
+        error: `manifest.codeSandbox: unknown key "${key}". Supported keys: "provider", "image".`,
+      };
+    }
+  }
+  if (providerName !== "docker") {
+    return {
+      ok: false,
+      error:
+        `manifest.codeSandbox.provider "${providerName}" is not supported. ` +
+        'Supported providers: "docker".',
+    };
+  }
+
+  const image = obj.image;
+  if (image !== undefined && (typeof image !== "string" || image.trim().length === 0)) {
+    return {
+      ok: false,
+      error: "manifest.codeSandbox.image must be a non-empty string when provided",
+    };
+  }
+  const imageName = typeof image === "string" ? image.trim() : undefined;
+  if (imageName?.startsWith("-")) {
+    return {
+      ok: false,
+      error: "manifest.codeSandbox.image must not start with '-'",
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      provider: providerName,
+      ...(imageName !== undefined ? { image: imageName } : {}),
     },
   };
 }
@@ -1060,9 +1143,17 @@ function parseManifestNetwork(
   }
   // Validate each pattern parses cleanly so a typo fails fast at load time
   // rather than throwing inside the request path.
+  const URLPatternCtor = (
+    globalThis as unknown as {
+      readonly URLPattern?: new (pattern: string) => unknown;
+    }
+  ).URLPattern;
+  if (URLPatternCtor === undefined) {
+    return { ok: false, error: "manifest.network.allow requires URLPattern support" };
+  }
   for (const pattern of allow) {
     try {
-      new URLPattern(pattern);
+      new URLPatternCtor(pattern);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return {

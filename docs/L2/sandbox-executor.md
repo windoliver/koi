@@ -7,6 +7,14 @@ stderr-framed protocol. OS-level isolation (seatbelt/bwrap) is delegated to
 
 ## Recent updates
 
+- **Plain subprocess fail-closed tightening (#1550)**: `externalIsolation` and
+  `filesystemIsolation` remain accepted for source compatibility but no longer
+  act as proof of confinement. A plain subprocess executor now refuses any
+  `ExecutionContext` that requests `networkAllowed: false`, `resourceLimits`, or
+  filesystem allowlists, returning `PERMISSION` instead of signaling unenforced
+  restrictions through child environment variables. Metadata-only context
+  fields such as `workspacePath`, `entryPath`, and caller env still pass through.
+
 - **Lint-only no-op (#1355)**: a stray `export {};` line in `subprocess-runner.ts` was removed by a Biome auto-format pass on an unrelated PR and reverted; behavior unchanged.
 
 - **Result protocol moved to fd=3 (#2106)**: the framing marker + JSON payload now flow over a dedicated pipe (`stdio: ["ignore", "pipe", "pipe", "pipe"]`) that the runner writes via `writeSync(3, ...)` and the parent reads via `Bun.file(fd).stream()`. Previously the marker shared stderr with arbitrary user-code output; on Linux CI runners under heavy `process.stderr.write` bursts the marker could be overrun by libuv-queued user writes, surfacing as `CRASH: Sandbox exited without result marker` for legitimately successful executions. fd=3 is touched only by the runner so user code on stdout/stderr can no longer race the protocol. Stderr-side scanning is preserved as a backward-compat fallback for direct-exec/legacy parents.
@@ -39,14 +47,15 @@ export interface SubprocessExecutorConfig {
   readonly bunPath?: string;       // default: "bun"
   readonly maxOutputBytes?: number; // default: 10 MiB
   readonly cwd?: string;
-  /**
-   * Caller asserts that real isolation is provided externally (e.g., by composing
-   * with @koi/sandbox-os, running in a container, or operating in a trusted env).
-   * When false (default), the executor refuses ExecutionContext fields that would
-   * require enforcement (networkAllowed=false, resourceLimits) — failing closed
-   * prevents silent trust-boundary leaks.
+  /** Deprecated source-compatible no-op. Plain subprocess execution cannot
+   * verify external confinement, so restricted ExecutionContext fields are
+   * always refused regardless of this value.
    */
   readonly externalIsolation?: boolean;
+  /** Deprecated source-compatible no-op. Filesystem allowlists are always
+   * refused because this executor cannot enforce them.
+   */
+  readonly filesystemIsolation?: boolean;
   /**
    * When true (default), the executor refuses to run if process-group isolation
    * via `setsid` is unavailable on PATH. This prevents silent leakage of grandchild
@@ -72,23 +81,25 @@ export function createSubprocessExecutor(
 
 ## Isolation / explicit-deny guard
 
-`subprocess-executor` can only *signal* isolation constraints (via env vars such as
-`KOI_NETWORK_ALLOWED=0`, `KOI_MAX_MEMORY_MB`, `KOI_MAX_PIDS`) — it cannot *enforce*
-them without OS-level support. The guard fires only on **explicit** isolation requests:
+`subprocess-executor` can only run code in a separate process. It cannot enforce
+network denial, resource limits, or filesystem allowlists without a confining
+backend, so it fails closed on **explicit** isolation requests:
 
-- Passing `context: { networkAllowed: false }` without `externalIsolation: true`
+- Passing `context: { networkAllowed: false }`
   returns `{ ok: false, error: { code: "PERMISSION" } }` immediately — explicit
   network-deny cannot be enforced in plain subprocess mode.
 - Same for any `context.resourceLimits` value — OS-level enforcement required.
+- Same for any `context.filesystem` allowlist — child env hints are not a
+  filesystem sandbox.
 - **Omitting** `networkAllowed` (undefined) means "caller has no isolation opinion" —
   the executor passes through. `ExecutionContext` is also used for non-isolation
   metadata (`workspacePath`, `entryPath`, `env`) and those fields never trigger the guard.
 - Passing `context: {}` or `context: { workspacePath: "/tmp/x", entryPath: "..." }` is
   always allowed — no isolation opinion, no guard.
 
-To opt in to OS-enforced isolation — for example when composing with `@koi/sandbox-os`
-which wraps the process with real OS isolation — set `externalIsolation: true` in the
-config. The env-var signals are then forwarded to the child process as before.
+Use a `SandboxExecutor` backed by real OS confinement for restricted code. The
+legacy `externalIsolation` and `filesystemIsolation` flags are retained as no-op
+compatibility fields only; they are not accepted as enforcement proof.
 
 `executor.execute(code, input, timeoutMs, context?)`:
 

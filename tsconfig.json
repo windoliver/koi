@@ -27,6 +27,7 @@
     { "path": "packages/lib/event-trace" },
     { "path": "packages/lib/federation" },
     { "path": "packages/lib/middleware-otel" },
+    { "path": "packages/lib/middleware-sandbox" },
     { "path": "packages/lib/middleware-tool-audit" },
     { "path": "packages/lib/middleware-tool-recovery" },
     { "path": "packages/lib/middleware-tool-selector" },
@@ -41,6 +42,7 @@
     { "path": "packages/sandbox/sandbox-wasm" },
     { "path": "packages/sandbox/sandbox-vercel" },
     { "path": "packages/security/permissions" },
+    { "path": "packages/meta/cloud-agent" },
     { "path": "packages/meta/auto-harness" },
     { "path": "packages/meta/nexus" },
     { "path": "packages/meta/runtime" }

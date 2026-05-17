@@ -46,7 +46,7 @@
     "build": "bun run build.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test"
+    "test": "for f in $(find src -name '*.test.ts' -o -name '*.test.tsx' | sort); do bun test \"$f\" || exit 1; done"
   },
   "koi": {
     "optional": true

@@ -4,9 +4,20 @@
  * covered implicitly via commands/start.test.ts and CLI manual testing.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ParseError } from "./shared.js";
 import { parseStartFlags } from "./start.js";
+
+const ORIGINAL_LOG_FORMAT = process.env.LOG_FORMAT;
+
+beforeEach(() => {
+  delete process.env.LOG_FORMAT;
+});
+
+afterEach(() => {
+  if (ORIGINAL_LOG_FORMAT === undefined) delete process.env.LOG_FORMAT;
+  else process.env.LOG_FORMAT = ORIGINAL_LOG_FORMAT;
+});
 
 describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
   test("no flag → untilPass is empty, maxIter defaults to 10", () => {

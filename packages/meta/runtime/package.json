@@ -125,6 +125,7 @@
     "@koi/rules-loader": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
     "@koi/middleware-report": "workspace:*",
+    "@koi/middleware-sandbox": "workspace:*",
     "@koi/middleware-strict-agentic": "workspace:*",
     "@koi/middleware-task-anchor": "workspace:*",
     "@koi/middleware-tool-disclosure": "workspace:*",

@@ -15356,9 +15356,10 @@ describe("Golden: @koi/temporal", () => {
       "@koi/temporal"
     );
 
-    const t = 0;
-    const clock = (): number => t;
+    let t = 0;
+    const clock = (): number => ++t;
     const statuses: string[] = [];
+    const probeResults = [true, false];
 
     const monitor = createTemporalHealthMonitor(
       {
@@ -15366,12 +15367,12 @@ describe("Golden: @koi/temporal", () => {
         url: "localhost:7233",
         failureThreshold: 3,
         cooldownMs: 60_000,
-        pollIntervalMs: 50,
+        pollIntervalMs: 10,
         clock,
       },
       async (url: string, _timeoutMs: number) => {
         void url;
-        return false; // always fail
+        return probeResults.shift() ?? false;
       },
     );
 
@@ -15380,13 +15381,14 @@ describe("Golden: @koi/temporal", () => {
     });
 
     monitor.start();
-    await new Promise<void>((resolve) => setTimeout(resolve, 120));
+    for (let i = 0; i < 50 && !statuses.includes("degraded"); i++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
     monitor.dispose();
     unsub();
 
-    // Should have transitioned through degraded (first probe) and possibly unavailable (OPEN)
-    expect(statuses.length).toBeGreaterThan(0);
-    expect(statuses[0]).toMatch(/degraded|unavailable/);
+    expect(statuses).toContain("healthy");
+    expect(statuses).toContain("degraded");
   });
 
   test("createTemporalHealthMonitor snapshot timestamps: lastTickAt always advances, lastCheckAt only on probe", async () => {
@@ -17205,6 +17207,98 @@ describe("Golden: @koi/sandbox-executor", () => {
     const r = await exec.execute(code, null, 250);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("TIMEOUT");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/middleware-sandbox (2 queries)
+//
+// Standalone — no cassette replay. Validates that sandbox-required tools fail
+// closed without an executor, while provider-backed sandbox policies remain
+// hidden until the host explicitly attests the concrete provider policy.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-sandbox", () => {
+  test("required sandbox policy fails closed when no executor backs the tool", async () => {
+    const { createSandboxEnforcementMiddleware } = await import("@koi/middleware-sandbox");
+
+    const middleware = createSandboxEnforcementMiddleware({
+      required: true,
+      policies: { execute_script: { sandbox: true, capabilities: {} } },
+    });
+    const ctx = {
+      session: {
+        agentId: "agent",
+        sessionId: sessionId("sess"),
+        runId: runId("run"),
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "run:0",
+      messages: [],
+      metadata: {},
+    } as unknown as TurnContext;
+
+    await expect(
+      middleware.wrapToolCall?.(ctx, { toolId: "execute_script", input: {} }, async () => ({
+        output: "unexpected",
+      })),
+    ).rejects.toMatchObject({
+      code: "PERMISSION",
+      context: {
+        toolId: "execute_script",
+        reason: "sandbox_required_without_executor",
+      },
+    });
+  });
+
+  test("provider-backed sandbox tools require exact host trust before model exposure", async () => {
+    const { createSandboxEnforcementMiddleware } = await import("@koi/middleware-sandbox");
+
+    const providerPolicy = {
+      sandbox: true,
+      sandboxBacking: "provider",
+      capabilities: {},
+    } as const;
+    const request: ModelRequest = {
+      messages: [],
+      tools: [
+        { name: "execute_script", description: "runs code", inputSchema: {} },
+        { name: "plain_tool", description: "safe local tool", inputSchema: {} },
+      ],
+    };
+    const ctx = {
+      session: {
+        agentId: "agent",
+        sessionId: sessionId("sess"),
+        runId: runId("run"),
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "run:0",
+      messages: [],
+      metadata: {},
+    } as unknown as TurnContext;
+
+    const untrusted = createSandboxEnforcementMiddleware({
+      required: true,
+      policies: { execute_script: providerPolicy },
+    });
+    await untrusted.wrapModelCall?.(ctx, request, async (filtered) => {
+      expect(filtered.tools?.map((tool) => tool.name)).toEqual(["plain_tool"]);
+      return { content: "ok", model: "test" };
+    });
+
+    const trusted = createSandboxEnforcementMiddleware({
+      required: true,
+      policies: { execute_script: providerPolicy },
+      isProviderSandboxBacked: (toolId, policy) =>
+        toolId === "execute_script" && policy === providerPolicy,
+    });
+    await trusted.wrapModelCall?.(ctx, request, async (filtered) => {
+      expect(filtered.tools?.map((tool) => tool.name)).toEqual(["execute_script", "plain_tool"]);
+      return { content: "ok", model: "test" };
+    });
   });
 });
 

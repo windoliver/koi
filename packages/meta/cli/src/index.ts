@@ -32,6 +32,12 @@ export {
   parseArgs,
 } from "./args.js";
 export { COMMAND_LOADERS } from "./registry.js";
+export {
+  type CodeSandboxConfig,
+  createKoiRuntime,
+  type KoiRuntimeConfig,
+  type KoiRuntimeHandle,
+} from "./runtime-factory.js";
 export type {
   CheckStatus,
   CommandModule,

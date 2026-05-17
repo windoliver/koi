@@ -17,6 +17,8 @@ export interface ToolDefinition {
   readonly origin: ToolOrigin;
   /** When true or omitted, tool runs sandboxed. When false, unsandboxed. */
   readonly sandbox?: boolean;
+  /** Public tool definitions may only request environment-backed sandboxing. */
+  readonly sandboxBacking?: "environment";
   /** When true, tool is allowed network access. */
   readonly network?: boolean;
   /** Filesystem access paths. */

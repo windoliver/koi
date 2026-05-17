@@ -25,6 +25,10 @@ import type { MemoryToolProviderConfig } from "./types.js";
 /** Skill component name for memory tool behavioral guidance. */
 const MEMORY_SKILL_NAME = "memory" as const;
 
+function providerBacked(tool: Tool): Tool {
+  return { ...tool, policy: { ...tool.policy, sandboxBacking: "provider" } };
+}
+
 /**
  * Create a ComponentProvider that attaches all 4 memory tools to agents.
  *
@@ -56,7 +60,7 @@ export function createMemoryToolProvider(
   const firstError = results.find((r) => !r.ok);
   if (firstError !== undefined && !firstError.ok) return firstError;
 
-  const tools: readonly Tool[] = results.flatMap((r) => (r.ok ? [r.value] : []));
+  const tools: readonly Tool[] = results.flatMap((r) => (r.ok ? [providerBacked(r.value)] : []));
 
   const inner = createToolComponentProvider({
     name: `${prefix}-tools`,

@@ -1270,6 +1270,12 @@ export interface CoreProvidersConfig {
    */
   readonly includeWebFetch?: boolean;
   /**
+   * When false, omit cwd-backed builtin search tools (Glob/Grep/ToolSearch).
+   * Hosts with virtual/remote filesystem backends should keep this disabled
+   * unless that backend is mounted at `cwd`.
+   */
+  readonly includeBuiltinSearch?: boolean;
+  /**
    * Outbound-network scope (gov-15). When provided, the web tools'
    * inner `fetch` is wrapped with `createScopedFetcher` so any URL not
    * matching one of the supplied URLPattern strings fails closed before
@@ -1380,6 +1386,7 @@ export function resolveWebCacheTtlMs(env: Readonly<Record<string, string | undef
  */
 export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvider[] {
   const { cwd, bashTool } = config;
+  const includeBuiltinSearch = config.includeBuiltinSearch ?? true;
   const includeFs = config.includeFilesystemTools ?? true;
   const includeWeb = config.includeWebFetch ?? true;
   const fs = config.filesystemBackend ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
@@ -1405,7 +1412,9 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   const builtinSearchConfig = exposeSemantic
     ? { cwd, semanticSearch: fs.semanticSearch, operations: builtinSearchOps }
     : { cwd, operations: builtinSearchOps };
-  const providers: ComponentProvider[] = [createBuiltinSearchProvider(builtinSearchConfig)];
+  const providers: ComponentProvider[] = includeBuiltinSearch
+    ? [createBuiltinSearchProvider(builtinSearchConfig)]
+    : [];
 
   if (includeFs) {
     // allowExternalPaths: the runtime has a real permission middleware

@@ -1022,6 +1022,7 @@ export type {
   SandboxError,
   SandboxErrorCode,
   SandboxExecutor,
+  SandboxExecutorCapabilities,
   SandboxResult,
 } from "./sandbox-executor.js";
 // sandbox profile — platform-agnostic isolation policy

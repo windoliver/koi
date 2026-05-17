@@ -154,6 +154,22 @@ describe("createSubprocessExecutor", () => {
     expect(result.error.code).toBe("PERMISSION");
   });
 
+  test("returns PERMISSION when filesystem allowlist is requested", async () => {
+    const executor = createSubprocessExecutor({
+      externalIsolation: true,
+      filesystemIsolation: true,
+      requireProcessGroupIsolation: false,
+    });
+    const code = "export default async () => ({});";
+    const result = await executor.execute(code, null, 5000, {
+      filesystem: { read: ["/tmp"], write: ["/tmp"] },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.code).toBe("PERMISSION");
+    expect(result.error.message).toContain("filesystem");
+  });
+
   // Fix 1 (guard narrowed): context={} with networkAllowed omitted → succeeds
   // Omitting networkAllowed means "caller has no isolation opinion" — not explicit denial.
   // ExecutionContext is also used for non-isolation metadata (workspacePath, entryPath).
@@ -202,43 +218,32 @@ describe("createSubprocessExecutor", () => {
     expect(result.value.output).toEqual({ ok: true });
   });
 
-  // externalIsolation: true — networkAllowed=false propagates KOI_NETWORK_ALLOWED=0
-  test("propagates KOI_NETWORK_ALLOWED=0 env var when networkAllowed=false and externalIsolation=true", async () => {
+  test("returns PERMISSION when networkAllowed=false even if externalIsolation is asserted", async () => {
     const executor = createSubprocessExecutor({
       externalIsolation: true,
       requireProcessGroupIsolation: false,
     });
-    // The user code returns the env var value so we can assert it was set
-    const code = `
-      export default async (_input: unknown) => ({
-        networkAllowed: process.env.KOI_NETWORK_ALLOWED,
-      });
-    `;
+    const code = "export default async () => ({});";
     const result = await executor.execute(code, null, 5000, { networkAllowed: false });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
-    const output = result.value.output;
-    expect(output).toEqual({ networkAllowed: "0" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.code).toBe("PERMISSION");
   });
 
-  // externalIsolation: true — resourceLimits propagate KOI_MAX_MEMORY_MB and KOI_MAX_PIDS
-  test("propagates resource limit env vars when resourceLimits are set and externalIsolation=true", async () => {
+  test("returns PERMISSION when resource/filesystem policy is requested even if isolation is asserted", async () => {
     const executor = createSubprocessExecutor({
       externalIsolation: true,
+      filesystemIsolation: true,
       requireProcessGroupIsolation: false,
     });
-    const code = `
-      export default async (_input: unknown) => ({
-        memMb: process.env.KOI_MAX_MEMORY_MB,
-        pids: process.env.KOI_MAX_PIDS,
-      });
-    `;
+    const code = "export default async () => ({});";
     const result = await executor.execute(code, null, 5000, {
-      resourceLimits: { maxMemoryMb: 512, maxPids: 32 },
+      filesystem: { read: ["/usr", "/tmp"], write: ["/tmp/koi-sandbox-*"] },
+      resourceLimits: { maxMemoryMb: 512, maxPids: 32, maxOpenFiles: 128 },
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(`Expected ok, got: ${result.error.message}`);
-    expect(result.value.output).toEqual({ memMb: "512", pids: "32" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.code).toBe("PERMISSION");
   });
 
   // Cover the invalid-JSON-after-marker path (lines 234-239)

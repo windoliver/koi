@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { createDockerAdapter } from "./adapter.js";
 import { computeProfileFingerprint } from "./fingerprint.js";
 import { deriveScopeContainerName } from "./scope-name.js";
@@ -154,6 +154,17 @@ describe("createDockerAdapter", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error(`Expected ok, got: ${r.error.message}`);
     expect(r.value.name).toBe("docker");
+  });
+
+  test("rejects flag-shaped images before probing Docker availability", async () => {
+    const probe = mock(async (): Promise<number> => 0);
+    const r = await createDockerAdapter({ image: "--privileged", probe });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("VALIDATION");
+      expect(r.error.message).toContain("must not start with '-'");
+    }
+    expect(probe).not.toHaveBeenCalled();
   });
 
   // Explicit client is preserved (sync path — no probe called)

@@ -1,5 +1,5 @@
 import type { JsonObject, SandboxExecutor, Tool, ToolDescriptor } from "@koi/core";
-import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, type ToolPolicy } from "@koi/core";
 import { executeScript } from "./execute-script.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -8,6 +8,8 @@ const MAX_TIMEOUT_MS = 120_000;
 
 export interface ExecuteScriptToolConfig {
   readonly executor: SandboxExecutor;
+  readonly workspacePath?: string | undefined;
+  readonly workspaceWrite?: boolean | undefined;
 }
 
 const DESCRIPTION = [
@@ -45,9 +47,48 @@ const INPUT_SCHEMA: JsonObject = {
   required: ["code"],
 };
 
+const EXECUTE_SCRIPT_POLICY: ToolPolicy = {
+  ...DEFAULT_SANDBOXED_POLICY,
+  sandboxBacking: "environment",
+};
+
 function clampTimeout(raw: unknown): number {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_TIMEOUT_MS;
   return Math.min(Math.max(raw, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
+}
+
+function sandboxResourceLimits(): {
+  readonly maxMemoryMb?: number;
+  readonly maxPids?: number;
+  readonly maxOpenFiles?: number;
+} {
+  const resources = EXECUTE_SCRIPT_POLICY.capabilities.resources;
+  return {
+    ...(resources?.maxMemoryMb !== undefined ? { maxMemoryMb: resources.maxMemoryMb } : {}),
+    ...(resources?.maxPids !== undefined ? { maxPids: resources.maxPids } : {}),
+    ...(resources?.maxOpenFiles !== undefined ? { maxOpenFiles: resources.maxOpenFiles } : {}),
+  };
+}
+
+function sandboxFilesystem(config: ExecuteScriptToolConfig): {
+  readonly read?: readonly string[];
+  readonly write?: readonly string[];
+} {
+  const filesystem = EXECUTE_SCRIPT_POLICY.capabilities.filesystem;
+  const read = [
+    ...(filesystem?.read !== undefined ? filesystem.read : []),
+    ...(config.workspacePath !== undefined ? [config.workspacePath] : []),
+  ];
+  const write = [
+    ...(filesystem?.write !== undefined ? filesystem.write : []),
+    ...(config.workspacePath !== undefined && config.workspaceWrite === true
+      ? [config.workspacePath]
+      : []),
+  ];
+  return {
+    ...(read.length > 0 ? { read } : {}),
+    ...(write.length > 0 ? { write } : {}),
+  };
 }
 
 export function createExecuteScriptTool(config: ExecuteScriptToolConfig): Tool {
@@ -61,7 +102,7 @@ export function createExecuteScriptTool(config: ExecuteScriptToolConfig): Tool {
   return {
     descriptor,
     origin: "primordial",
-    policy: DEFAULT_SANDBOXED_POLICY,
+    policy: EXECUTE_SCRIPT_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => {
       const code = typeof args.code === "string" ? args.code : undefined;
       if (code === undefined) {
@@ -84,6 +125,12 @@ export function createExecuteScriptTool(config: ExecuteScriptToolConfig): Tool {
         language: languageRaw,
         timeoutMs: clampTimeout(args.timeout_ms),
         executor: config.executor,
+        context: {
+          networkAllowed: false,
+          ...(config.workspacePath !== undefined ? { workspacePath: config.workspacePath } : {}),
+          filesystem: sandboxFilesystem(config),
+          resourceLimits: sandboxResourceLimits(),
+        },
       });
     },
   };

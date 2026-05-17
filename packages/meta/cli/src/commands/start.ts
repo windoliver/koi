@@ -49,7 +49,7 @@ import { initOtelSdk } from "../otel-bootstrap.js";
 import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { resolveManifestPath } from "../resolve-manifest-path.js";
-import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
+import { type CodeSandboxConfig, createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
 import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
@@ -374,6 +374,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestInstructions: string | undefined;
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
+  let manifestCodeSandbox: CodeSandboxConfig | undefined;
   // #1777: the manifest filesystem block is parsed+validated by
   // `loadManifestConfig` (see manifest.ts). `koi start` supports
   // `backend: "local"` on the host-default local backend path —
@@ -460,6 +461,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     manifestInstructions = manifestResult.value.instructions;
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
+    manifestCodeSandbox = manifestResult.value.codeSandbox;
     manifestMiddleware =
       manifestResult.value.middleware !== undefined
         ? [...manifestResult.value.middleware]
@@ -996,6 +998,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       // main's pre-refactor `koi start` capability surface (no
       // Spawn, no bash_background, no coordinator workflows).
       backgroundSubprocesses: false,
+      ...(manifestCodeSandbox !== undefined ? { codeSandbox: manifestCodeSandbox } : {}),
       ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
       // When the user passes an explicit manifest.stacks, we honor
       // it verbatim (including re-enabling `spawn` if they really

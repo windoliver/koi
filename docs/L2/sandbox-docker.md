@@ -59,7 +59,9 @@ and the capability is dropped accordingly (capability honesty enforced by
   on the host; treat it as root-equivalent. Limit access via Unix permissions.
 - **Image trust.** The `image` field controls which container starts. Untrusted
   images can include backdoors or supply-chain implants. Pin to digests
-  (`@sha256:...`) in production.
+  (`@sha256:...`) in production. Image refs are normalized with `trim()` and
+  rejected when they begin with `-`, so manifest/programmatic config cannot
+  smuggle Docker CLI flags through the image operand.
 - **Bind mounts.** When the profile's `filesystem.allowRead`/`allowWrite` lists
   host paths, those become readable/writable from inside the container.
 
@@ -82,6 +84,9 @@ and the capability is dropped accordingly (capability honesty enforced by
 
 - Network defaults to `--network none` unless `profile.network.allow=true`.
 - Resources are clamped to the profile's `maxMemoryMb` / `maxPids` when set.
+- The default Docker CLI client inserts `--` before the image ref in
+  `docker create`; image refs that still look flag-shaped after trimming are
+  rejected during config validation before any daemon probe.
 - `instance.destroy()` removes the container; failures surface as typed errors.
 
 ### Residual risk
@@ -110,6 +115,11 @@ export function createDockerAdapter(
   config: DockerAdapterConfig,
 ): Promise<Result<DockerSandboxAdapter, KoiError>>;
 ```
+
+Custom `image` values are trimmed before use. Empty image strings and values
+whose first non-whitespace character is `-` fail validation with a typed
+`VALIDATION` error, including on the default-client path before Docker
+availability detection runs.
 
 `adapter.create(profile)` returns a `SandboxInstance` whose `exec`, `readFile`,
 `writeFile`, and `destroy` methods proxy to the container. Profile mapping:

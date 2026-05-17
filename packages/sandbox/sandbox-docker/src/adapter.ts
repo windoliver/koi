@@ -14,7 +14,7 @@ import { createDockerInstance } from "./instance.js";
 import { mapProfileToDockerOpts } from "./profile-to-opts.js";
 import { createFileScopeRegistry, type ScopeRegistry } from "./scope-registry.js";
 import type { DockerAdapterConfig, DockerClient } from "./types.js";
-import { validateDockerConfig } from "./validate.js";
+import { validateDockerConfig, validateDockerImage } from "./validate.js";
 
 /**
  * Concrete docker adapter type — extends the L0 SandboxAdapter with adapter-
@@ -111,6 +111,12 @@ export async function createDockerAdapter(
     return buildAdapter(client, image, scopeRegistry);
   }
 
+  const image = (config.image ?? "ubuntu:22.04").trim();
+  const imageError = validateDockerImage(image);
+  if (imageError !== undefined) {
+    return { ok: false, error: imageError };
+  }
+
   // Slow path: probe Docker availability before constructing default client.
   const probe = config.probe;
   const socketPath = config.socketPath;
@@ -136,7 +142,6 @@ export async function createDockerAdapter(
   }
 
   const client = createDefaultDockerClient(socketPath !== undefined ? { socketPath } : undefined);
-  const image = config.image ?? "ubuntu:22.04";
   return buildAdapter(client, image, scopeRegistry);
 }
 

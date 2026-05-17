@@ -1,0 +1,5 @@
+[test]
+# CLI tests use process-global Bun mocks and environment mutation in several
+# files. Package-level test runs shard by file for isolation, so per-process
+# coverage thresholds from the root bunfig cannot be applied meaningfully here.
+coverage = false

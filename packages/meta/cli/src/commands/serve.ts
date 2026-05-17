@@ -151,12 +151,17 @@ async function waitForServeShutdown(deps: ServeDeps | undefined): Promise<ServeR
   }
 }
 
-async function createServeRuntime(
+export async function createServeRuntime(
   service: ServiceConfig,
   _flags: ServeFlags,
   manifestConfig?: ManifestConfig,
 ): Promise<KoiRuntimeHandle> {
   const manifest = manifestConfig ?? (await requireServeManifestConfig(service.manifestPath));
+  if (manifest.codeSandbox !== undefined) {
+    throw new Error(
+      "manifest.codeSandbox is not supported by koi serve yet; remove it or use a host that enforces a real sandbox provider",
+    );
+  }
 
   const apiConfigResult = resolveApiConfig();
   if (!apiConfigResult.ok) throw new Error(apiConfigResult.error);

@@ -37,6 +37,8 @@ export interface MiddlewareCompositionInput {
   readonly permissions: KoiMiddleware;
   /** Secret exfiltration guard: scans tool inputs and model outputs for leaks. */
   readonly exfiltrationGuard: KoiMiddleware;
+  /** Environment-level sandbox enforcement for tools with ToolPolicy.sandbox=true. */
+  readonly sandboxEnforcement?: KoiMiddleware | undefined;
   /**
    * Tool error formatter: catches tool throws via `wrapToolCall` and
    * returns a formatted ToolResponse so the model can recover instead of
@@ -129,6 +131,7 @@ export interface MiddlewareCompositionInput {
  *             hook                     — required
  *             permissions              — required (terminal-capable)
  *             exfiltrationGuard        — required (terminal-capable)
+ *             sandboxEnforcement?      — fail-closed sandbox tool filtering
  *             toolErrorFormatter       — required (formats tool throws)
  *   [zone B]  manifestMiddleware[0..]  — user-controlled, runs INSIDE
  *                                         the security guard so it
@@ -146,11 +149,12 @@ export interface MiddlewareCompositionInput {
  * checkpoint, rules-loader) and is trusted to see raw traffic for
  * tracing purposes. Users cannot add to zone A via manifest.
  *
- * The critical security invariant: `hook`, `permissions`, and
- * `exfiltration-guard` MUST wrap zone B from the outside. Zone B is
- * repo-authored content, so any middleware declared there runs only
- * after the guard has gated the tool call and redacted any secrets
- * from the model request/response. This prevents an attacker who
+ * The critical security invariant: `hook`, `permissions`,
+ * `exfiltration-guard`, and sandbox enforcement MUST wrap zone B from
+ * the outside. Zone B is repo-authored content, so any middleware
+ * declared there runs only after the guard has gated the tool call,
+ * filtered sandbox-required tools, and redacted any secrets from the
+ * model request/response. This prevents an attacker who
  * can commit to `koi.yaml` from adding a middleware that logs raw
  * prompts or tool inputs before the guard runs.
  *
@@ -171,6 +175,7 @@ export function composeRuntimeMiddleware(
     input.hook,
     input.permissions,
     input.exfiltrationGuard,
+    ...(input.sandboxEnforcement !== undefined ? [input.sandboxEnforcement] : []),
     input.toolErrorFormatter,
     // Zone B — manifest-declared middleware, in declared order.
     // Runs INSIDE the security guard so repo-authored content
@@ -212,7 +217,7 @@ export function composeRuntimeMiddleware(
  * know their manifest policy does not apply to delegated work.
  *
  * Order mirrors the parent chain structure minus zone B:
- *   permissions → exfiltration-guard → hook → plan? → skillInjector? → systemPrompt?
+ *   permissions → exfiltration-guard → sandbox-enforcement? → hook → plan? → skillInjector? → systemPrompt?
  *
  * `skillInjector` sits BEFORE `systemPrompt` (not after) to match the root
  * agent's effective ordering, where skillInjector is in zone A (outermost) and
@@ -245,6 +250,7 @@ export function composeRuntimeMiddleware(
 export function buildInheritedMiddlewareForChildren(input: {
   readonly permissions: KoiMiddleware;
   readonly exfiltrationGuard: KoiMiddleware;
+  readonly sandboxEnforcement?: KoiMiddleware | undefined;
   readonly hook: KoiMiddleware;
   readonly systemPrompt?: KoiMiddleware | undefined;
   readonly plan?: KoiMiddleware | undefined;
@@ -261,6 +267,7 @@ export function buildInheritedMiddlewareForChildren(input: {
   return [
     input.permissions,
     input.exfiltrationGuard,
+    ...(input.sandboxEnforcement !== undefined ? [input.sandboxEnforcement] : []),
     input.hook,
     ...(input.plan !== undefined ? [input.plan] : []),
     ...(input.planPersist !== undefined ? [input.planPersist] : []),

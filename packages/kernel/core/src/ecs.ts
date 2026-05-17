@@ -262,6 +262,16 @@ export interface ToolCapabilities {
 /** Policy controlling how a tool executes: sandbox isolation + declared capabilities. */
 export interface ToolPolicy {
   readonly sandbox: boolean;
+  /**
+   * How a sandboxed tool satisfies its policy. `environment` means host/runtime
+   * sandbox enforcement must back the tool. `provider` means the tool provider
+   * owns enforcement internally and should not be hidden just because the host
+   * executor backs a different execution path.
+   *
+   * Omitted values are treated as `environment` by sandbox enforcement so older
+   * policies keep the fail-closed posture.
+   */
+  readonly sandboxBacking?: "environment" | "provider";
   readonly capabilities: ToolCapabilities;
 }
 
@@ -272,6 +282,7 @@ export interface ToolPolicy {
 /** Default policy for sandboxed tools — no network, limited filesystem, resource caps. */
 export const DEFAULT_SANDBOXED_POLICY: ToolPolicy = {
   sandbox: true,
+  sandboxBacking: "environment",
   capabilities: {
     network: { allow: false },
     filesystem: { read: ["/usr", "/bin", "/lib", "/etc", "/tmp"], write: ["/tmp/koi-sandbox-*"] },
