@@ -4,6 +4,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "koi": {
+    "optional": true
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
