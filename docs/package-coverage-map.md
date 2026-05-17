@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 229 workspace packages
+- 230 workspace packages
 - 11 package families
-- 229 packages with local test files
-- 204 packages with dedicated package docs
+- 230 packages with local test files
+- 205 packages with dedicated package docs
 
 ## Family Summary
 
