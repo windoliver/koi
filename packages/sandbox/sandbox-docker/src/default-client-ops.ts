@@ -27,7 +27,7 @@ export function buildCreateArgs(opts: DockerCreateOpts): readonly string[] {
   for (const path of opts.tmpfsMounts ?? []) args.push("--tmpfs", path);
   for (const [k, v] of Object.entries(opts.labels ?? {})) args.push("--label", `${k}=${v}`);
   if (opts.name !== undefined) args.push("--name", opts.name);
-  args.push(opts.image, "sleep", "infinity");
+  args.push("--", opts.image, "sleep", "infinity");
   return args;
 }
 

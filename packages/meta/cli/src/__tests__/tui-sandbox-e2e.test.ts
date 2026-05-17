@@ -81,7 +81,7 @@ describe.skipIf(!(await hasScriptCommand()))("koi tui sandbox manifest e2e", () 
     {
       name: "subprocess provider is rejected until it can enforce filesystem confinement",
       yaml: ["model:", "  name: test/model", "codeSandbox:", "  provider: subprocess"].join("\n"),
-      expected: "No codeSandbox providers are currently supported",
+      expected: 'Supported providers: "docker"',
     },
     {
       name: "unknown backend options are rejected before runtime setup",
@@ -89,10 +89,10 @@ describe.skipIf(!(await hasScriptCommand()))("koi tui sandbox manifest e2e", () 
         "model:",
         "  name: test/model",
         "codeSandbox:",
-        "  provider: subprocess",
-        "  image: python:3.12-slim",
+        "  provider: docker",
+        "  credentials: secret",
       ].join("\n"),
-      expected: 'manifest.codeSandbox: unknown key "image"',
+      expected: 'manifest.codeSandbox: unknown key "credentials"',
     },
     {
       name: "missing provider is rejected before runtime setup",

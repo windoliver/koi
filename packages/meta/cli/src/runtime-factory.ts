@@ -27,7 +27,7 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -60,6 +60,7 @@ import type {
   EngineInput,
   EscalationDecision,
   EscalationRequest,
+  ExecutionContext,
   FileSystemBackend,
   GovernanceBackend,
   GovernanceController,
@@ -76,7 +77,11 @@ import type {
   PolicyRequest,
   RichTrajectoryStep,
   RuleDescriptor,
+  SandboxAdapterResult,
+  SandboxError,
   SandboxExecutor,
+  SandboxInstance,
+  SandboxProfile,
   SessionId,
   SessionTranscript,
   Tool,
@@ -1256,6 +1261,7 @@ export interface KoiRuntimeConfig {
 
 export interface CodeSandboxConfig {
   readonly provider: string;
+  readonly image?: string | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -1689,23 +1695,248 @@ export class PolicyLoadError extends Error {
   }
 }
 
-function createExecutorFromCodeSandbox(config: CodeSandboxConfig, cwd: string): SandboxExecutor {
-  for (const key of Object.keys(config)) {
-    if (key !== "provider") {
-      throw new Error(`Unsupported codeSandbox option "${key}". Supported options: "provider".`);
+const DEFAULT_DOCKER_CODE_SANDBOX_IMAGE = "oven/bun:1.3.9";
+const DOCKER_RUNNER_RESULT_MARKER = "__KOI_DOCKER_RESULT__\n";
+const DOCKER_EXEC_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+const CONTAINER_INTRINSIC_PATHS: ReadonlySet<string> = new Set([
+  "/bin",
+  "/etc",
+  "/lib",
+  "/lib64",
+  "/tmp",
+  "/usr",
+]);
+
+function dockerSandboxError(
+  code: SandboxError["code"],
+  message: string,
+  startMs: number,
+  stack?: string,
+): SandboxError {
+  return {
+    code,
+    message,
+    durationMs: performance.now() - startMs,
+    ...(stack !== undefined ? { stack } : {}),
+  };
+}
+
+function dockerHostMountPaths(paths: readonly string[] | undefined): readonly string[] {
+  const accepted = new Set<string>();
+  for (const path of paths ?? []) {
+    if (CONTAINER_INTRINSIC_PATHS.has(path)) continue;
+    if (path.includes("*")) continue;
+    accepted.add(path);
+  }
+  return [...accepted];
+}
+
+function dockerProfileFromExecutionContext(context: ExecutionContext | undefined): SandboxProfile {
+  const read = dockerHostMountPaths(context?.filesystem?.read);
+  const write = dockerHostMountPaths(context?.filesystem?.write);
+  return {
+    filesystem: {
+      defaultReadAccess: "open",
+      ...(read.length > 0 ? { allowRead: read } : {}),
+      ...(write.length > 0 ? { allowWrite: write } : {}),
+    },
+    network: { allow: context?.networkAllowed === true },
+    resources: {
+      ...(context?.resourceLimits?.maxMemoryMb !== undefined
+        ? { maxMemoryMb: context.resourceLimits.maxMemoryMb }
+        : {}),
+      ...(context?.resourceLimits?.maxPids !== undefined
+        ? { maxPids: context.resourceLimits.maxPids }
+        : {}),
+    },
+    ...(context?.env !== undefined ? { env: context.env } : {}),
+    required: { required: new Set(["exec", "copy-files", "network", "filesystem-rw"]) },
+  };
+}
+
+function parseDockerRunnerResult(
+  stderr: string,
+):
+  | { readonly ok: true; readonly output: unknown }
+  | { readonly ok: false; readonly message: string; readonly stack?: string }
+  | undefined {
+  const markerIndex = stderr.lastIndexOf(DOCKER_RUNNER_RESULT_MARKER);
+  if (markerIndex === -1) return undefined;
+  const jsonText = stderr.slice(markerIndex + DOCKER_RUNNER_RESULT_MARKER.length).trimEnd();
+  try {
+    const parsed: unknown = JSON.parse(jsonText);
+    if (parsed === null || typeof parsed !== "object" || !("ok" in parsed)) return undefined;
+    const obj = parsed as {
+      readonly ok?: unknown;
+      readonly output?: unknown;
+      readonly error?: { readonly message?: unknown; readonly stack?: unknown };
+    };
+    if (obj.ok === true) return { ok: true, output: obj.output };
+    if (obj.ok === false) {
+      const message =
+        typeof obj.error?.message === "string" ? obj.error.message : "sandboxed code failed";
+      const stack = typeof obj.error?.stack === "string" ? obj.error.stack : undefined;
+      return { ok: false, message, ...(stack !== undefined ? { stack } : {}) };
+    }
+  } catch (_: unknown) {
+    return undefined;
+  }
+  return undefined;
+}
+
+function dockerRunnerSource(): string {
+  return [
+    `const marker = ${JSON.stringify(DOCKER_RUNNER_RESULT_MARKER)};`,
+    "try {",
+    '  const mod = await import("file://" + Bun.argv[2]);',
+    "  const input = JSON.parse(await Bun.file(Bun.argv[3]).text());",
+    "  const output = await mod.default(input);",
+    "  console.error(marker + JSON.stringify({ ok: true, output }));",
+    "} catch (err) {",
+    "  const message = err instanceof Error ? err.message : String(err);",
+    "  const stack = err instanceof Error ? err.stack : undefined;",
+    "  console.error(marker + JSON.stringify({ ok: false, error: { message, stack } }));",
+    "  process.exit(1);",
+    "}",
+    "",
+  ].join("\n");
+}
+
+async function writeDockerExecutionFiles(
+  instance: SandboxInstance,
+  code: string,
+  input: unknown,
+): Promise<{
+  readonly codePath: string;
+  readonly inputPath: string;
+  readonly runnerPath: string;
+}> {
+  const suffix = randomUUID();
+  const codePath = `/tmp/koi-code-${suffix}.mjs`;
+  const inputPath = `/tmp/koi-input-${suffix}.json`;
+  const runnerPath = `/tmp/koi-runner-${suffix}.mjs`;
+  await instance.writeFile(codePath, new TextEncoder().encode(code));
+  await instance.writeFile(inputPath, new TextEncoder().encode(JSON.stringify(input)));
+  await instance.writeFile(runnerPath, new TextEncoder().encode(dockerRunnerSource()));
+  return { codePath, inputPath, runnerPath };
+}
+
+function mapDockerExecutionResult(
+  result: SandboxAdapterResult,
+  startMs: number,
+):
+  | { readonly ok: true; readonly value: { readonly output: unknown; readonly durationMs: number } }
+  | { readonly ok: false; readonly error: SandboxError } {
+  if (result.timedOut) {
+    return {
+      ok: false,
+      error: dockerSandboxError("TIMEOUT", "Docker codeSandbox execution timed out", startMs),
+    };
+  }
+  if (result.oomKilled) {
+    return {
+      ok: false,
+      error: dockerSandboxError(
+        "OOM",
+        "Docker codeSandbox execution exceeded memory limit",
+        startMs,
+      ),
+    };
+  }
+
+  const framed = parseDockerRunnerResult(result.stderr);
+  if (result.exitCode === 0 && framed?.ok === true) {
+    return { ok: true, value: { output: framed.output, durationMs: performance.now() - startMs } };
+  }
+  if (framed?.ok === false) {
+    return {
+      ok: false,
+      error: dockerSandboxError("CRASH", framed.message, startMs, framed.stack),
+    };
+  }
+  return {
+    ok: false,
+    error: dockerSandboxError(
+      "CRASH",
+      `Docker codeSandbox execution failed with exit code ${result.exitCode}: ${result.stderr.slice(0, 512) || result.stdout.slice(0, 512)}`,
+      startMs,
+    ),
+  };
+}
+
+async function executeDockerCodeSandbox(
+  config: CodeSandboxConfig,
+  code: string,
+  input: unknown,
+  timeoutMs: number,
+  context: ExecutionContext | undefined,
+): ReturnType<SandboxExecutor["execute"]> {
+  const startMs = performance.now();
+  const { createDockerAdapter } = await import("@koi/sandbox-docker");
+  const adapterResult = await createDockerAdapter({
+    image: config.image ?? DEFAULT_DOCKER_CODE_SANDBOX_IMAGE,
+  });
+  if (!adapterResult.ok) {
+    return {
+      ok: false,
+      error: dockerSandboxError(
+        "PERMISSION",
+        `Docker codeSandbox unavailable: ${adapterResult.error.message}`,
+        startMs,
+      ),
+    };
+  }
+
+  let instance: SandboxInstance | undefined;
+  try {
+    instance = await adapterResult.value.create(dockerProfileFromExecutionContext(context));
+    const paths = await writeDockerExecutionFiles(instance, code, input);
+    const result = await instance.exec("bun", [paths.runnerPath, paths.codePath, paths.inputPath], {
+      ...(context?.workspacePath !== undefined ? { cwd: context.workspacePath } : {}),
+      ...(context?.env !== undefined ? { env: context.env } : {}),
+      timeoutMs,
+      maxOutputBytes: DOCKER_EXEC_MAX_OUTPUT_BYTES,
+    });
+    return mapDockerExecutionResult(result, startMs);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    return { ok: false, error: dockerSandboxError("CRASH", message, startMs, stack) };
+  } finally {
+    if (instance !== undefined) {
+      await instance.destroy().catch(() => undefined);
     }
   }
-  if (config.provider === "subprocess") {
+}
+
+function createDockerCodeSandboxExecutor(config: CodeSandboxConfig): SandboxExecutor {
+  return {
+    sandboxCapabilities: {
+      network: "enforced",
+      resources: "enforced",
+      filesystem: "enforced",
+      process: "enforced",
+    },
+    execute: (code, input, timeoutMs, context) =>
+      executeDockerCodeSandbox(config, code, input, timeoutMs, context),
+  };
+}
+
+function createExecutorFromCodeSandbox(config: CodeSandboxConfig, cwd: string): SandboxExecutor {
+  for (const key of Object.keys(config)) {
+    if (key !== "provider" && key !== "image") {
+      throw new Error(
+        `Unsupported codeSandbox option "${key}". Supported options: "provider", "image".`,
+      );
+    }
+  }
+  if (config.provider === "docker") {
     void cwd;
-    throw new Error(
-      'codeSandbox provider "subprocess" is not supported yet: plain subprocess execution ' +
-        "cannot enforce the filesystem restrictions required by sandboxed tool policy.",
-    );
+    return createDockerCodeSandboxExecutor(config);
   }
 
   throw new Error(
-    `Unsupported codeSandbox provider "${config.provider}". ` +
-      'Supported providers: "subprocess".',
+    `Unsupported codeSandbox provider "${config.provider}". Supported providers: "docker".`,
   );
 }
 

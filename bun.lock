@@ -1494,6 +1494,7 @@
         "@koi/query-engine": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/runtime": "workspace:*",
+        "@koi/sandbox-docker": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-nexus": "workspace:*",

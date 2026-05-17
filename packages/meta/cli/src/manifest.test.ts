@@ -24,20 +24,21 @@ describe("loadManifestConfig: codeSandbox block (#1550)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("rejects subprocess until a filesystem-confined provider is implemented", async () => {
+  test("accepts docker provider with an optional image", async () => {
     const p = writeManifest(
       [
         "model:",
         "  name: google/gemini-2.0-flash-001",
         "codeSandbox:",
-        "  provider: subprocess",
+        "  provider: docker",
+        "  image: oven/bun:1.3.9",
       ].join("\n"),
     );
 
     const result = await loadManifestConfig(p);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("No codeSandbox providers are currently supported");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.codeSandbox).toEqual({ provider: "docker", image: "oven/bun:1.3.9" });
   });
 
   test("rejects missing provider", async () => {
@@ -58,15 +59,18 @@ describe("loadManifestConfig: codeSandbox block (#1550)", () => {
 
   test("rejects unsupported provider", async () => {
     const p = writeManifest(
-      ["model:", "  name: google/gemini-2.0-flash-001", "codeSandbox:", "  provider: docker"].join(
-        "\n",
-      ),
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  provider: subprocess",
+      ].join("\n"),
     );
 
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("No codeSandbox providers are currently supported");
+    expect(result.error).toContain('Supported providers: "docker"');
   });
 
   test("rejects unsupported backend options", async () => {
@@ -75,15 +79,32 @@ describe("loadManifestConfig: codeSandbox block (#1550)", () => {
         "model:",
         "  name: google/gemini-2.0-flash-001",
         "codeSandbox:",
-        "  provider: subprocess",
-        "  image: python:3.12-slim",
+        "  provider: docker",
+        "  credentials: secret",
       ].join("\n"),
     );
 
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain('unknown key "image"');
+    expect(result.error).toContain('unknown key "credentials"');
+  });
+
+  test("rejects flag-shaped docker images", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  provider: docker",
+        '  image: "--privileged"',
+      ].join("\n"),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.codeSandbox.image must not start with '-'");
   });
 });
 

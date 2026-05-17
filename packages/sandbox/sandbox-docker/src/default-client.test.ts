@@ -492,6 +492,9 @@ describe("createDefaultDockerClient", () => {
       expect(first).toContain("--cap-add");
       expect(first).toContain("SYS_PTRACE");
       expect(first).toContain("FOO=bar");
+      const imageIdx = first.indexOf("ubuntu:22.04");
+      expect(imageIdx).toBeGreaterThan(0);
+      expect(first[imageIdx - 1]).toBe("--");
     } finally {
       spawnSpy.mockRestore();
     }

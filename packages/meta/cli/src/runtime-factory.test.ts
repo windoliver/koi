@@ -657,20 +657,31 @@ describe("createKoiRuntime — tool inventory", () => {
     await expect(
       createKoiRuntime(
         makeConfig({
-          codeSandbox: { provider: "subprocess", image: "python:3.12-slim" } as never,
+          codeSandbox: { provider: "docker", credentials: "secret" } as never,
         }),
       ),
-    ).rejects.toThrow('Unsupported codeSandbox option "image"');
+    ).rejects.toThrow('Unsupported codeSandbox option "credentials"');
   });
 
-  test("codeSandbox subprocess provider refuses to advertise incomplete filesystem sandboxing", async () => {
+  test("codeSandbox subprocess provider is rejected in favor of an environment sandbox", async () => {
     await expect(
       createKoiRuntime(
         makeConfig({
           codeSandbox: { provider: "subprocess" },
         }),
       ),
-    ).rejects.toThrow("cannot enforce the filesystem restrictions");
+    ).rejects.toThrow('Supported providers: "docker"');
+  });
+
+  test("codeSandbox docker provider wires sandbox-backed execute_script and hides execute_code", async () => {
+    runtimeHandle = await createKoiRuntime(
+      makeConfig({
+        codeSandbox: { provider: "docker", image: "oven/bun:1.3.9" },
+      }),
+    );
+
+    expect(runtimeHandle.runtime.agent.has(toolToken("execute_script"))).toBe(true);
+    expect(runtimeHandle.runtime.agent.has(toolToken("execute_code"))).toBe(false);
   });
 
   test("sandbox enforcement required mode hides sandboxed tools without an executor", async () => {

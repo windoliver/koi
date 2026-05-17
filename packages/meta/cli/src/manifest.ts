@@ -210,6 +210,7 @@ export interface ManifestMiddlewareEntry {
 
 export interface ManifestCodeSandboxConfig {
   readonly provider: string;
+  readonly image?: string | undefined;
 }
 
 export interface ManifestConfig {
@@ -858,19 +859,43 @@ function parseManifestCodeSandbox(
   }
   const providerName = provider.trim();
   for (const key of Object.keys(obj)) {
-    if (key !== "provider") {
+    if (key !== "provider" && key !== "image") {
       return {
         ok: false,
-        error: `manifest.codeSandbox: unknown key "${key}". Supported keys: "provider".`,
+        error: `manifest.codeSandbox: unknown key "${key}". Supported keys: "provider", "image".`,
       };
     }
   }
+  if (providerName !== "docker") {
+    return {
+      ok: false,
+      error:
+        `manifest.codeSandbox.provider "${providerName}" is not supported. ` +
+        'Supported providers: "docker".',
+    };
+  }
+
+  const image = obj.image;
+  if (image !== undefined && (typeof image !== "string" || image.trim().length === 0)) {
+    return {
+      ok: false,
+      error: "manifest.codeSandbox.image must be a non-empty string when provided",
+    };
+  }
+  const imageName = typeof image === "string" ? image.trim() : undefined;
+  if (imageName?.startsWith("-")) {
+    return {
+      ok: false,
+      error: "manifest.codeSandbox.image must not start with '-'",
+    };
+  }
 
   return {
-    ok: false,
-    error:
-      `manifest.codeSandbox.provider "${providerName}" is not supported. ` +
-      "No codeSandbox providers are currently supported.",
+    ok: true,
+    value: {
+      provider: providerName,
+      ...(imageName !== undefined ? { image: imageName } : {}),
+    },
   };
 }
 

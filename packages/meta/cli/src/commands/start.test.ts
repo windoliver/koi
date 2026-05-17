@@ -48,6 +48,11 @@ const mockHarness = {
 const mockDispose = mock(async () => {});
 const mockRun = mock(async function* () {});
 const mockRuntime = { run: mockRun, dispose: mockDispose };
+const mockCreateKoiRuntime = mock(async (_config: unknown) => ({
+  runtime: mockRuntime,
+  transcript: [],
+  shutdownBackgroundTasks: mock(() => false),
+}));
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be set up before importing the module under test.
@@ -72,11 +77,7 @@ mock.module("@koi/engine", () => ({
 // don't need to satisfy the full downstream mock chain
 // (shared-wiring, @koi/runtime, required-middleware, etc.).
 mock.module("../runtime-factory.js", () => ({
-  createKoiRuntime: mock(async () => ({
-    runtime: mockRuntime,
-    transcript: [],
-    shutdownBackgroundTasks: mock(() => false),
-  })),
+  createKoiRuntime: mockCreateKoiRuntime,
   PolicyLoadError: class PolicyLoadError extends Error {},
 }));
 
@@ -105,7 +106,23 @@ mock.module("@koi/query-engine", () => ({
 type ManifestResult =
   | {
       readonly ok: true;
-      readonly value: { readonly modelName: string; readonly instructions: string | undefined };
+      readonly value: {
+        readonly modelName: string;
+        readonly instructions: string | undefined;
+        readonly codeSandbox?: { readonly provider: string; readonly image?: string } | undefined;
+        readonly stacks?: readonly string[] | undefined;
+        readonly plugins?: readonly string[] | undefined;
+        readonly middleware?: readonly unknown[] | undefined;
+        readonly backgroundSubprocesses?: boolean | undefined;
+        readonly governance?: unknown;
+        readonly nexus?: unknown;
+        readonly delegation?: unknown;
+        readonly filesystem?: unknown;
+        readonly audit?: unknown;
+        readonly network?: unknown;
+        readonly credentials?: unknown;
+        readonly ace?: { readonly enabled?: boolean | undefined } | undefined;
+      };
     }
   | { readonly ok: false; readonly error: string };
 const mockLoadManifest = mock(
@@ -407,6 +424,7 @@ describe("run() — manifest loading", () => {
   beforeEach(() => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     mockLoadManifest.mockReset();
+    mockCreateKoiRuntime.mockClear();
     mockRunSinglePrompt.mockImplementation(async () => completedOutput());
   });
   afterEach(() => {
@@ -423,13 +441,13 @@ describe("run() — manifest loading", () => {
     expect(mockLoadManifest).toHaveBeenCalledWith("koi.yaml", { skipAuditValidation: true });
   });
 
-  test("rejects unsupported manifest codeSandbox instead of ignoring it", async () => {
+  test("passes manifest codeSandbox into runtime", async () => {
     mockLoadManifest.mockImplementation(async () => ({
       ok: true as const,
       value: {
         modelName: "manifest/model",
         instructions: undefined,
-        codeSandbox: { provider: "subprocess" },
+        codeSandbox: { provider: "docker", image: "oven/bun:1.3.9" },
       },
     }));
     const { run } = await import("./start.js");
@@ -437,7 +455,11 @@ describe("run() — manifest loading", () => {
       makeFlags({ manifest: "koi.yaml", mode: { kind: "prompt", text: "hi" } }),
     );
 
-    expect(result).toBe(ExitCode.FAILURE);
+    expect(result).toBe(ExitCode.OK);
+    expect(mockCreateKoiRuntime).toHaveBeenCalledTimes(1);
+    expect(mockCreateKoiRuntime.mock.calls[0]?.[0]).toMatchObject({
+      codeSandbox: { provider: "docker", image: "oven/bun:1.3.9" },
+    });
   });
 
   test("returns FAILURE when manifest is invalid", async () => {
