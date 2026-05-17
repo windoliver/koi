@@ -4,6 +4,11 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+- 2026-05-16: Integrated `@koi/model-openai-compat` now honors a `KOI_MAX_TOKENS`
+  output-token cap (sends `min(request.maxTokens, KOI_MAX_TOKENS)`, or the cap alone
+  when the request omits `maxTokens`). No-op when unset/non-positive, so runtime
+  behavior is unchanged unless a caller exports it. The integrated L2 package set is
+  unchanged; this is a behavioral note for CI/benchmark token-budgeting only.
 - 2026-05-15: `@koi/team-runtime` team tools wired (#1416). Runtime now depends
   on the issue #1416 coordination surface: `createTeamManager`,
   `createTeamToolProviders`, file-backed team mailboxes, and plan-approval
