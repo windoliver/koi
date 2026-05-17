@@ -195,7 +195,7 @@ export async function verifyRemoteJwt(
 > {
   // Split into exactly 3 parts, parse JSON header/payload, require alg HS256,
   // verify signature over "header.payload", then validate iss/aud/exp/nbf/sub/device_id.
-  // Return permissions from payload.permissions only when it is string[]; otherwise [].
+  // Return permissions from payload.permissions when omitted or string[]; reject malformed present values.
 }
 ```
 
@@ -204,7 +204,7 @@ Implementation details:
 - Decode base64url by replacing `-` with `+`, `_` with `/`, and adding padding.
 - Reject parse failures as `malformed`.
 - Treat `sub` as subject and `device_id` as device id.
-- Treat `permissions` as empty unless it is a readonly string array.
+- Treat omitted `permissions` as empty and reject present non-string-array values.
 - Treat `metadata` as empty unless it is a non-null object.
 
 - [ ] **Step 4: Verify GREEN**

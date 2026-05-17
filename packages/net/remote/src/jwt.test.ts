@@ -144,6 +144,15 @@ describe("verifyRemoteJwt", () => {
     expect(result).toEqual({ ok: false, reason: "invalid_signature" });
   });
 
+  test("empty verifier secret rejects fail-closed", async () => {
+    const result = await verifyRemoteJwt(await sign(validPayload), {
+      ...verifierOptions,
+      secret: "",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_signature" });
+  });
+
   test("missing sub rejects with missing_subject", async () => {
     const { sub: _sub, ...payload } = validPayload;
     const result = await verifyRemoteJwt(await sign(payload), verifierOptions);
@@ -178,21 +187,12 @@ describe("verifyRemoteJwt", () => {
     expect(result).toEqual({ ok: false, reason: "not_before" });
   });
 
-  test("mixed permissions array is treated as empty", async () => {
+  test("mixed permissions array rejects fail-closed", async () => {
     const result = await verifyRemoteJwt(
       await sign({ ...validPayload, permissions: ["remote:connect", 123] }),
       verifierOptions,
     );
 
-    expect(result).toEqual({
-      ok: true,
-      claims: {
-        subject: "user-1",
-        deviceId: "device-1",
-        agentId: "agent-1",
-        permissions: [],
-        metadata: { label: "laptop" },
-      },
-    });
+    expect(result).toEqual({ ok: false, reason: "invalid_permissions" });
   });
 });

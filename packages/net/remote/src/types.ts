@@ -7,7 +7,8 @@ export type RemoteJwtRejectReason =
   | "invalid_issuer"
   | "invalid_audience"
   | "missing_subject"
-  | "missing_device";
+  | "missing_device"
+  | "invalid_permissions";
 
 export interface RemoteJwtClaims {
   readonly subject: string;

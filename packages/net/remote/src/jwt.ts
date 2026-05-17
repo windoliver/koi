@@ -36,9 +36,12 @@ export async function verifyRemoteJwt(
     return { ok: false, reason: "missing_device" };
   }
 
+  const permissions = parsePermissions(parsed.payload.permissions);
+  if (permissions === undefined) return { ok: false, reason: "invalid_permissions" };
+
   return {
     ok: true,
-    claims: mapClaims(parsed.payload, subject, deviceId),
+    claims: mapClaims(parsed.payload, subject, deviceId, permissions),
   };
 }
 
@@ -100,19 +103,26 @@ async function verifyHs256(
   signingInput: string,
   signature: Uint8Array,
 ): Promise<boolean> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["verify"],
-  );
-  return crypto.subtle.verify(
-    "HMAC",
-    key,
-    signature.slice().buffer,
-    new TextEncoder().encode(signingInput),
-  );
+  const encodedSecret = new TextEncoder().encode(secret);
+  if (encodedSecret.byteLength === 0) return false;
+
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encodedSecret,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    return await crypto.subtle.verify(
+      "HMAC",
+      key,
+      signature.slice().buffer,
+      new TextEncoder().encode(signingInput),
+    );
+  } catch {
+    return false;
+  }
 }
 
 function validateRegisteredClaims(
@@ -142,12 +152,8 @@ function mapClaims(
   payload: Record<string, unknown>,
   subject: string,
   deviceId: string,
+  permissions: readonly string[],
 ): RemoteJwtClaims {
-  const permissions = Array.isArray(payload.permissions)
-    ? payload.permissions.every((permission) => typeof permission === "string")
-      ? payload.permissions
-      : []
-    : [];
   const metadata =
     payload.metadata !== null &&
     typeof payload.metadata === "object" &&
@@ -162,4 +168,10 @@ function mapClaims(
     permissions,
     metadata,
   };
+}
+
+function parsePermissions(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return undefined;
+  return value.every((permission) => typeof permission === "string") ? value : undefined;
 }
