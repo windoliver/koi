@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 227 workspace packages
+- 229 workspace packages
 - 11 package families
-- 227 packages with local test files
-- 203 packages with dedicated package docs
+- 229 packages with local test files
+- 204 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,8 +16,8 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 148 | 780 | 129 |
-| meta | 6 | 119 | 5 |
+| lib | 149 | 781 | 130 |
+| meta | 7 | 121 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 11 | 92 | 11 |
 | sandbox | 12 | 67 | 12 |
@@ -47,7 +47,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 7. Docs: -.
 - `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 22. Docs: -.
 
-## lib (148)
+## lib (149)
 
 - `@koi/ace-types` (packages/lib/ace-types) - Shared domain types for ACE (Adaptive Continuous Enhancement) middleware and stores. Tests: 1. Docs: -.
 - `@koi/agent-discovery` (packages/lib/agent-discovery) - Runtime discovery of external coding agents (CLI, filesystem registry, MCP). Tests: 8. Docs: docs/L2/agent-discovery.md.
@@ -138,6 +138,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/middleware-reflex` (packages/lib/middleware-reflex) - Rule-based short-circuit middleware — canned responses for known message patterns, skipping the model. Tests: 1. Docs: docs/L2/middleware-reflex.md.
 - `@koi/middleware-report` (packages/lib/middleware-report) - Activity reporting middleware with bounded ring buffer and structured run reports. Tests: 4. Docs: docs/L2/middleware-report.md.
 - `@koi/middleware-rlm` (packages/lib/middleware-rlm) - Segment oversized model requests into chunks and reassemble responses. Tests: 4. Docs: docs/L2/middleware-rlm.md.
+- `@koi/middleware-sandbox` (packages/lib/middleware-sandbox) - Fail-closed ToolPolicy.sandbox enforcement for environment-level sandbox runtimes. Tests: 1. Docs: docs/L2/middleware-sandbox.md.
 - `@koi/middleware-semantic-retry` (packages/lib/middleware-semantic-retry) - Context-aware prompt rewriting on agent failure with pluggable failure analysis and retry actions. Tests: 3. Docs: docs/L2/middleware-semantic-retry.md.
 - `@koi/middleware-strict-agentic` (packages/lib/middleware-strict-agentic) - Stop-gate middleware that blocks premature completion on filler/plan-only turns in agentic mode. Tests: 5. Docs: docs/L2/middleware-strict-agentic.md.
 - `@koi/middleware-task-anchor` (packages/lib/middleware-task-anchor) - Injects a system-reminder with the live task board after K idle turns. Tests: 3. Docs: docs/L2/middleware-task-anchor.md.
@@ -198,9 +199,10 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/workspace-conformance` (packages/lib/workspace-conformance) - Shared bun:test conformance suite for WorkspaceBackend implementations. Tests: 1. Docs: docs/L2/workspace-conformance.md.
 - `@koi/workspace-nexus` (packages/lib/workspace-nexus) - Nexus-backed WorkspaceBackend with optional local fallback. Tests: 4. Docs: docs/L2/workspace-nexus.md.
 
-## meta (6)
+## meta (7)
 
-- `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 68. Docs: docs/L3/cli.md.
+- `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 69. Docs: docs/L3/cli.md.
+- `@koi-agent/cloud` (packages/meta/cloud-agent) - Cloud runtime assembly with required environment-level sandbox enforcement. Tests: 1. Docs: -.
 - `@koi/auto-harness` (packages/meta/auto-harness) - L3 composition wiring for auto-harness synthesis session controls and policy-cache attachment. Tests: 1. Docs: -.
 - `@koi/autonomous` (packages/meta/autonomous) - L3 autonomous composition facade for long-running harness, scheduler, and task-aware helper wiring. Tests: 1. Docs: docs/L2/autonomous.md, docs/L3/autonomous.md.
 - `@koi/nexus` (packages/meta/nexus) - L3 Nexus composition wiring for the active v2 Nexus package set. Tests: 6. Docs: docs/L3/nexus.md.

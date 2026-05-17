@@ -9,6 +9,13 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
   when the request omits `maxTokens`). No-op when unset/non-positive, so runtime
   behavior is unchanged unless a caller exports it. The integrated L2 package set is
   unchanged; this is a behavioral note for CI/benchmark token-budgeting only.
+- 2026-05-17: cloud sandbox enforcement wiring (#1550). `@koi/runtime` now
+  declares `@koi/middleware-sandbox` as an integrated dependency so runtime
+  hosts can enforce `ToolPolicy.sandbox` in strict mode. The middleware filters
+  unbacked sandbox-required tools from model context and fails closed on direct
+  calls unless the tool is backed by a real executor or an explicitly trusted
+  provider-backed policy. See `docs/L2/middleware-sandbox.md`.
+
 - 2026-05-15: `@koi/team-runtime` team tools wired (#1416). Runtime now depends
   on the issue #1416 coordination surface: `createTeamManager`,
   `createTeamToolProviders`, file-backed team mailboxes, and plan-approval

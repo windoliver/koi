@@ -48,10 +48,16 @@ export interface ExecutionContext {
   readonly entryPath?: string;
   /** Whether the brick is allowed to make network requests. Default: false. */
   readonly networkAllowed?: boolean;
+  /** Filesystem allowlists requested by the tool policy. */
+  readonly filesystem?: {
+    readonly read?: readonly string[];
+    readonly write?: readonly string[];
+  };
   /** OS-level resource limits for the subprocess. */
   readonly resourceLimits?: {
     readonly maxMemoryMb?: number;
     readonly maxPids?: number;
+    readonly maxOpenFiles?: number;
   };
   /**
    * Additional environment variables to inject into the child process.
@@ -61,7 +67,15 @@ export interface ExecutionContext {
   readonly env?: Readonly<Record<string, string>>;
 }
 
+export interface SandboxExecutorCapabilities {
+  readonly network: "enforced";
+  readonly resources: "enforced";
+  readonly filesystem: "enforced";
+  readonly process: "enforced";
+}
+
 export interface SandboxExecutor {
+  readonly sandboxCapabilities?: SandboxExecutorCapabilities;
   readonly execute: (
     code: string,
     input: unknown,

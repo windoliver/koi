@@ -139,6 +139,10 @@ describe("DEFAULT_SANDBOXED_POLICY", () => {
     expect(DEFAULT_SANDBOXED_POLICY.sandbox).toBe(true);
   });
 
+  test("defaults to environment-backed sandbox enforcement", () => {
+    expect(DEFAULT_SANDBOXED_POLICY.sandboxBacking).toBe("environment");
+  });
+
   test("denies network by default", () => {
     expect(DEFAULT_SANDBOXED_POLICY.capabilities.network?.allow).toBe(false);
   });

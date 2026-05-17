@@ -13,6 +13,14 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
   `KOI_EXFIL_ALLOW_DOWNGRADE=1` is also set — weakening the exfiltration guard
   requires an explicit opt-in; `block` is re-assertable unconditionally and an
   unrecognized/ungated value logs a warning and falls back to the guard default.
+- **Cloud sandbox execution wiring (#1550)**: CLI now depends directly on
+  `@koi/code-executor` and `@koi/middleware-sandbox`. The TUI/start runtime
+  stack can expose `execute_script` through an injected sandbox executor while
+  strict sandbox-enforcement middleware filters or rejects sandbox-required
+  tools that do not have an attested executor or provider backing. Manifest and
+  runtime wiring thread workspace context into the code executor so workspace
+  read/write access is explicit rather than implicit.
+
 - **Team runtime tools (#1416)**: `@koi/team-runtime` is now a direct CLI
   dependency and the execution preset contributes four TUI-visible tool
   providers: `TeamCreate`, `TeamDelete`, `TeamAssignTask`, and `TeamReportTask`.

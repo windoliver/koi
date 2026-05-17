@@ -160,6 +160,11 @@ mock.module("@koi/runtime", () => ({
   createHookObserver: mock(() => ({})),
   createSkillsMcpBridge: mock(() => ({})),
   createArtifactToolProvider: mock(() => ({})),
+  createDefaultSandboxRouter: mock(async () => ({
+    ok: true as const,
+    value: { execute: mock(async () => ({ code: 0, stdout: "", stderr: "" })) },
+  })),
+  createRouterAdapterShim: mock(() => ({})),
 }));
 
 // Mock @koi/session so tests don't touch the filesystem. We
@@ -416,6 +421,23 @@ describe("run() — manifest loading", () => {
     const { run } = await import("./start.js");
     await run(makeFlags({ manifest: "koi.yaml", mode: { kind: "prompt", text: "hi" } }));
     expect(mockLoadManifest).toHaveBeenCalledWith("koi.yaml", { skipAuditValidation: true });
+  });
+
+  test("rejects unsupported manifest codeSandbox instead of ignoring it", async () => {
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "manifest/model",
+        instructions: undefined,
+        codeSandbox: { provider: "subprocess" },
+      },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(
+      makeFlags({ manifest: "koi.yaml", mode: { kind: "prompt", text: "hi" } }),
+    );
+
+    expect(result).toBe(ExitCode.FAILURE);
   });
 
   test("returns FAILURE when manifest is invalid", async () => {

@@ -43,6 +43,9 @@ function normalizeDtsSurface(dts: string): string {
       // snapshots track exported names and signatures, not rollup internals.
       .replace(/from '\.\/[a-z-]+-HASH\.(js|d\.ts)'/g, "from './chunk-HASH.$1'")
       .replace(/import '\.\/[a-z-]+-HASH\.(js|d\.ts)';/g, "import './chunk-HASH.$1';")
+      // Side-effect-only imports in generated .d.ts files vary by Rollup/TS
+      // emit path and platform but do not change exported signatures.
+      .replace(/^import '\.\/[a-z-]+\.(js|d\.ts)';\n?/gm, "")
       // Rollup-generated local symbol aliases are unstable across build paths.
       .replace(
         /\b(import|export) \{([^}]+)\} from/g,
@@ -67,11 +70,9 @@ describe("normalizeDtsSurface", () => {
         ].join("\n"),
       ),
     ).toBe(
-      [
-        "import { TaskableAgent } from './chunk-HASH.js';",
-        "import './chunk-HASH.js';",
-        "import './errors.js';",
-      ].join("\n"),
+      ["import { TaskableAgent } from './chunk-HASH.js';", "import './chunk-HASH.js';", ""].join(
+        "\n",
+      ),
     );
   });
 });

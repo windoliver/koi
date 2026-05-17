@@ -110,6 +110,7 @@
     { "path": "../auto-harness" },
     { "path": "../rlm-stack" },
     { "path": "../../lib/middleware-report" },
+    { "path": "../../lib/middleware-sandbox" },
     { "path": "../../lib/middleware-task-anchor" },
     { "path": "../../lib/middleware-tool-disclosure" },
     { "path": "../../lib/middleware-tool-error-formatter" },

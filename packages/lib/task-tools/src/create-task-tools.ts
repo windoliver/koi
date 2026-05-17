@@ -22,6 +22,10 @@ const VERIF_PATTERN = /verif/i;
 const NUDGE_MESSAGE =
   "Reminder: consider adding a verification task to confirm your progress before continuing.";
 
+function providerBacked(tool: Tool): Tool {
+  return { ...tool, policy: { ...tool.policy, sandboxBacking: "provider" } };
+}
+
 export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
   const { board, agentId } = config;
 
@@ -79,5 +83,5 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
     createTaskStopTool(board, agentId),
     createTaskOutputTool(board, agentId, config),
     createTaskDelegateTool(board),
-  ];
+  ].map(providerBacked);
 }

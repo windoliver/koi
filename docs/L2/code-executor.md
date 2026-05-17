@@ -20,6 +20,18 @@ narrower `IpcSandboxExecutor` shape (`executeFunctionBody`) and is **not** a
 drop-in `SandboxExecutor` — wiring it into `code-executor` requires a separate
 adapter that is not yet provided.
 
+## Recent updates
+
+- **Cloud sandbox policy context (#1550)**: `execute_script` now marks its tool
+  policy with `sandboxBacking: "environment"` and forwards an explicit
+  `ExecutionContext` to the injected `SandboxExecutor`: network disabled,
+  default filesystem read/write allowlists, and resource limits derived from
+  `DEFAULT_SANDBOXED_POLICY`. `ExecuteScriptToolConfig` and
+  `CodeExecutorProviderConfig` accept `workspacePath` and `workspaceWrite` so
+  hosts can grant read-only or explicit read/write workspace access to the
+  sandbox context. Plain subprocess execution fails closed for this restricted
+  context; production hosts must provide a real confining executor.
+
 ## Architecture
 
 ```
@@ -55,6 +67,7 @@ Runs a script through the injected `SandboxExecutor`:
 | `timeoutMs` | `number` | `30_000` | Forwarded to `SandboxExecutor.execute` |
 | `input` | `unknown` | `undefined` | Bound to the script's `input` parameter |
 | `executor` | `SandboxExecutor` | (required) | Injected sandbox |
+| `context` | `ExecutionContext` | `undefined` | Optional sandbox context forwarded to `executor.execute` |
 
 Result shape: `{ ok, result?, durationMs, error? }`. Sandbox failures
 (`TIMEOUT`, `OOM`, `CRASH`, `PERMISSION`) flow through with their typed
@@ -67,10 +80,16 @@ Builds a Koi `Tool` whose `descriptor.name` is `"execute_script"`. The tool
 accepts `{ code, language?, timeout_ms? }` and clamps the timeout to
 `[100ms, 120_000ms]`.
 
+The tool uses an environment-backed sandbox policy. By default it requests no
+network access, default read access for runtime paths, `/tmp/koi-sandbox-*`
+write access, and resource limits. `workspacePath` adds that path to the read
+allowlist; `workspaceWrite: true` also adds it to the write allowlist.
+
 ### `createCodeExecutorProvider(config: ProviderConfig): ComponentProvider`
 
 `ComponentProvider` named `"code-executor"` that attaches the tool under
 `toolToken("execute_script")`. Default `priority` is `COMPONENT_PRIORITY.BUNDLED`.
+The provider threads `workspacePath` and `workspaceWrite` through to the tool.
 
 ## Script contract
 
@@ -96,13 +115,13 @@ never caught at the type level.
 ```
 src/transpile.test.ts          — TS→JS, error path
 src/execute-script.test.ts     — language routing, sandbox error mapping, input pass-through
-src/execute-script-tool.test.ts — descriptor shape, timeout clamping, arg validation
-src/provider.test.ts           — provider attaches tool under expected token
+src/execute-script-tool.test.ts — descriptor shape, timeout clamping, arg validation, sandbox context
+src/provider.test.ts           — provider attaches tool under expected token and forwards workspace context
 ```
 
-All tests use a hand-rolled mock `SandboxExecutor` — no real subprocess spawn.
-Integration with `@koi/sandbox-executor` is exercised in `@koi/runtime`'s
-golden query suite.
+Unit tests use a hand-rolled mock `SandboxExecutor`. The package also includes
+integration coverage with `@koi/sandbox-executor` to prove restricted contexts
+fail closed when the injected executor is only a plain subprocess wrapper.
 
 ## Layer Compliance
 

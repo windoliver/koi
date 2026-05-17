@@ -44,6 +44,7 @@ import { createNexusAuditSink } from "@koi/audit-sink-nexus";
 import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
 import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
+import { createCodeExecutorProvider } from "@koi/code-executor";
 import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
 import type {
@@ -75,8 +76,10 @@ import type {
   PolicyRequest,
   RichTrajectoryStep,
   RuleDescriptor,
+  SandboxExecutor,
   SessionId,
   SessionTranscript,
+  Tool,
   TurnContext,
   Violation,
   ViolationStore,
@@ -120,6 +123,7 @@ import {
 import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
+import { createSandboxEnforcementMiddleware } from "@koi/middleware-sandbox";
 import { createToolErrorFormatterMiddleware } from "@koi/middleware-tool-error-formatter";
 import {
   assertHealthCapable as nexusAssertHealthCapable,
@@ -296,6 +300,95 @@ export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
   { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
 ] as const;
+
+const TRUSTED_PROVIDER_SANDBOX_BACKED_TOOLS: readonly string[] = [
+  "task_create",
+  "task_get",
+  "task_update",
+  "task_list",
+  "task_stop",
+  "task_output",
+  "task_delegate",
+  "memory_store",
+  "memory_recall",
+  "memory_search",
+  "memory_delete",
+] as const;
+const TRUSTED_PROVIDER_SANDBOX_BACKED_TOOL_SET: ReadonlySet<string> = new Set(
+  TRUSTED_PROVIDER_SANDBOX_BACKED_TOOLS,
+);
+const TRUSTED_ENVIRONMENT_SANDBOX_BACKED_TOOLS: readonly string[] = [
+  "execute_script",
+  "Bash",
+  "bash_background",
+] as const;
+const TRUSTED_ENVIRONMENT_SANDBOX_BACKED_TOOL_SET: ReadonlySet<string> = new Set(
+  TRUSTED_ENVIRONMENT_SANDBOX_BACKED_TOOLS,
+);
+
+function isToolComponent(value: unknown): value is Tool {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "descriptor" in value &&
+    "policy" in value &&
+    "execute" in value &&
+    typeof (value as { readonly descriptor?: { readonly name?: unknown } }).descriptor?.name ===
+      "string" &&
+    typeof (value as { readonly execute?: unknown }).execute === "function"
+  );
+}
+
+function componentsFromAttachResult(
+  result: Awaited<ReturnType<ComponentProvider["attach"]>>,
+): ReadonlyMap<string, unknown> {
+  return "components" in result ? result.components : result;
+}
+
+function trustProviderSandboxPoliciesFrom(
+  provider: ComponentProvider,
+  trustedPolicies: WeakSet<import("@koi/core").ToolPolicy>,
+): ComponentProvider {
+  return {
+    ...provider,
+    async attach(agent) {
+      const result = await provider.attach(agent);
+      for (const value of componentsFromAttachResult(result).values()) {
+        if (
+          isToolComponent(value) &&
+          value.policy.sandboxBacking === "provider" &&
+          TRUSTED_PROVIDER_SANDBOX_BACKED_TOOL_SET.has(value.descriptor.name)
+        ) {
+          trustedPolicies.add(value.policy);
+        }
+      }
+      return result;
+    },
+  };
+}
+
+function trustEnvironmentSandboxPoliciesFrom(
+  provider: ComponentProvider,
+  trustedTools: WeakSet<Tool>,
+  trustedNames: ReadonlySet<string>,
+): ComponentProvider {
+  return {
+    ...provider,
+    async attach(agent) {
+      const result = await provider.attach(agent);
+      for (const value of componentsFromAttachResult(result).values()) {
+        if (
+          isToolComponent(value) &&
+          value.policy.sandbox === true &&
+          trustedNames.has(value.descriptor.name)
+        ) {
+          trustedTools.add(value);
+        }
+      }
+      return result;
+    },
+  };
+}
 
 /**
  * Auto-allow rule for `write_plan`. Opt-in only: installed ONLY when
@@ -493,6 +586,30 @@ export interface KoiRuntimeConfig {
   readonly modelName: string;
   /** Approval handler for permission prompts — should be permissionBridge.handler. */
   readonly approvalHandler: ApprovalHandler;
+  /**
+   * Optional environment-level sandbox executor. When provided, the runtime
+   * exposes the sandboxed `execute_script` tool and sandbox enforcement treats
+   * sandbox-required tools as backed by an executor.
+   */
+  readonly sandboxExecutor?: SandboxExecutor | undefined;
+  /**
+   * Manifest-declared environment sandbox. Presence enables fail-closed
+   * sandbox enforcement and asks the factory to construct a sandbox executor
+   * for known providers.
+   */
+  readonly codeSandbox?: CodeSandboxConfig | undefined;
+  /**
+   * Local filesystem mount that sandboxed code execution may read. Hosts using
+   * virtual/remote filesystem backends must set this only when that backend is
+   * mounted into the sandbox at the same path.
+   */
+  readonly codeExecutionWorkspacePath?: string | undefined;
+  /**
+   * Hard-fail sandbox-required tools when no sandbox executor is configured.
+   * Cloud/runtime hosts set this true; local TUI leaves it false so existing
+   * local per-tool sandbox behavior stays warning-only/no-op.
+   */
+  readonly sandboxEnforcementRequired?: boolean | undefined;
   /**
    * Optional auto-harness pipeline config. The host factory injects the
    * runtime approval bridge so candidate deployment still routes through the
@@ -1056,6 +1173,8 @@ export interface KoiRuntimeConfig {
    * list through here. Honored by `buildCoreProviders`.
    */
   readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+  /** When false, omit fs_read/fs_write/fs_edit from core providers. */
+  readonly includeFilesystemTools?: boolean | undefined;
   /**
    * Outbound-network scope (gov-15). Forwarded into `buildCoreProviders` so
    * the web tools' inner `fetch` is wrapped with `createScopedFetcher`.
@@ -1063,6 +1182,15 @@ export interface KoiRuntimeConfig {
    * with no additional URLPattern allowlist.
    */
   readonly networkScope?: { readonly allow: readonly string[] } | undefined;
+  /** When false, omit the unsandboxed web_fetch tool from core providers. */
+  readonly includeWebFetch?: boolean | undefined;
+  /**
+   * When false, omit cwd-backed builtin search tools from core providers.
+   * Defaults to false for sandbox-required or injected-filesystem runtimes
+   * because those tools bind to the host cwd rather than a sandbox/remote
+   * filesystem abstraction.
+   */
+  readonly includeBuiltinSearch?: boolean | undefined;
   /**
    * Pre-built scoped `CredentialComponent` (gov-15). Forwarded into
    * `buildCoreProviders` (registered on the `CREDENTIALS` subsystem token)
@@ -1124,6 +1252,10 @@ export interface KoiRuntimeConfig {
    * (typically the root agent's ECS), which reflects the global skill set.
    */
   readonly childSkillInjector?: KoiMiddleware | undefined;
+}
+
+export interface CodeSandboxConfig {
+  readonly provider: string;
 }
 
 export interface KoiRuntimeHandle {
@@ -1557,6 +1689,41 @@ export class PolicyLoadError extends Error {
   }
 }
 
+function createExecutorFromCodeSandbox(config: CodeSandboxConfig, cwd: string): SandboxExecutor {
+  for (const key of Object.keys(config)) {
+    if (key !== "provider") {
+      throw new Error(`Unsupported codeSandbox option "${key}". Supported options: "provider".`);
+    }
+  }
+  if (config.provider === "subprocess") {
+    void cwd;
+    throw new Error(
+      'codeSandbox provider "subprocess" is not supported yet: plain subprocess execution ' +
+        "cannot enforce the filesystem restrictions required by sandboxed tool policy.",
+    );
+  }
+
+  throw new Error(
+    `Unsupported codeSandbox provider "${config.provider}". ` +
+      'Supported providers: "subprocess".',
+  );
+}
+
+function assertSandboxExecutorCapabilities(executor: SandboxExecutor): void {
+  const capabilities = executor.sandboxCapabilities;
+  if (
+    capabilities === undefined ||
+    capabilities.network !== "enforced" ||
+    capabilities.resources !== "enforced" ||
+    capabilities.filesystem !== "enforced" ||
+    capabilities.process !== "enforced"
+  ) {
+    throw new Error(
+      "sandboxExecutor must expose enforced network, resource, filesystem, and process capabilities",
+    );
+  }
+}
+
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
   const {
     modelAdapter,
@@ -1578,6 +1745,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     | undefined;
   let disposePermissionEscalationCoordinator: (() => void) | undefined;
   let workerPermissionEscalation: import("@koi/core").PermissionEscalation | undefined;
+  const resolvedSandboxExecutor =
+    config.sandboxExecutor ??
+    (config.codeSandbox !== undefined
+      ? createExecutorFromCodeSandbox(config.codeSandbox, cwd)
+      : undefined);
+  if (resolvedSandboxExecutor !== undefined) {
+    assertSandboxExecutorCapabilities(resolvedSandboxExecutor);
+  }
+  const sandboxEnforcementRequired =
+    config.sandboxEnforcementRequired === true || config.codeSandbox !== undefined;
+  const trustedProviderSandboxPolicies = new WeakSet<import("@koi/core").ToolPolicy>();
+  const trustedEnvironmentSandboxTools = new WeakSet<Tool>();
 
   if (permissionEscalationMode === "nexus") {
     if (config.nexusTransport === undefined) {
@@ -1719,7 +1898,20 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // assignment and a reference to the caller's approval handler for
   // bash elicit. Both are passed via `ctx.host`.
   const precomputedAgentId = makeAgentId(hostId);
-  const enabledStackIds = config.stacks !== undefined ? new Set(config.stacks) : undefined;
+  const requestedStackIds = config.stacks !== undefined ? new Set(config.stacks) : undefined;
+  const enabledStackIds = sandboxEnforcementRequired
+    ? new Set(
+        Array.from(requestedStackIds ?? new Set(DEFAULT_STACKS.map((stack) => stack.id))).filter(
+          (id) => id !== "code-exec",
+        ),
+      )
+    : requestedStackIds;
+  if (requestedStackIds?.has("code-exec") === true && enabledStackIds?.has("code-exec") === false) {
+    console.warn(
+      `[koi/${hostId}] codeSandbox/sandbox enforcement disables the unsandboxed ` +
+        "code-exec preset stack; use execute_script for sandbox-backed code execution.",
+    );
+  }
   // Determine whether the spawn preset stack is in the active set
   // for this host. When no explicit `config.stacks` list was given,
   // the factory activates every stack in `DEFAULT_STACKS` — so
@@ -1790,6 +1982,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     createLocalFileSystem(cwd, {
       allowExternalPaths: config.workspaceOnlyFs !== true,
     });
+  const codeExecutionWorkspacePath =
+    config.codeExecutionWorkspacePath ?? (config.filesystem === undefined ? cwd : undefined);
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
@@ -2372,14 +2566,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // The shared `buildCoreProviders` helper wires the exact same base set
   // that `koi start` gets, so adding a new "both hosts" tool = one edit.
   // TUI contributes its hooks-enabled Bash variant via the `bashTool` field.
+  const includeBuiltinSearch =
+    config.includeBuiltinSearch ?? (!sandboxEnforcementRequired && config.filesystem === undefined);
   const coreProviders = buildCoreProviders({
     cwd,
     filesystemBackend,
     ...(bashHandle !== undefined ? { bashTool: bashHandle.tool } : {}),
+    ...(config.includeFilesystemTools !== undefined
+      ? { includeFilesystemTools: config.includeFilesystemTools }
+      : {}),
     ...(config.filesystemOperations !== undefined
       ? { filesystemOperations: config.filesystemOperations }
       : {}),
     ...(config.networkScope !== undefined ? { networkScope: config.networkScope } : {}),
+    ...(config.includeWebFetch !== undefined ? { includeWebFetch: config.includeWebFetch } : {}),
+    includeBuiltinSearch,
     ...(config.credentials !== undefined ? { credentials: config.credentials } : {}),
   });
 
@@ -2630,6 +2831,22 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // an opaque crash. Sits INSIDE permissions/exfiltration-guard so guardrail aborts
   // still propagate as model-visible failures.
   const toolErrorFormatterMw = createToolErrorFormatterMiddleware().middleware;
+  const sandboxTools = new Map<string, Tool>();
+  const sandboxToolPolicies = new Map<string, import("@koi/core").ToolPolicy>();
+  const sandboxEnforcementMw = createSandboxEnforcementMiddleware({
+    required: sandboxEnforcementRequired,
+    isSandboxBacked: (toolId) => {
+      const tool = sandboxTools.get(toolId);
+      return tool !== undefined && trustedEnvironmentSandboxTools.has(tool);
+    },
+    isProviderSandboxBacked: (_toolId, policy) => trustedProviderSandboxPolicies.has(policy),
+    policyFor: (toolId) => sandboxToolPolicies.get(toolId),
+    onWarning: (warning) => {
+      console.warn(
+        `[koi/${hostId}] sandbox-required tool '${warning.toolId}' has no configured sandbox executor`,
+      );
+    },
+  });
 
   // --- Core middleware slots (shared with `koi start`) ---
   // `buildCoreMiddleware` is the single source of truth for the
@@ -2794,6 +3011,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const inheritedMiddlewareForChildren = buildInheritedMiddlewareForChildren({
       permissions: permMw,
       exfiltrationGuard: exfiltrationGuardMw,
+      sandboxEnforcement: sandboxEnforcementMw,
       hook: hookMw,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       // Planning MUST be inherited: the inherited-component-provider
@@ -4299,6 +4517,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       hook: hookMw,
       permissions: permMw,
       exfiltrationGuard: exfiltrationGuardMw,
+      sandboxEnforcement: sandboxEnforcementMw,
       toolErrorFormatter: toolErrorFormatterMw,
       ...(config.currentModelMiddleware !== undefined
         ? { currentModel: config.currentModelMiddleware }
@@ -4432,6 +4651,46 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // construction, only during a later `cycleSession()`, so the
     // ref is always populated by the time the callback fires.
     // (`runtimeForRotation` is declared above the audit wiring.)
+    const trustedEnvironmentSandboxToolNames = new Set<string>([
+      ...(resolvedSandboxExecutor !== undefined && codeExecutionWorkspacePath !== undefined
+        ? ["execute_script"]
+        : []),
+      ...(sandboxActive ? ["Bash", "bash_background"] : []),
+    ]);
+    const trustedCoreProviders =
+      trustedEnvironmentSandboxToolNames.size > 0
+        ? coreProviders.map((provider) =>
+            trustEnvironmentSandboxPoliciesFrom(
+              provider,
+              trustedEnvironmentSandboxTools,
+              trustedEnvironmentSandboxToolNames,
+            ),
+          )
+        : coreProviders;
+    const codeExecutorProvider =
+      resolvedSandboxExecutor !== undefined && codeExecutionWorkspacePath !== undefined
+        ? trustEnvironmentSandboxPoliciesFrom(
+            createCodeExecutorProvider({
+              executor: resolvedSandboxExecutor,
+              workspacePath: codeExecutionWorkspacePath,
+            }),
+            trustedEnvironmentSandboxTools,
+            TRUSTED_ENVIRONMENT_SANDBOX_BACKED_TOOL_SET,
+          )
+        : undefined;
+    const trustedStackProviders = stackContribution.providers.map((provider) =>
+      trustProviderSandboxPoliciesFrom(
+        trustedEnvironmentSandboxToolNames.size > 0
+          ? trustEnvironmentSandboxPoliciesFrom(
+              provider,
+              trustedEnvironmentSandboxTools,
+              trustedEnvironmentSandboxToolNames,
+            )
+          : provider,
+        trustedProviderSandboxPolicies,
+      ),
+    );
+
     const runtime = await createKoi({
       manifest: { name: "koi-tui", version: "0.1.0", model: { name: modelName } },
       adapter: engineAdapter,
@@ -4461,8 +4720,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // governance is disabled — createKoi's bundled default provider then
         // supplies the controller used by engine-reconcile's extension.
         ...(sharedGovernanceProvider !== undefined ? [sharedGovernanceProvider] : []),
-        ...coreProviders,
-        ...stackContribution.providers,
+        ...trustedCoreProviders,
+        ...(codeExecutorProvider !== undefined ? [codeExecutorProvider] : []),
+        ...trustedStackProviders,
         ...(config.extraProviders ?? []),
         ...(planBundle !== undefined ? planBundle.providers : []),
         ...(planPersistBundle !== undefined ? planPersistBundle.providers : []),
@@ -4547,6 +4807,42 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // during `createKoi` itself, so this assignment lands before the
     // first request can be evaluated.
     livePidId = runtime.agent.pid.id;
+    let shadowedTrustedProviderTool: string | undefined;
+    let shadowedTrustedEnvironmentTool: string | undefined;
+    for (const [, value] of runtime.agent.query<Tool>("tool:")) {
+      sandboxTools.set(value.descriptor.name, value);
+      sandboxToolPolicies.set(value.descriptor.name, value.policy);
+      if (
+        trustedEnvironmentSandboxToolNames.has(value.descriptor.name) &&
+        !trustedEnvironmentSandboxTools.has(value)
+      ) {
+        shadowedTrustedEnvironmentTool ??= value.descriptor.name;
+        if (sandboxEnforcementRequired) {
+          break;
+        }
+      }
+      if (
+        TRUSTED_PROVIDER_SANDBOX_BACKED_TOOL_SET.has(value.descriptor.name) &&
+        !trustedProviderSandboxPolicies.has(value.policy)
+      ) {
+        shadowedTrustedProviderTool ??= value.descriptor.name;
+        if (sandboxEnforcementRequired) {
+          break;
+        }
+      }
+    }
+    if (shadowedTrustedEnvironmentTool !== undefined && sandboxEnforcementRequired) {
+      await runtime.dispose();
+      throw new Error(
+        `trusted executor-backed tool '${shadowedTrustedEnvironmentTool}' was shadowed by an untrusted provider`,
+      );
+    }
+    if (shadowedTrustedProviderTool !== undefined && sandboxEnforcementRequired) {
+      await runtime.dispose();
+      throw new Error(
+        `trusted provider-backed tool '${shadowedTrustedProviderTool}' was shadowed by an untrusted provider`,
+      );
+    }
 
     // Wrap runtime.dispose so manifest-middleware cleanup (audit sink
     // close, etc.) runs AFTER the engine's dispose path completes.

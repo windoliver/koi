@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +7,7 @@ import { type EngineEvent, type EngineInput, runId } from "@koi/core";
 import type { ServeFlags } from "../args/serve.js";
 import type { ManifestConfig } from "../manifest.js";
 import { ExitCode } from "../types.js";
-import { run } from "./serve.js";
+import { createServeRuntime, run } from "./serve.js";
 
 const SECRET = "serve-test-secret";
 
@@ -233,6 +233,70 @@ describe("serve command", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("rejects unsupported manifest codeSandbox instead of ignoring it", async () => {
+    let capturedConfig: unknown;
+    mock.module("../runtime-factory.js", () => ({
+      createKoiRuntime: mock(async (config: unknown) => {
+        capturedConfig = config;
+        return {
+          runtime: {
+            run: () => runHandle(singleEvent(doneEvent())),
+            dispose: async () => {},
+          },
+          shutdownBackgroundTasks: () => false,
+        };
+      }),
+    }));
+
+    const prevOpenAiKey = process.env.OPENAI_API_KEY;
+    const prevOpenRouterKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.OPENROUTER_API_KEY;
+
+    try {
+      await expect(
+        createServeRuntime(
+          {
+            platform: "darwin",
+            agentName: "serve-test",
+            serviceName: "serve-test",
+            launchdLabel: "ai.koi.serve-test",
+            manifestPath: "/tmp/koi.yaml",
+            workDir: "/tmp",
+            port: 9100,
+            system: false,
+            restart: "no",
+            restartDelaySec: 0,
+            envFile: undefined,
+            logDir: "/tmp",
+            logPath: "/tmp/koi.log",
+            stateDir: "/tmp",
+            serviceStatePath: "/tmp/state.json",
+            lockFilePath: "/tmp/koi.lock",
+            serviceFilePath: "/tmp/koi.plist",
+          },
+          {
+            command: "serve",
+            version: false,
+            help: false,
+            manifest: "/tmp/koi.yaml",
+            port: 9100,
+            verbose: false,
+            logFormat: "text",
+          },
+          minimalManifestConfig({
+            codeSandbox: { provider: "subprocess" },
+          }),
+        ),
+      ).rejects.toThrow("manifest.codeSandbox is not supported");
+
+      expect(capturedConfig).toBeUndefined();
+    } finally {
+      restoreEnv("OPENAI_API_KEY", prevOpenAiKey);
+      restoreEnv("OPENROUTER_API_KEY", prevOpenRouterKey);
+    }
+  });
 });
 
 function minimalManifestConfig(overrides: Partial<ManifestConfig> = {}): ManifestConfig {
@@ -242,6 +306,7 @@ function minimalManifestConfig(overrides: Partial<ManifestConfig> = {}): Manifes
     stacks: undefined,
     plugins: undefined,
     backgroundSubprocesses: undefined,
+    codeSandbox: undefined,
     filesystem: undefined,
     middleware: undefined,
     governance: undefined,

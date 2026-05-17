@@ -26,6 +26,9 @@ function cloneTool(tool: Tool): Tool {
     origin: tool.origin,
     policy: {
       sandbox: tool.policy.sandbox,
+      ...(tool.policy.sandboxBacking !== undefined
+        ? { sandboxBacking: tool.policy.sandboxBacking }
+        : {}),
       capabilities: structuredClone(tool.policy.capabilities),
     },
     execute: tool.execute,

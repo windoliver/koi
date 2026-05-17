@@ -12,6 +12,7 @@ function stub(name: string): KoiMiddleware {
 describe("buildInheritedMiddlewareForChildren", () => {
   const permissions = stub("permissions");
   const exfiltrationGuard = stub("exfiltration-guard");
+  const sandboxEnforcement = stub("sandbox-enforcement");
   const hook = stub("hook");
 
   test("includes required middleware in correct order", () => {
@@ -21,6 +22,16 @@ describe("buildInheritedMiddlewareForChildren", () => {
       hook,
     });
     expect(result).toEqual([permissions, exfiltrationGuard, hook]);
+  });
+
+  test("inherits sandbox enforcement before hooks when provided", () => {
+    const result = buildInheritedMiddlewareForChildren({
+      permissions,
+      exfiltrationGuard,
+      sandboxEnforcement,
+      hook,
+    });
+    expect(result).toEqual([permissions, exfiltrationGuard, sandboxEnforcement, hook]);
   });
 
   test("appends optional systemPrompt when provided", () => {

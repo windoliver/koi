@@ -43,7 +43,6 @@ import type {
   AuditEntry,
   ComponentProvider,
   ContentBlock,
-  EngineEvent,
   EscalationDecision,
   EscalationRequest,
   GovernanceController,
@@ -59,6 +58,7 @@ import type {
 } from "@koi/core";
 import { GOVERNANCE, sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
+import type { EngineEvent } from "@koi/core/engine";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import {

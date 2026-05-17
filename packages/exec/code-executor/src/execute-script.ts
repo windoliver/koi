@@ -1,4 +1,4 @@
-import type { SandboxErrorCode, SandboxExecutor } from "@koi/core";
+import type { ExecutionContext, SandboxErrorCode, SandboxExecutor } from "@koi/core";
 import { transpileTs } from "./transpile.js";
 
 export type ScriptErrorCode = SandboxErrorCode | "TRANSPILE";
@@ -15,6 +15,7 @@ export interface ScriptConfig {
   readonly timeoutMs?: number;
   readonly input?: unknown;
   readonly executor: SandboxExecutor;
+  readonly context?: ExecutionContext | undefined;
 }
 
 export interface ScriptResult {
@@ -52,7 +53,12 @@ export async function executeScript(config: ScriptConfig): Promise<ScriptResult>
   }
 
   const wrapped = wrapAsAsyncBody(jsCode);
-  const execResult = await config.executor.execute(wrapped, config.input ?? null, timeoutMs);
+  const execResult = await config.executor.execute(
+    wrapped,
+    config.input ?? null,
+    timeoutMs,
+    config.context,
+  );
   const durationMs = performance.now() - start;
 
   if (!execResult.ok) {

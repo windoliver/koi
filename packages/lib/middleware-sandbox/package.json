@@ -1,0 +1,26 @@
+{
+  "name": "@koi/middleware-sandbox",
+  "description": "Fail-closed ToolPolicy.sandbox enforcement for environment-level sandbox runtimes",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../../scripts/run-tsup.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*"
+  }
+}

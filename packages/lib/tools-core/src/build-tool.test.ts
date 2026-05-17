@@ -73,6 +73,22 @@ describe("buildTool", () => {
     expect(result.value.policy).toEqual(DEFAULT_SANDBOXED_POLICY);
   });
 
+  test("rejects provider-backed sandboxing from public tool definitions", () => {
+    const result = buildTool(
+      validDef({ sandbox: true, sandboxBacking: "provider" as unknown as "environment" }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("allows explicit environment-backed sandboxing", () => {
+    const result = buildTool(validDef({ sandbox: true, sandboxBacking: "environment" }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.policy.sandboxBacking).toBe("environment");
+  });
+
   test("uses DEFAULT_UNSANDBOXED_POLICY when sandbox=false", () => {
     const result = buildTool(validDef({ sandbox: false }));
     expect(result.ok).toBe(true);
@@ -82,6 +98,14 @@ describe("buildTool", () => {
 
   test("rejects network override on unsandboxed tool", () => {
     const result = buildTool(validDef({ sandbox: false, network: false }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.message).toContain("not allowed when sandbox is disabled");
+  });
+
+  test("rejects sandboxBacking override on unsandboxed tool", () => {
+    const result = buildTool(validDef({ sandbox: false, sandboxBacking: "environment" }));
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("VALIDATION");

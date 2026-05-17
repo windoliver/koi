@@ -89,6 +89,7 @@ describe("createArtifactToolProvider", () => {
     // Policy defaults to BUNDLED tooling posture.
     for (const t of tools.values()) {
       expect(t.policy).toBeDefined();
+      expect(t.policy.sandboxBacking).not.toBe("provider");
       expect(t.origin).toBe("primordial");
     }
     expect(DEFAULT_SANDBOXED_POLICY).toBeDefined(); // sanity: policy constant importable

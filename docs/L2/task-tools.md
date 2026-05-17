@@ -4,6 +4,12 @@ LLM-callable task management tools — `task_create`, `task_get`, `task_update`,
 
 ## Recent updates
 
+Cloud sandbox policy sync (#1550): `createTaskTools()` now annotates all seven
+task tools with `sandboxBacking: "provider"`. Task operations are mediated by
+the injected `ManagedTaskBoard` provider rather than an external code sandbox,
+so strict sandbox-enforcement middleware can keep them visible only when the
+host explicitly trusts the attached provider-backed policy.
+
 Doc sync for review lifecycle fixes (#2081): the factory source comment now
 matches the shipped seven-tool surface. No runtime behavior changed; this
 package already exposes `task_delegate` alongside create/get/update/list/stop
@@ -133,6 +139,7 @@ not validated (backward compatible).
 
 Returns an array of 7 `Tool` objects in order: `task_create`, `task_get`, `task_update`,
 `task_list`, `task_stop`, `task_output`, `task_delegate`.
+Each returned tool is sandbox-required and provider-backed.
 
 ```typescript
 interface TaskToolsConfig {

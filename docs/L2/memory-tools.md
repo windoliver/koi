@@ -6,6 +6,14 @@ Memory tool surfaces for LLM agent execution — store, recall, search, delete.
 
 L2 — depends on `@koi/core` (L0), `@koi/tools-core` (L0u).
 
+## Recent updates
+
+- **Provider-backed sandbox trust (#1550)**: tools emitted by
+  `createMemoryToolProvider()` are now marked with `sandboxBacking: "provider"`.
+  The provider is the component that owns the configured `memoryDir` backend and
+  validation boundary, so strict sandbox-enforcement middleware can distinguish
+  these tools from unbacked sandbox-required tools.
+
 ## Purpose
 
 Provides 4 memory tools that the LLM calls to interact with the memory system
@@ -33,6 +41,11 @@ scoped to a configured `memoryDir`:
 `memoryDir` is validated by `validateMemoryDir()` — must be absolute, no `..`
 traversal, minimum 2 path segments (rejects `/`, `/tmp`, etc.). Validation runs
 in both the provider and each individual tool constructor to prevent bypass.
+
+When attached through `createMemoryToolProvider()`, the tools are also annotated
+as provider-backed sandboxed tools. Hosts using `@koi/middleware-sandbox` must
+attest that provider-backed policy before the tools remain visible in required
+mode.
 
 **Known limitation:** `buildTool()` unions caller paths with `DEFAULT_SANDBOXED_POLICY`
 defaults (read: `/usr`,`/bin`,`/lib`,`/etc`,`/tmp`; write: `/tmp/koi-sandbox-*`).

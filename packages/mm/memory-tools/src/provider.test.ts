@@ -44,6 +44,20 @@ describe("createMemoryToolProvider", () => {
     expect(components.has(toolToken("memory_delete") as string)).toBe(true);
   });
 
+  test("memory provider marks its tools as provider-backed sandboxed tools", async () => {
+    const result = createMemoryToolProvider(validConfig);
+    if (!result.ok) throw new Error("Expected ok");
+
+    const mockAgent = {} as Parameters<typeof result.value.attach>[0];
+    const attachResult = await result.value.attach(mockAgent);
+    const components = "components" in attachResult ? attachResult.components : attachResult;
+    const tool = components.get(toolToken("memory_store") as string) as
+      | { readonly policy?: { readonly sandboxBacking?: string } }
+      | undefined;
+
+    expect(tool?.policy?.sandboxBacking).toBe("provider");
+  });
+
   test("attach returns tools with custom prefix", async () => {
     const result = createMemoryToolProvider({
       ...validConfig,

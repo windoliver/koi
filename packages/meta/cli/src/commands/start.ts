@@ -460,6 +460,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     manifestInstructions = manifestResult.value.instructions;
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
+    if (manifestResult.value.codeSandbox !== undefined) {
+      return bail(
+        "manifest.codeSandbox is not supported by koi start yet; remove it or use a host that enforces a real sandbox provider",
+      );
+    }
     manifestMiddleware =
       manifestResult.value.middleware !== undefined
         ? [...manifestResult.value.middleware]

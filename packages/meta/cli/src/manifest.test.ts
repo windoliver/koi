@@ -9,6 +9,84 @@ import { loadManifestConfig, revalidateAuditPathContainment } from "./manifest.j
 // can wire alternate filesystem backends instead of silently falling
 // through to the default local backend.
 
+describe("loadManifestConfig: codeSandbox block (#1550)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-1550-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("rejects subprocess until a filesystem-confined provider is implemented", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  provider: subprocess",
+      ].join("\n"),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("No codeSandbox providers are currently supported");
+  });
+
+  test("rejects missing provider", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  image: python:3.12-slim",
+      ].join("\n"),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("manifest.codeSandbox.provider");
+  });
+
+  test("rejects unsupported provider", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "codeSandbox:", "  provider: docker"].join(
+        "\n",
+      ),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("No codeSandbox providers are currently supported");
+  });
+
+  test("rejects unsupported backend options", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "codeSandbox:",
+        "  provider: subprocess",
+        "  image: python:3.12-slim",
+      ].join("\n"),
+    );
+
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('unknown key "image"');
+  });
+});
+
 describe("loadManifestConfig: filesystem block", () => {
   let dir: string;
   const writeManifest = (yaml: string): string => {

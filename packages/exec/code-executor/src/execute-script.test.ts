@@ -22,8 +22,8 @@ function mockCapturingExecutor(): {
   return {
     captured: { args: captured },
     executor: {
-      execute: async (code, input, timeoutMs) => {
-        captured.push([code, input, timeoutMs]);
+      execute: async (code, input, timeoutMs, context) => {
+        captured.push([code, input, timeoutMs, context]);
         return { ok: true, value: { output: "ok", durationMs: 5 } };
       },
     },
@@ -94,5 +94,15 @@ describe("executeScript", () => {
     const { executor, captured } = mockCapturingExecutor();
     await executeScript({ code: "return 0;", timeoutMs: 5_000, executor });
     expect(captured.args[0]?.[2]).toBe(5_000);
+  });
+
+  test("forwards execution context to sandbox", async () => {
+    const { executor, captured } = mockCapturingExecutor();
+    await executeScript({
+      code: "return 0;",
+      executor,
+      context: { networkAllowed: false },
+    });
+    expect(captured.args[0]?.[3]).toEqual({ networkAllowed: false });
   });
 });

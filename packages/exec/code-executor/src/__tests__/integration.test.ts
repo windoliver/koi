@@ -8,6 +8,9 @@
 // without `setsid` can still run these tests.
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSubprocessExecutor } from "@koi/sandbox-executor";
 import { executeScript } from "../execute-script.js";
 import { createExecuteScriptTool } from "../execute-script-tool.js";
@@ -110,11 +113,52 @@ describe("code-executor — integration with @koi/sandbox-executor", () => {
     expect(r.error?.code).not.toBe("TIMEOUT");
   });
 
-  test("execute_script tool wrapper end-to-end success path", async () => {
+  test("execute_script tool fails closed with plain subprocess executor", async () => {
+    const tool = createExecuteScriptTool({
+      executor: createSubprocessExecutor({
+        externalIsolation: true,
+        filesystemIsolation: true,
+        requireProcessGroupIsolation: false,
+      }),
+    });
+    const r = (await tool.execute({ code: "return 1 + 1;" })) as {
+      ok: boolean;
+      error?: { code?: string };
+    };
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe("PERMISSION");
+  });
+
+  test("execute_script tool forwards workspace read policy but plain subprocess refuses it", async () => {
+    const workspacePath = mkdtempSync(join(tmpdir(), "koi-execute-script-ws-"));
+    try {
+      writeFileSync(join(workspacePath, "input.txt"), "workspace-data", "utf8");
+      const tool = createExecuteScriptTool({
+        workspacePath,
+        executor: createSubprocessExecutor({
+          externalIsolation: true,
+          filesystemIsolation: true,
+          requireProcessGroupIsolation: false,
+        }),
+      });
+      const r = (await tool.execute({
+        code: "return await Bun.file('input.txt').text();",
+      })) as { ok: boolean; error?: { code?: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe("PERMISSION");
+    } finally {
+      rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  test("execute_script tool fails closed when subprocess isolation is not asserted", async () => {
     const tool = createExecuteScriptTool({ executor: executor() });
-    const r = (await tool.execute({ code: "return 1 + 1;" })) as { ok: boolean; result?: unknown };
-    expect(r.ok).toBe(true);
-    expect(r.result).toBe(2);
+    const r = (await tool.execute({ code: "return 1 + 1;" })) as {
+      ok: boolean;
+      error?: { code: string };
+    };
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe("PERMISSION");
   });
 
   test("execute_script tool: missing 'code' arg validates without spawning", async () => {

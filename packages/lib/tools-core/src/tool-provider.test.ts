@@ -146,6 +146,24 @@ describe("createToolComponentProvider", () => {
     }).toThrow();
   });
 
+  test("preserves sandbox backing metadata when cloning tools", async () => {
+    const provider = createToolComponentProvider({
+      name: "test-provider",
+      tools: [
+        {
+          ...fakeTool("provider-backed"),
+          policy: { ...DEFAULT_SANDBOXED_POLICY, sandboxBacking: "provider" },
+        },
+      ],
+      priority: COMPONENT_PRIORITY.BUNDLED,
+    });
+
+    const map = await attachComponents(provider);
+    const attached = map.get(toolToken("provider-backed") as string) as Tool;
+
+    expect(attached.policy.sandboxBacking).toBe("provider");
+  });
+
   test("does not freeze caller-owned tool objects", () => {
     const tool = fakeTool("mutable");
     createToolComponentProvider({

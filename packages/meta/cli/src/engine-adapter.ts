@@ -107,6 +107,9 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
       modelCall: modelAdapter.complete,
       modelStream: modelAdapter.stream,
     },
+    dispose: async () => {
+      await modelAdapter.dispose?.();
+    },
     // Cancel-resume hooks (issue #1683). The transcript-backed adapter has
     // no partial-turn state to capture — interrupted turns are discarded
     // entirely and the next stream starts from the committed transcript.

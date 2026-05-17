@@ -14,7 +14,7 @@
     "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc -b --pretty false",
     "lint": "biome check .",
-    "test": "bun test src"
+    "test": "bun test src/aaa-integration.test.ts && bun test src/agent-provider.test.ts src/global-backends.test.ts src/namespace.test.ts src/nexus-stack.test.ts src/__tests__/api-surface.test.ts --max-concurrency=1"
   },
   "koi": {
     "optional": true

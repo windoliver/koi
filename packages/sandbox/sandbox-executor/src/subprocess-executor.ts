@@ -11,25 +11,32 @@
  *
  * Isolation note (fail-closed, explicit-deny):
  *   This executor uses EXPLICIT-DENY semantics for network and resource isolation.
- *   When the caller supplies an ExecutionContext and externalIsolation is NOT true,
- *   the executor refuses to proceed only when the caller EXPLICITLY requests
- *   isolation that this package cannot enforce on its own.
+ *   When the caller supplies an ExecutionContext, the executor refuses to
+ *   proceed when the caller EXPLICITLY requests isolation that this package
+ *   cannot enforce on its own.
  *
  *   The guard fires whenever:
  *     - context.networkAllowed === false — explicit network-deny requested; this
  *       package cannot enforce it without OS-level support (@koi/sandbox-os)
  *     - context.resourceLimits !== undefined — resource limits require OS-level
  *       enforcement (cgroups, rlimits) unavailable in plain subprocess mode
+ *     - context.filesystem !== undefined — filesystem allowlists require a
+ *       filesystem-confining backend unavailable in plain subprocess mode
  *
  *   Omitting networkAllowed (undefined) means "caller has no isolation opinion" —
  *   the executor passes through without complaint. ExecutionContext is also used
  *   by callers for non-isolation purposes (workspacePath, entryPath, env) and
  *   those fields are always honoured and never trigger the guard.
  *
- *   To opt out of the guard, callers have two choices:
- *   A) Set externalIsolation: true in the config — asserts that real isolation
- *      is provided externally (e.g., composing with @koi/sandbox-os, running
- *      inside a Docker container). Env-var signals are then passed through.
+ *   To avoid the guard, callers must omit networkAllowed=false, resourceLimits,
+ *   and filesystem allowlists. Plain subprocess execution is only suitable for
+ *   unconfined/trusted code or metadata-only ExecutionContext fields.
+ *
+ *   Historically this config accepted externalIsolation/filesystemIsolation
+ *   booleans as caller assertions. Those are kept as source-compatible no-ops;
+ *   a plain subprocess cannot verify or provide confinement, so it must not
+ *   treat caller assertions as enforcement proof.
+ *
  *   B) Omit networkAllowed and resourceLimits — passes through with no enforcement
  *      (caller takes responsibility for running unconfined).
  *
@@ -91,13 +98,16 @@ export interface SubprocessExecutorConfig {
   readonly maxOutputBytes?: number;
   readonly cwd?: string;
   /**
-   * Caller asserts that real isolation is provided externally (e.g., by composing
-   * with @koi/sandbox-os, running in a container, or operating in a trusted env).
-   * When false (default), the executor refuses ExecutionContext fields that would
-   * require enforcement (networkAllowed=false, resourceLimits) since this package
-   * cannot enforce them on its own — failing closed prevents silent trust-boundary leaks.
+   * Deprecated source-compatible no-op. Plain subprocess execution cannot
+   * verify external confinement, so restricted ExecutionContext fields are
+   * always refused regardless of this value.
    */
   readonly externalIsolation?: boolean;
+  /**
+   * Deprecated source-compatible no-op. Filesystem allowlists are always
+   * refused by this executor because it cannot enforce them.
+   */
+  readonly filesystemIsolation?: boolean;
   /**
    * When true (default), the executor refuses to run if process-group isolation
    * via `setsid` is unavailable on PATH. This prevents silent leakage of grandchild
@@ -205,6 +215,17 @@ function buildChildEnv(context?: ExecutionContext): Readonly<Record<string, stri
       }
       if (context.resourceLimits.maxPids !== undefined) {
         env.KOI_MAX_PIDS = String(context.resourceLimits.maxPids);
+      }
+      if (context.resourceLimits.maxOpenFiles !== undefined) {
+        env.KOI_MAX_OPEN_FILES = String(context.resourceLimits.maxOpenFiles);
+      }
+    }
+    if (context.filesystem !== undefined) {
+      if (context.filesystem.read !== undefined) {
+        env.KOI_FILESYSTEM_READ_ALLOWLIST = JSON.stringify(context.filesystem.read);
+      }
+      if (context.filesystem.write !== undefined) {
+        env.KOI_FILESYSTEM_WRITE_ALLOWLIST = JSON.stringify(context.filesystem.write);
       }
     }
 
@@ -356,7 +377,6 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
   const bunPath = config?.bunPath ?? DEFAULT_BUN_PATH;
   const maxOutputBytes = config?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const cwdOverride = config?.cwd;
-  const externalIsolation = config?.externalIsolation ?? false;
   // Default true: fail closed when setsid is unavailable, preventing silent grandchild leaks.
   const requirePGI = config?.requireProcessGroupIsolation !== false;
   // Allow DI override for testing; fall back to the real probe.
@@ -372,8 +392,7 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
       context?: ExecutionContext,
     ): Promise<ExecuteResult> => {
       // Explicit-deny guard: refuse execution when the caller explicitly requests
-      // isolation that this package cannot enforce on its own, AND externalIsolation
-      // is not asserted by the config.
+      // isolation that this package cannot enforce on its own.
       //
       // Semantics:
       //   - context.networkAllowed === false — explicit network-deny; enforce requires
@@ -381,19 +400,22 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
       //     means "caller has no isolation opinion" — pass through.
       //   - context.resourceLimits !== undefined — resource limits require OS-level
       //     enforcement (cgroups, rlimits) unavailable in plain subprocess mode.
+      //   - context.filesystem !== undefined — filesystem allowlists require a
+      //     filesystem-confining backend, not just child env hints.
       //
       // ExecutionContext is also used for non-isolation metadata (workspacePath,
       // entryPath, env). Those fields never trigger the guard.
       //
-      // Bypass: set externalIsolation: true (real isolation provided externally).
-      if (externalIsolation !== true && context !== undefined) {
+      if (context !== undefined) {
         const wantsRestricted =
-          context.networkAllowed === false || context.resourceLimits !== undefined;
+          context.networkAllowed === false ||
+          context.resourceLimits !== undefined ||
+          context.filesystem !== undefined;
         if (wantsRestricted) {
           const error: SandboxError = {
             code: "PERMISSION",
             message:
-              "subprocess-executor cannot enforce network/resource isolation; pass externalIsolation:true (after composing @koi/sandbox-os) to enable OS-level enforcement",
+              "subprocess-executor cannot enforce network/resource/filesystem isolation; use a sandbox executor backed by a real confining backend",
             durationMs: 0,
           };
           return { ok: false, error };

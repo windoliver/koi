@@ -51,6 +51,7 @@ const toolDefinitionSchema = z.object({
   tags: z.array(z.string()).optional(),
   origin: z.enum(["primordial", "operator", "forged"]),
   sandbox: z.boolean().optional(),
+  sandboxBacking: z.literal("environment").optional(),
   network: z.boolean().optional(),
   filesystem: z
     .object({
@@ -131,12 +132,17 @@ function cloneCapabilities(caps: ToolCapabilities): ToolCapabilities {
 function mapPolicy(def: ToolDefinition): ToolPolicy {
   const sandboxed = def.sandbox !== false;
   const base: ToolPolicy = sandboxed ? DEFAULT_SANDBOXED_POLICY : DEFAULT_UNSANDBOXED_POLICY;
+  const sandboxBacking = sandboxed ? (def.sandboxBacking ?? base.sandboxBacking) : undefined;
 
   const hasNetworkOverride = def.network !== undefined;
   const hasFilesystemOverride = def.filesystem !== undefined;
 
   if (!hasNetworkOverride && !hasFilesystemOverride) {
-    return { sandbox: base.sandbox, capabilities: cloneCapabilities(base.capabilities) };
+    return {
+      sandbox: base.sandbox,
+      ...(sandboxBacking !== undefined ? { sandboxBacking } : {}),
+      capabilities: cloneCapabilities(base.capabilities),
+    };
   }
 
   const cloned = cloneCapabilities(base.capabilities);
@@ -159,7 +165,11 @@ function mapPolicy(def: ToolDefinition): ToolPolicy {
       : {}),
   };
 
-  return { sandbox: base.sandbox, capabilities };
+  return {
+    sandbox: base.sandbox,
+    ...(sandboxBacking !== undefined ? { sandboxBacking } : {}),
+    capabilities,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -206,13 +216,16 @@ export function buildTool(definition: ToolDefinition): Result<Tool, KoiError> {
 
   // Capability overrides on unsandboxed tools are misleading — they look
   // restricted but won't actually be enforced without a sandbox.
-  if (def.sandbox === false && (def.network !== undefined || def.filesystem !== undefined)) {
+  if (
+    def.sandbox === false &&
+    (def.network !== undefined || def.filesystem !== undefined || def.sandboxBacking !== undefined)
+  ) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
         message:
-          "Tool definition validation failed: network/filesystem overrides are not allowed when sandbox is disabled (capabilities are not enforced without a sandbox)",
+          "Tool definition validation failed: sandbox capability overrides are not allowed when sandbox is disabled (capabilities are not enforced without a sandbox)",
         retryable: false,
       },
     };

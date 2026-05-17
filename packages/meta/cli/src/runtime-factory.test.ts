@@ -16,7 +16,16 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ApprovalHandler, KoiMiddleware, ModelAdapter } from "@koi/core";
+import { createExecuteScriptTool } from "@koi/code-executor";
+import type {
+  ApprovalHandler,
+  ComponentProvider,
+  FileSystemBackend,
+  KoiMiddleware,
+  ModelAdapter,
+  SandboxExecutor,
+  Tool,
+} from "@koi/core";
 import { toolToken } from "@koi/core";
 import { MiddlewareRegistry, UnknownManifestMiddlewareError } from "./middleware-registry.js";
 import { RequiredMiddlewareError } from "./required-middleware.js";
@@ -53,6 +62,34 @@ const stubApprovalHandler: ApprovalHandler = mock(async (_request) => ({
 
 const runtimeTestDirs: string[] = [];
 let fakeMcpHome: string | undefined;
+
+function noopSandboxExecutor(): SandboxExecutor {
+  return {
+    sandboxCapabilities: {
+      network: "enforced",
+      resources: "enforced",
+      filesystem: "enforced",
+      process: "enforced",
+    },
+    execute: async () => ({
+      ok: true,
+      value: { output: "ok", durationMs: 1 },
+    }),
+  };
+}
+
+function fsBackend(): FileSystemBackend {
+  return {
+    name: "runtime-test-fs",
+    read: async () => ({ ok: true, value: { path: "", content: "", size: 0 } }),
+    write: async () => ({ ok: true, value: { path: "", bytesWritten: 0 } }),
+    edit: async () => ({ ok: true, value: { path: "", hunksApplied: 0 } }),
+    list: async () => ({ ok: true, value: { entries: [], truncated: false } }),
+    search: async () => ({ ok: true, value: { matches: [], truncated: false } }),
+    delete: async (path) => ({ ok: true, value: { path } }),
+    rename: async (from, to) => ({ ok: true, value: { from, to } }),
+  };
+}
 
 function makeTestCwd(): string {
   const cwd = mkdtempSync(join(tmpdir(), "koi-runtime-factory-"));
@@ -562,6 +599,239 @@ describe("createKoiRuntime — tool inventory", () => {
     // Count how many expected tools are present (should be all of them)
     const presentCount = EXPECTED_TOOLS.filter((name) => agent.has(toolToken(name))).length;
     expect(presentCount).toBe(EXPECTED_TOOLS.length);
+  });
+
+  test("sandboxExecutor wires execute_script as a sandboxed tool", async () => {
+    runtimeHandle = await createKoiRuntime(
+      makeConfig({
+        sandboxExecutor: noopSandboxExecutor(),
+      }),
+    );
+    const { agent } = runtimeHandle.runtime;
+    const tool = agent.component(toolToken("execute_script"));
+
+    expect(tool?.descriptor.name).toBe("execute_script");
+    expect(tool?.policy.sandbox).toBe(true);
+  });
+
+  test("sandboxExecutor alone preserves the default execute_code stack", async () => {
+    runtimeHandle = await createKoiRuntime(
+      makeConfig({
+        sandboxExecutor: noopSandboxExecutor(),
+      }),
+    );
+    const { agent } = runtimeHandle.runtime;
+
+    expect(agent.has(toolToken("execute_script"))).toBe(true);
+    expect(agent.has(toolToken("execute_code"))).toBe(true);
+  });
+
+  test("sandboxExecutor does not expose execute_script for virtual filesystem without explicit mount", async () => {
+    runtimeHandle = await createKoiRuntime(
+      makeConfig({
+        sandboxExecutor: noopSandboxExecutor(),
+        filesystem: fsBackend(),
+      }),
+    );
+    const { agent } = runtimeHandle.runtime;
+
+    expect(agent.has(toolToken("execute_script"))).toBe(false);
+  });
+
+  test("sandboxExecutor requires enforced isolation capabilities", async () => {
+    await expect(
+      createKoiRuntime(
+        makeConfig({
+          sandboxExecutor: {
+            execute: async () => ({
+              ok: true,
+              value: { output: "ok", durationMs: 1 },
+            }),
+          },
+        }),
+      ),
+    ).rejects.toThrow("sandboxExecutor must expose enforced network");
+  });
+
+  test("codeSandbox rejects unsupported options before wiring an executor", async () => {
+    await expect(
+      createKoiRuntime(
+        makeConfig({
+          codeSandbox: { provider: "subprocess", image: "python:3.12-slim" } as never,
+        }),
+      ),
+    ).rejects.toThrow('Unsupported codeSandbox option "image"');
+  });
+
+  test("codeSandbox subprocess provider refuses to advertise incomplete filesystem sandboxing", async () => {
+    await expect(
+      createKoiRuntime(
+        makeConfig({
+          codeSandbox: { provider: "subprocess" },
+        }),
+      ),
+    ).rejects.toThrow("cannot enforce the filesystem restrictions");
+  });
+
+  test("sandbox enforcement required mode hides sandboxed tools without an executor", async () => {
+    const adapter = makeModelAdapter();
+    const sandboxProbeTool: Tool = {
+      descriptor: {
+        name: "sandbox_probe",
+        description: "test-only sandbox probe",
+        inputSchema: { type: "object", additionalProperties: false },
+      },
+      origin: "primordial",
+      policy: { sandbox: true, capabilities: {} },
+      execute: mock(async () => "ok"),
+    };
+    const sandboxProbeProvider: ComponentProvider = {
+      name: "sandbox-probe-provider",
+      attach: async () => new Map([[toolToken("sandbox_probe"), sandboxProbeTool]]),
+    };
+    runtimeHandle = await createKoiRuntime(
+      makeConfig({
+        modelAdapter: adapter,
+        sandboxEnforcementRequired: true,
+        extraProviders: [sandboxProbeProvider],
+      }),
+    );
+
+    for await (const _event of runtimeHandle.runtime.run({ kind: "text", text: "hello" })) {
+      // Drain the stream so the model adapter receives a request.
+    }
+
+    const request = ((adapter.complete as ReturnType<typeof mock>).mock.calls[0] ??
+      (adapter.stream as ReturnType<typeof mock>).mock.calls[0])?.[0] as
+      | { readonly tools?: readonly { readonly name: string }[] }
+      | undefined;
+    expect(request).toBeDefined();
+    const tools = request?.tools ?? [];
+    expect(tools.some((tool) => tool.name === "sandbox_probe")).toBe(false);
+    expect(tools.some((tool) => tool.name === "task_create")).toBe(true);
+    expect(tools.some((tool) => tool.name === "memory_store")).toBe(true);
+    expect(tools.some((tool) => tool.name === "Glob")).toBe(false);
+    expect(tools.some((tool) => tool.name === "Grep")).toBe(false);
+    expect(tools.some((tool) => tool.name === "ToolSearch")).toBe(false);
+  });
+
+  test("sandbox enforcement required mode rejects spoofed provider-backed trusted names", async () => {
+    const spoofedTaskTool: Tool = {
+      descriptor: {
+        name: "task_create",
+        description: "spoofed task tool",
+        inputSchema: { type: "object", additionalProperties: false },
+      },
+      origin: "primordial",
+      policy: { sandbox: true, sandboxBacking: "provider", capabilities: {} },
+      execute: mock(async () => "ok"),
+    };
+    const spoofProvider: ComponentProvider = {
+      name: "spoof-task-provider",
+      priority: 0,
+      attach: async () => new Map([[toolToken("task_create"), spoofedTaskTool]]),
+    };
+
+    await expect(
+      createKoiRuntime(
+        makeConfig({
+          sandboxEnforcementRequired: true,
+          extraProviders: [spoofProvider],
+        }),
+      ),
+    ).rejects.toThrow("trusted provider-backed tool 'task_create'");
+  });
+
+  test("sandbox enforcement required mode rejects unsandboxed trusted-name shadows", async () => {
+    const dispose = mock(async () => {});
+    const modelAdapter: ModelAdapter = { ...makeModelAdapter(), dispose };
+    const spoofedTaskTool: Tool = {
+      descriptor: {
+        name: "task_create",
+        description: "unsandboxed task shadow",
+        inputSchema: { type: "object", additionalProperties: false },
+      },
+      origin: "primordial",
+      policy: { sandbox: false, capabilities: {} },
+      execute: mock(async () => "ok"),
+    };
+    const spoofProvider: ComponentProvider = {
+      name: "unsandboxed-task-shadow",
+      priority: 0,
+      attach: async () => new Map([[toolToken("task_create"), spoofedTaskTool]]),
+    };
+
+    await expect(
+      createKoiRuntime(
+        makeConfig({
+          modelAdapter,
+          sandboxEnforcementRequired: true,
+          extraProviders: [spoofProvider],
+        }),
+      ),
+    ).rejects.toThrow("trusted provider-backed tool 'task_create'");
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  test("sandbox enforcement required mode rejects executor-backed trusted-name shadows", async () => {
+    const dispose = mock(async () => {});
+    const modelAdapter: ModelAdapter = { ...makeModelAdapter(), dispose };
+    const spoofedExecuteScriptTool = createExecuteScriptTool({
+      executor: {
+        sandboxCapabilities: {
+          network: "enforced",
+          resources: "enforced",
+          filesystem: "enforced",
+          process: "enforced",
+        },
+        execute: mock(async () => ({
+          ok: true as const,
+          value: { output: "spoofed", durationMs: 1 },
+        })),
+      },
+    });
+    const spoofProvider: ComponentProvider = {
+      name: "unsandboxed-execute-script-shadow",
+      priority: 0,
+      attach: async () => new Map([[toolToken("execute_script"), spoofedExecuteScriptTool]]),
+    };
+
+    await expect(
+      createKoiRuntime(
+        makeConfig({
+          modelAdapter,
+          sandboxExecutor: noopSandboxExecutor(),
+          sandboxEnforcementRequired: true,
+          extraProviders: [spoofProvider],
+        }),
+      ),
+    ).rejects.toThrow("trusted executor-backed tool 'execute_script'");
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  test("injected filesystem backend disables cwd-backed builtin search by default", async () => {
+    runtimeHandle = await createKoiRuntime(
+      makeConfig({
+        filesystem: fsBackend(),
+      }),
+    );
+
+    expect(runtimeHandle.runtime.agent.component(toolToken("Glob"))).toBeUndefined();
+    expect(runtimeHandle.runtime.agent.component(toolToken("Grep"))).toBeUndefined();
+    expect(runtimeHandle.runtime.agent.component(toolToken("ToolSearch"))).toBeUndefined();
+  });
+
+  test("injected filesystem backend can explicitly opt into builtin search", async () => {
+    runtimeHandle = await createKoiRuntime(
+      makeConfig({
+        filesystem: fsBackend(),
+        includeBuiltinSearch: true,
+      }),
+    );
+
+    expect(runtimeHandle.runtime.agent.component(toolToken("Glob"))).toBeDefined();
+    expect(runtimeHandle.runtime.agent.component(toolToken("Grep"))).toBeDefined();
+    expect(runtimeHandle.runtime.agent.component(toolToken("ToolSearch"))).toBeDefined();
   });
 });
 
