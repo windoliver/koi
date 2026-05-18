@@ -19,7 +19,7 @@ Current snapshot:
 | lib | 151 | 783 | 132 |
 | meta | 7 | 121 | 5 |
 | mm | 12 | 54 | 12 |
-| net | 12 | 98 | 12 |
+| net | 12 | 99 | 12 |
 | sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
 | security | 22 | 122 | 22 |
@@ -234,7 +234,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/gateway-canvas` (packages/net/gateway-canvas) - Canvas HTTP server: surface CRUD with ETag CAS and SSE streaming for real-time agent-rendered content. Tests: 3. Docs: docs/L2/gateway-canvas.md.
 - `@koi/gateway-http` (packages/net/gateway-http) - Production HTTP/WS gateway: HMAC auth, replay/idempotency, rate limits, CORS, audit log, graceful shutdown. Tests: 22. Docs: docs/L2/gateway-http.md.
 - `@koi/gateway-nexus` (packages/net/gateway-nexus) - Nexus-backed SessionStore for HA gateway: write-through cache, coalesced async writes, degradation state machine. Tests: 4. Docs: docs/L2/gateway-nexus.md.
-- `@koi/gateway-stack` (packages/net/gateway-stack) - L3 gateway stack: wires gateway + canvas + webhook + optional Nexus HA into one lifecycle plus health endpoint. Tests: 2. Docs: docs/L3/gateway-stack.md.
+- `@koi/gateway-stack` (packages/net/gateway-stack) - L3 gateway stack: wires gateway + canvas + webhook + optional Nexus HA into one lifecycle plus health endpoint. Tests: 3. Docs: docs/L3/gateway-stack.md.
 - `@koi/gateway-webhook` (packages/net/gateway-webhook) - Webhook HTTP ingestion — POST requests to GatewayFrames with signature verification and idempotency.. Tests: 4. Docs: docs/L2/gateway-webhook.md.
 - `@koi/mcp` (packages/net/mcp) - MCP transport layer, connection lifecycle, and state management. Tests: 25. Docs: docs/L2/mcp.md.
 - `@koi/mcp-server` (packages/net/mcp-server) - Expose agent tools and platform capabilities via Model Context Protocol. Tests: 3. Docs: docs/L2/mcp-server.md.
