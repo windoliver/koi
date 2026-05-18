@@ -206,4 +206,78 @@ describe("createNeuroSkillSensor", () => {
       values: sensor.snapshot(),
     });
   });
+
+  test("default socket path supports error, disconnect, unsubscribe, and clear", () => {
+    const originalWebSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+    const sockets: FakeSocket[] = [];
+
+    class FakeWebSocket implements FakeSocket {
+      private messageHandler: ((event: { readonly data: string }) => void) | undefined;
+      private closeHandler: ((event: { readonly data?: unknown }) => void) | undefined;
+      private errorHandler: ((event: { readonly data?: unknown }) => void) | undefined;
+
+      constructor() {
+        sockets.push(this);
+      }
+
+      close(): void {
+        this.closeHandler?.({});
+      }
+
+      addEventListener(
+        type: "message" | "close" | "error",
+        handler: (event: { readonly data?: unknown }) => void,
+      ): void {
+        if (type === "message") this.messageHandler = handler;
+        if (type === "close") this.closeHandler = handler;
+        if (type === "error") this.errorHandler = handler;
+      }
+
+      emitMessage(data: string): void {
+        this.messageHandler?.({ data });
+      }
+
+      emitClose(): void {
+        this.closeHandler?.({});
+      }
+
+      emitError(): void {
+        this.errorHandler?.({});
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      value: FakeWebSocket,
+      writable: true,
+    });
+    try {
+      const sensor = createNeuroSkillSensor({ now: () => 2_000 });
+      const seen: string[] = [];
+      const unsubscribe = sensor.subscribe((event) => seen.push(event.kind));
+
+      sensor.connect("ws://localhost:8765/exg");
+      sockets[0]?.emitMessage(JSON.stringify(attentiveFrame));
+      unsubscribe();
+      sockets[0]?.emitMessage(JSON.stringify({ ...attentiveFrame, timestamp: 2_000 }));
+
+      expect(seen).toEqual(["cognitive_state"]);
+      expect(sensor.snapshot().retainedEventCount).toBe(2);
+      (sockets[0] as (FakeSocket & { readonly emitError?: () => void }) | undefined)?.emitError?.();
+      expect(sensor.snapshot().connectionState).toBe("error");
+      sensor.disconnect();
+      expect(sensor.snapshot().connectionState).toBe("disconnected");
+      sensor.clear();
+      expect(sensor.snapshot()).toMatchObject({
+        retainedEventCount: 0,
+        rejectedFrames: 0,
+      });
+    } finally {
+      if (originalWebSocket === undefined) {
+        Reflect.deleteProperty(globalThis, "WebSocket");
+      } else {
+        Object.defineProperty(globalThis, "WebSocket", originalWebSocket);
+      }
+    }
+  });
 });
