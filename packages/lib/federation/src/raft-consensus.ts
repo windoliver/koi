@@ -82,6 +82,17 @@ export function createInMemoryRaftCluster(config: {
   }
 
   function append(command: RaftCommand): Result<RaftLogEntry, KoiError> {
+    if (detectSplitBrain() !== undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: "Raft append failed: split-brain detected",
+          retryable: true,
+        },
+      };
+    }
+
     const leader = getLeader();
     if (leader === undefined) {
       return {

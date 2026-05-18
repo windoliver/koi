@@ -58,6 +58,33 @@ describe("createInMemoryRaftCluster", () => {
     });
   });
 
+  test("refuses to append while split-brain is detected", () => {
+    const cluster = createInMemoryRaftCluster({
+      nodes: [
+        zoneId("zone-a"),
+        zoneId("zone-b"),
+        zoneId("zone-c"),
+        zoneId("zone-d"),
+        zoneId("zone-e"),
+      ],
+    });
+
+    cluster.partition([
+      [zoneId("zone-a"), zoneId("zone-b"), zoneId("zone-c")],
+      [zoneId("zone-d"), zoneId("zone-e")],
+    ]);
+    cluster.forceElection(zoneId("zone-a"));
+    cluster.forceElection(zoneId("zone-d"));
+
+    const result = cluster.append({ kind: "set", key: "epoch", value: 2 });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("split-brain");
+    }
+    expect(cluster.getCommittedState()).toEqual({});
+  });
+
   test("recovery converges on the longest committed log after partition heals", () => {
     const cluster = createInMemoryRaftCluster({
       nodes: [zoneId("zone-a"), zoneId("zone-b"), zoneId("zone-c")],

@@ -200,7 +200,9 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
       const routedTargetZoneId =
         typeof explicitTargetZoneId === "string"
           ? explicitTargetZoneId
-          : zoneRouter?.selectZone({ toolId: request.toolId, input: request.input })?.zoneId;
+          : explicitTargetZoneId === undefined
+            ? zoneRouter?.selectZone({ toolId: request.toolId, input: request.input })?.zoneId
+            : undefined;
       const targetZoneId = routedTargetZoneId;
 
       // No target zone or non-string → local execution

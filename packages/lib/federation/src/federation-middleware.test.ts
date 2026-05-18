@@ -133,6 +133,29 @@ describe("createFederationMiddleware", () => {
     expect(farTransport.calls).toHaveLength(0);
   });
 
+  test("does not auto-route when targetZoneId is present but non-string", async () => {
+    const remote = makeTransport(() => ({ output: "remote" }) as ToolResponse);
+    const router = createZoneRouter({
+      monitor: createStaticZoneHealthMonitor([
+        { zoneId: zoneId("zone-b"), status: "active", latencyMs: 1 },
+      ]),
+    });
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([["zone-b", remote.transport]]),
+      zoneRouter: router,
+    });
+
+    const result = await mw.wrapToolCall?.(
+      makeCtx({ targetZoneId: 123 }),
+      baseRequest,
+      localHandler,
+    );
+
+    expect(result?.output).toBe("local-result");
+    expect(remote.calls).toHaveLength(0);
+  });
+
   test("throws when targetZoneId is unknown", async () => {
     const mw = createFederationMiddleware({
       localZoneId: ZA,
