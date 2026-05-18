@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 232 workspace packages
+- 233 workspace packages
 - 11 package families
-- 232 packages with local test files
-- 207 packages with dedicated package docs
+- 233 packages with local test files
+- 208 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 151 | 789 | 132 |
+| lib | 152 | 790 | 133 |
 | meta | 7 | 121 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 12 | 99 | 12 |
@@ -47,7 +47,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 7. Docs: -.
 - `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 22. Docs: -.
 
-## lib (151)
+## lib (152)
 
 - `@koi/ace-types` (packages/lib/ace-types) - Shared domain types for ACE (Adaptive Continuous Enhancement) middleware and stores. Tests: 1. Docs: -.
 - `@koi/agent-discovery` (packages/lib/agent-discovery) - Runtime discovery of external coding agents (CLI, filesystem registry, MCP). Tests: 8. Docs: docs/L2/agent-discovery.md.
@@ -179,6 +179,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/snapshot-store-nexus` (packages/lib/snapshot-store-nexus) - L2 storage adapter: SnapshotChainStore<T> over Nexus JSON-RPC. Tests: 4. Docs: docs/L2/snapshot-store-nexus.md.
 - `@koi/snapshot-store-sqlite` (packages/lib/snapshot-store-sqlite) - L2 storage adapter: SnapshotChainStore<T> over SQLite with recursive-CTE walks and mark-sweep GC. Tests: 5. Docs: docs/L2/snapshot-store-sqlite.md.
 - `@koi/spawn-tools` (packages/lib/spawn-tools) - LLM-callable agent spawn tool + TaskCascade helper for coordinator orchestration (L2). Tests: 6. Docs: docs/L2/spawn-tools.md.
+- `@koi/swarm` (packages/lib/swarm) - Team swarm coordination over local IPC with optional federation bridge. Tests: 1. Docs: docs/L2/swarm.md.
 - `@koi/task-board` (packages/lib/task-board) - Immutable TaskBoard with DAG validation, cycle detection, and topological sort. Tests: 3. Docs: -.
 - `@koi/task-spawn` (packages/lib/task-spawn) - Lightweight task tool for zero-friction subagent spawning + copilot routing. Tests: 8. Docs: docs/L2/task-spawn.md.
 - `@koi/task-tools` (packages/lib/task-tools) - LLM-callable task management tools — create, get, update, list, stop, output (L2). Tests: 2. Docs: docs/L2/task-tools.md.
