@@ -120,6 +120,7 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
   opts.externalSignal?.addEventListener("abort", externalAbortHandler, { once: true });
 
   const toolNamesByCallId = new Map<string, string>();
+  const pendingToolCalls = new Map<string, PendingToolCall>();
   // let: mutable across event loop iterations.
   let exitCode: HeadlessExitCode = HEADLESS_EXIT.SUCCESS;
   let errMessage: string | undefined;
@@ -140,7 +141,14 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
       signal: controller.signal,
     })) {
       if (
-        translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText, handleToolResult)
+        translateEvent(
+          event,
+          emit,
+          toolNamesByCallId,
+          pendingToolCalls,
+          opts.onRawAssistantText,
+          handleToolResult,
+        )
       ) {
         emittedAssistantText = true;
       }
@@ -494,11 +502,29 @@ export function redactEngineBanners(text: string): string {
   });
 }
 
+/** Per-call accumulation so the headless `tool_call` event reflects the
+ *  FINAL arguments. OpenAI-compatible adapters stream args: `tool_call_start`
+ *  carries none, args arrive via `tool_call_delta`, and the parsed
+ *  AccumulatedToolCall lands on `tool_call_end.result`. Emitting at start
+ *  therefore logged `args:{type:"undefined"}` for every streamed call. */
+interface PendingToolCall {
+  readonly toolName: string;
+  readonly startArgs: unknown;
+  emitted: boolean;
+}
+
+/** Structural guard for the AccumulatedToolCall carried on
+ *  `tool_call_end.result` (typed `unknown` in the EngineEvent contract). */
+function hasParsedArgs(v: unknown): v is { readonly parsedArgs?: unknown } {
+  return typeof v === "object" && v !== null && "parsedArgs" in v;
+}
+
 /** Returns `true` if the event caused assistant text to be emitted. */
 function translateEvent(
   event: EngineEvent,
   emit: ReturnType<typeof createEmitter>,
   toolNamesByCallId: Map<string, string>,
+  pendingToolCalls: Map<string, PendingToolCall>,
   onRawAssistantText: ((text: string) => void) | undefined,
   onToolResult: (() => void) | undefined,
 ): boolean {
@@ -513,13 +539,47 @@ function translateEvent(
     }
     case "tool_call_start": {
       toolNamesByCallId.set(event.callId, event.toolName);
-      // Default to redacted: emit only tool identity + args shape, never
-      // the actual args. CI log exfiltration risk (see summarizePayload).
-      emit({ kind: "tool_call", toolName: event.toolName, args: summarizePayload(event.args) });
+      // Defer emission: streamed args are not known yet. Stash any args the
+      // adapter did provide up front (non-streaming adapters) as a fallback.
+      pendingToolCalls.set(event.callId, {
+        toolName: event.toolName,
+        startArgs: event.args,
+        emitted: false,
+      });
+      return false;
+    }
+    case "tool_call_delta": {
+      // Args accumulate inside the engine; the parsed result arrives on
+      // tool_call_end. Nothing to emit per-fragment.
+      return false;
+    }
+    case "tool_call_end": {
+      const pending = pendingToolCalls.get(event.callId);
+      const toolName = pending?.toolName ?? toolNamesByCallId.get(event.callId) ?? "unknown";
+      if (pending?.emitted) return false;
+      // Prefer the finalized parsed args from the AccumulatedToolCall; fall
+      // back to any args the adapter supplied on tool_call_start. Still
+      // redacted: only the shape (type + size) reaches CI logs.
+      const finalArgs = hasParsedArgs(event.result) ? event.result.parsedArgs : undefined;
+      const argsForSummary = finalArgs !== undefined ? finalArgs : pending?.startArgs;
+      emit({ kind: "tool_call", toolName, args: summarizePayload(argsForSummary) });
+      if (pending) pending.emitted = true;
       return false;
     }
     case "tool_result": {
       const toolName = toolNamesByCallId.get(event.callId) ?? "unknown";
+      // Fallback: some adapters never emit tool_call_end. Ensure the
+      // tool_call event is still logged (once) before its result, using
+      // whatever args were provided up front.
+      const pending = pendingToolCalls.get(event.callId);
+      if (pending && !pending.emitted) {
+        emit({
+          kind: "tool_call",
+          toolName: pending.toolName,
+          args: summarizePayload(pending.startArgs),
+        });
+        pending.emitted = true;
+      }
       const ok = !isToolExecutionError(event.output);
       // TOOL_EXECUTION_ERROR payloads carry { error, code } where `error`
       // is the caught exception's .message — for Bash/HTTP tools that can

@@ -221,6 +221,58 @@ describe("runHeadless", () => {
     expect(JSON.stringify(result)).not.toContain("file.txt");
   });
 
+  test("streamed tool args (start without args, delta, end) summarize from AccumulatedToolCall", async () => {
+    // Regression: OpenAI-compatible adapters stream tool arguments —
+    // `tool_call_start` carries no args, args arrive via `tool_call_delta`,
+    // and the finalized AccumulatedToolCall lands on `tool_call_end.result`.
+    // Headless used to emit `tool_call` at start, so every streamed call
+    // logged `args:{type:"undefined"}`, blinding CI/headless debugging.
+    const stdout: string[] = [];
+    const callId = toolCallId("c1");
+    await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: (s) => stdout.push(s),
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        { kind: "tool_call_start", callId, toolName: "fs_write" },
+        { kind: "tool_call_delta", callId, delta: '{"path":"a.txt",' },
+        { kind: "tool_call_delta", callId, delta: '"content":"hi"}' },
+        {
+          kind: "tool_call_end",
+          callId,
+          result: {
+            toolName: "fs_write",
+            callId,
+            rawArgs: '{"path":"a.txt","content":"hi"}',
+            parsedArgs: { path: "a.txt", content: "hi" },
+          },
+        },
+        { kind: "tool_result", callId, output: { ok: true } },
+        DONE,
+      ]),
+    });
+    const parsed = stdout
+      .join("")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const calls = parsed.filter((e) => e.kind === "tool_call");
+    // Exactly one tool_call event, with an accurate (non-undefined) shape.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      toolName: "fs_write",
+      args: { type: "object", size: 2 },
+    });
+    // CI-log safety preserved: still no raw values.
+    expect(JSON.stringify(calls[0])).not.toContain("a.txt");
+    expect(JSON.stringify(calls[0])).not.toContain("hi");
+    // tool_call must still precede its tool_result.
+    const kinds = parsed.map((e) => e.kind);
+    expect(kinds.indexOf("tool_call")).toBeLessThan(kinds.indexOf("tool_result"));
+  });
+
   test("redacts TOOL_EXECUTION_ERROR payload (code + errorSize, no raw message)", async () => {
     // Raw error messages from query-engine can include Bash stderr
     // fragments, URLs, or tokens. Headless emits only the fixed-vocabulary
