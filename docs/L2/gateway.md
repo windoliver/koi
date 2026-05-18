@@ -1,8 +1,15 @@
 # @koi/gateway — WebSocket Gateway Core
 
-Minimal WebSocket gateway for Koi v2. Manages client connections via a single transport: **client sessions** exchanging `GatewayFrame` messages. Handles authentication, protocol negotiation, session sequencing, backpressure, and routing.
+Minimal WebSocket gateway for Koi v2. Manages client connections via two
+transport lanes: authenticated **client sessions** exchanging `GatewayFrame`
+messages, and issue #1396 **node connections** exchanging `node:*` frames for
+capability advertisement. Handles authentication, protocol negotiation, session
+sequencing, backpressure, routing, and in-memory node capability resolution.
 
-**v2 scope** (Issue #1365): single-node, no Nexus/HA, no node registry, no tool routing. Those are future issues.
+**v2 scope** (Issue #1365 + #1396): single-node, no Nexus/HA and no remote tool
+invocation. Nodes can connect, heartbeat, advertise tools, refresh capabilities
+on query, and update tool membership; capacity is captured at handshake time.
+Request routing to those tools remains a future issue.
 
 **Gateway contract (Issue #1639)**: implements the L0u `Gateway` interface from `@koi/gateway-types` so peer L2 packages (notably `@koi/gateway-http`) can drive ingress without depending on this package directly. The contract surface is `ingest(session, frame)` + `pauseIngress()` + `forceClose()` + `activeConnections()`. `pauseIngress()` blocks new ingress AND sends a graceful WS close (1001 SERVER_SHUTTING_DOWN) on every live connection so callers' shutdown drain can actually complete.
 
@@ -30,6 +37,8 @@ Agents need a stable connection endpoint that:
 │  @koi/gateway  (L2)                             │
 │                                                 │
 │  gateway.ts          ← createGateway() factory  │
+│  node-protocol.ts    ← node:* frame validation   │
+│  node-registry.ts    ← in-memory tool index      │
 │  transport.ts        ← Bun.serve() WebSocket    │
 │  auth.ts             ← handshake orchestration  │
 │  protocol.ts         ← frame parsing/encoding   │
@@ -111,6 +120,52 @@ interface Gateway {
 ---
 
 ## Wire Protocol
+
+### Node Connections
+
+Gateway accepts unauthenticated `node:*` WebSocket messages on the same
+transport. A node starts with:
+
+```json
+{
+  "kind": "node:handshake",
+  "nodeId": "device-1",
+  "agentId": "",
+  "correlationId": "c-1",
+  "payload": {
+    "nodeId": "device-1",
+    "version": "1.0.0",
+    "capacity": { "current": 0, "max": 1, "available": 1 }
+  }
+}
+```
+
+The gateway records the connection and replies with `node:registered`.
+Capabilities are advertised separately:
+
+```json
+{
+  "kind": "node:capabilities",
+  "nodeId": "device-1",
+  "agentId": "",
+  "correlationId": "c-2",
+  "payload": {
+    "nodeType": "thin",
+    "tools": [{ "name": "device.camera", "description": "Device camera" }]
+  }
+}
+```
+
+`node:heartbeat` refreshes liveness, `node:capabilities_query` asks a node to
+re-advertise its current tools, and `node:tools_updated` applies incremental
+additions/removals to the registry.
+Malformed node frames close with `INVALID_HANDSHAKE`; frames for unknown nodes
+return `node:error` instead of mutating the registry.
+
+`createInMemoryNodeRegistry()` indexes advertised tool names to
+`NodeCapability[]`. `gateway.discoverNodeCapabilities(toolName)` exposes that
+lookup for future routing layers while keeping this package free of execution
+ownership.
 
 ### Handshake
 
@@ -294,7 +349,7 @@ These hooks are inert when `preserveSessionsOnStop` is unset — single-node beh
 
 | Feature | Issue |
 |---------|-------|
-| Node registry + tool routing | gateway-2 |
+| Remote tool routing/execution over node registry | gateway-2 |
 | Session resume TTL + pending frame buffer | gateway-3 |
 | Heartbeat re-validation sweep | gateway-3 |
 | Channel runtime binding | gateway-4 |

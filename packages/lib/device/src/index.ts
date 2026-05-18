@@ -1,3 +1,9 @@
+export type {
+  DeviceGatewayClient,
+  DeviceGatewayClientConfig,
+  DeviceGatewaySocket,
+} from "./gateway-client.js";
+export { createDeviceGatewayClient } from "./gateway-client.js";
 export {
   createCameraProvider,
   createContactsProvider,

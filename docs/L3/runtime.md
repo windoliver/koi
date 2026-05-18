@@ -26,6 +26,15 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
   runtime tool exposure is unchanged because these are library-level federation
   primitives covered by `@koi/federation` tests. See
   `docs/L2/federation.md`.
+- 2026-05-18: node gateway capability advertising (#1396). No
+  `@koi/runtime` dependency-set change: the new behavior is contained in
+  `@koi/gateway` and `@koi/device`. `@koi/gateway` now accepts `node:*`
+  WebSocket frames for thin/full node handshakes, heartbeat, capability refresh,
+  and incremental tool updates, with an in-memory registry
+  resolving advertised tool names to `NodeCapability[]`. `@koi/device` adds
+  `createDeviceGatewayClient()` so host-injected device providers can advertise
+  stable `device.*` tools to the gateway and answer capability queries.
+  Runtime-level remote tool routing/execution is still tracked separately.
 - 2026-05-16: Integrated `@koi/model-openai-compat` now honors a `KOI_MAX_TOKENS`
   output-token cap (sends `min(request.maxTokens, KOI_MAX_TOKENS)`, or the cap alone
   when the request omits `maxTokens`). No-op when unset/non-positive, so runtime

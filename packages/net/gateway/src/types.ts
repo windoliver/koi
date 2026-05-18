@@ -138,6 +138,10 @@ export interface GatewayConfig {
    *  the store is shared/persistent (e.g. Nexus-backed) and sessions must survive
    *  a SIGTERM/restart so peers can reconnect. Default: false. */
   readonly preserveSessionsOnStop?: boolean | undefined;
+  /** Time without node heartbeat before the gateway marks a node offline. */
+  readonly nodeHeartbeatTimeoutMs: number;
+  /** How often to sweep connected nodes for missed heartbeats. */
+  readonly nodeSweepIntervalMs: number;
   // routing?: RoutingConfig — deferred: per-route handler isolation belongs to
   // the node registry layer, not the transport gateway. See intentional omissions.
 }
@@ -158,4 +162,6 @@ export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
   // without accumulating stale replay-window state indefinitely. Set to 0 to disable
   // retention (delete on disconnect) or increase for longer grace periods.
   disconnectedSessionTtlMs: 300_000,
+  nodeHeartbeatTimeoutMs: 30_000,
+  nodeSweepIntervalMs: 5_000,
 } as const;
