@@ -31,5 +31,7 @@
     "@koi/federation": "workspace:*",
     "@koi/ipc-local": "workspace:*"
   },
-  "koi": {}
+  "koi": {
+    "optional": true
+  }
 }
