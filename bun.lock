@@ -1131,6 +1131,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/sensor-neuroskill": {
+      "name": "@koi/sensor-neuroskill",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/session": {
       "name": "@koi/session",
       "version": "0.0.0",
@@ -3158,6 +3165,8 @@
     "@koi/secure-storage": ["@koi/secure-storage@workspace:packages/lib/secure-storage"],
 
     "@koi/sensor-ide": ["@koi/sensor-ide@workspace:packages/lib/sensor-ide"],
+
+    "@koi/sensor-neuroskill": ["@koi/sensor-neuroskill@workspace:packages/lib/sensor-neuroskill"],
 
     "@koi/session": ["@koi/session@workspace:packages/lib/session"],
 
