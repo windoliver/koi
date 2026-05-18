@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 231 workspace packages
+- 232 workspace packages
 - 11 package families
-- 231 packages with local test files
-- 206 packages with dedicated package docs
+- 232 packages with local test files
+- 207 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 150 | 782 | 131 |
+| lib | 151 | 783 | 132 |
 | meta | 7 | 121 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 12 | 98 | 12 |
@@ -47,7 +47,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 7. Docs: -.
 - `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 22. Docs: -.
 
-## lib (150)
+## lib (151)
 
 - `@koi/ace-types` (packages/lib/ace-types) - Shared domain types for ACE (Adaptive Continuous Enhancement) middleware and stores. Tests: 1. Docs: -.
 - `@koi/agent-discovery` (packages/lib/agent-discovery) - Runtime discovery of external coding agents (CLI, filesystem registry, MCP). Tests: 8. Docs: docs/L2/agent-discovery.md.
@@ -88,6 +88,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/decision-graph` (packages/lib/decision-graph) - Materialized decision trace graph over ledger snapshots. Tests: 3. Docs: docs/L2/decision-graph.md.
 - `@koi/decision-index` (packages/lib/decision-index) - Search-backed cross-session decision index over ledger snapshots. Tests: 1. Docs: docs/L2/decision-index.md.
 - `@koi/decision-ledger` (packages/lib/decision-ledger) - Per-session decision ledger projection — read-only join over trajectory + audit with run report as a sidecar summary. Tests: 1. Docs: docs/L2/decision-ledger.md.
+- `@koi/device` (packages/lib/device) - Device capability ComponentProviders for location, motion, SMS, push, camera, and contacts. Tests: 1. Docs: docs/L2/device.md.
 - `@koi/edit-match` (packages/lib/edit-match) - Search and replace files using cascading match strategies from exact to fuzzy. Tests: 4. Docs: -.
 - `@koi/errors` (packages/lib/errors) - Provide KoiRuntimeError class, circuit breaker, retry logic, and filesystem error mapping. Tests: 7. Docs: -.
 - `@koi/eval` (packages/lib/eval) - Agent eval framework: run suites, score transcripts, persist runs, detect regressions, self-test capabilities. Tests: 8. Docs: docs/L2/eval.md.
