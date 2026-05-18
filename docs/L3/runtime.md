@@ -4,6 +4,15 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+- 2026-05-18: `@koi/speculation` wired (#1406). Runtime now depends on and
+  re-exports the host-injected speculation controller for best-effort
+  pre-execution forks. The controller coordinates overlay creation, speculative
+  fork execution, presentation, accept/reject, cancellation on new user input,
+  resource limits, timeouts, and fallback behavior. It is library-only at the
+  runtime boundary: default TUI wiring is intentionally exempt until a concrete
+  overlay/fork/accept UI exists. Standalone golden coverage exercises the
+  runtime export and an in-memory pre-exec accept path. See
+  `docs/L2/speculation.md` for the full contract.
 - 2026-05-16: Integrated `@koi/model-openai-compat` now honors a `KOI_MAX_TOKENS`
   output-token cap (sends `min(request.maxTokens, KOI_MAX_TOKENS)`, or the cap alone
   when the request omits `maxTokens`). No-op when unset/non-positive, so runtime
