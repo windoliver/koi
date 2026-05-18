@@ -42,6 +42,9 @@ Registers all six capability keys. Missing implementations are filled with
 fallback components that return `UNAVAILABLE` errors from fallible operations,
 so callers can depend on stable component presence and still fail with typed
 errors on unsupported devices.
+Stream subscriptions for motion, SMS, and push also return a `Result`, so an
+unavailable device can fail at subscription time instead of silently installing
+a no-op listener.
 
 ### Per-Capability Providers
 

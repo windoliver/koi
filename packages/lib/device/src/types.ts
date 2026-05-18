@@ -42,7 +42,7 @@ export interface MotionReading {
 
 export interface MotionSensorComponent {
   readonly read: () => Promise<Result<MotionReading, KoiError>>;
-  readonly watch: (listener: (reading: MotionReading) => void) => () => void;
+  readonly watch: (listener: (reading: MotionReading) => void) => Result<() => void, KoiError>;
 }
 
 export interface SmsSendRequest {
@@ -65,7 +65,7 @@ export interface SmsInboundMessage {
 
 export interface SmsChannelComponent {
   readonly sendSms: (message: SmsSendRequest) => Promise<Result<SmsSendReceipt, KoiError>>;
-  readonly onSms: (listener: (message: SmsInboundMessage) => void) => () => void;
+  readonly onSms: (listener: (message: SmsInboundMessage) => void) => Result<() => void, KoiError>;
 }
 
 export interface PushSendRequest {
@@ -91,7 +91,9 @@ export interface PushInboundNotification {
 
 export interface PushChannelComponent {
   readonly sendPush: (message: PushSendRequest) => Promise<Result<PushDeliveryReceipt, KoiError>>;
-  readonly onPush: (listener: (message: PushInboundNotification) => void) => () => void;
+  readonly onPush: (
+    listener: (message: PushInboundNotification) => void,
+  ) => Result<() => void, KoiError>;
 }
 
 export type CameraMode = "photo" | "video";

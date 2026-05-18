@@ -16,6 +16,7 @@ import {
   createCameraProvider,
   createContactsProvider,
   createDeviceComponentProvider,
+  createDeviceUnavailableError,
   createLocationProvider,
   createMotionProvider,
   createPushProvider,
@@ -150,22 +151,23 @@ describe("createDeviceComponentProvider", () => {
             rotationRate: { alpha: 11, beta: 12, gamma: 13 },
             timestampMs: 14,
           });
-          return () => {};
+          return { ok: true, value: () => {} };
         },
       },
     });
 
     const motion = getComponent<MotionSensorComponent>(components, MOTION);
     const read = await motion.read();
-    const unsubscribe = motion.watch((reading) => {
+    const subscription = motion.watch((reading) => {
       observedReading = { ok: true, value: reading };
     });
 
     expect(read.ok).toBe(true);
+    expect(subscription.ok).toBe(true);
     expect(read.ok ? read.value.acceleration.x : 0).toBe(1);
     expect(observedReading?.ok).toBe(true);
     expect(observedReading?.ok ? observedReading.value.rotationRate.gamma : 0).toBe(13);
-    unsubscribe();
+    if (subscription.ok) subscription.value();
   });
 
   test("SMS provider sends and receives SMS messages", async () => {
@@ -183,7 +185,7 @@ describe("createDeviceComponentProvider", () => {
         }),
         onSms: (listener) => {
           listener(received);
-          return () => {};
+          return { ok: true, value: () => {} };
         },
       },
     });
@@ -192,22 +194,32 @@ describe("createDeviceComponentProvider", () => {
     const sent = await sms.sendSms({ to: "+15550001111", body: "ping" });
     // Reassigned by the receive callback so the test can assert delivery.
     let inbound: typeof received | undefined;
-    sms.onSms((message) => {
+    const subscription = sms.onSms((message) => {
       inbound = message;
     });
 
     expect(sent).toEqual({ ok: true, value: { id: "sms-1", to: "+15550001111", sentAtMs: 10 } });
+    expect(subscription.ok).toBe(true);
     expect(inbound).toEqual(received);
   });
 
   test("push provider delivers native push notifications", async () => {
+    const received = {
+      id: "push-2",
+      title: "Hello",
+      body: "Arrived",
+      receivedAtMs: 35,
+    };
     const components = await attachComponents({
       push: {
         sendPush: async (message) => ({
           ok: true,
           value: { id: "push-1", recipient: message.recipient, deliveredAtMs: 30 },
         }),
-        onPush: () => () => {},
+        onPush: (listener) => {
+          listener(received);
+          return { ok: true, value: () => {} };
+        },
       },
     });
 
@@ -217,11 +229,17 @@ describe("createDeviceComponentProvider", () => {
       title: "Hi",
       body: "Ready",
     });
+    let inbound: typeof received | undefined;
+    const subscription = push.onPush((message) => {
+      inbound = message;
+    });
 
     expect(result).toEqual({
       ok: true,
       value: { id: "push-1", recipient: "user-1", deliveredAtMs: 30 },
     });
+    expect(subscription.ok).toBe(true);
+    expect(inbound).toEqual(received);
   });
 
   test("camera provider captures image data", async () => {
@@ -294,6 +312,9 @@ describe("createDeviceComponentProvider", () => {
     const pushResult = await push.sendPush({ recipient: "user-1", title: "Hi", body: "Ready" });
     const cameraResult = await camera.capture();
     const contactsResult = await contacts.list();
+    const motionWatchResult = motion.watch(() => {});
+    const smsSubscribeResult = sms.onSms(() => {});
+    const pushSubscribeResult = push.onPush(() => {});
 
     expect(locationResult.ok).toBe(false);
     expect(motionResult.ok).toBe(false);
@@ -301,6 +322,18 @@ describe("createDeviceComponentProvider", () => {
     expect(pushResult.ok).toBe(false);
     expect(cameraResult.ok).toBe(false);
     expect(contactsResult.ok).toBe(false);
+    expect(motionWatchResult).toEqual({
+      ok: false,
+      error: createDeviceUnavailableError("motion"),
+    });
+    expect(smsSubscribeResult).toEqual({
+      ok: false,
+      error: createDeviceUnavailableError("sms"),
+    });
+    expect(pushSubscribeResult).toEqual({
+      ok: false,
+      error: createDeviceUnavailableError("push"),
+    });
     expect(isDeviceUnavailableError((locationResult as { readonly error: KoiError }).error)).toBe(
       true,
     );

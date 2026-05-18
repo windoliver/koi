@@ -1,4 +1,4 @@
-import type { Agent, AttachResult, ComponentProvider } from "@koi/core";
+import type { Agent, AttachResult, ComponentProvider, KoiError, Result } from "@koi/core";
 import { COMPONENT_PRIORITY } from "@koi/core";
 import { CAMERA, CONTACTS, LOCATION, MOTION, PUSH, SMS } from "./tokens.js";
 import type {
@@ -18,7 +18,14 @@ import type {
 } from "./types.js";
 import { createDeviceUnavailableError } from "./unavailable.js";
 
-const noopUnsubscribe = (): void => {};
+function unavailableSubscription(
+  capability: "motion" | "sms" | "push",
+): Result<() => void, KoiError> {
+  return {
+    ok: false,
+    error: createDeviceUnavailableError(capability),
+  };
+}
 
 function unavailableLocation(): LocationSensorComponent {
   return {
@@ -35,7 +42,7 @@ function unavailableMotion(): MotionSensorComponent {
       ok: false,
       error: createDeviceUnavailableError("motion"),
     }),
-    watch: () => noopUnsubscribe,
+    watch: () => unavailableSubscription("motion"),
   };
 }
 
@@ -45,7 +52,7 @@ function unavailableSms(): SmsChannelComponent {
       ok: false,
       error: createDeviceUnavailableError("sms"),
     }),
-    onSms: () => noopUnsubscribe,
+    onSms: () => unavailableSubscription("sms"),
   };
 }
 
@@ -55,7 +62,7 @@ function unavailablePush(): PushChannelComponent {
       ok: false,
       error: createDeviceUnavailableError("push"),
     }),
-    onPush: () => noopUnsubscribe,
+    onPush: () => unavailableSubscription("push"),
   };
 }
 
