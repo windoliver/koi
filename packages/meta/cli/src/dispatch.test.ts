@@ -3,8 +3,8 @@ import { runDispatch } from "./dispatch.js";
 
 describe("runDispatch", () => {
   test("preserves non-Error command-loader diagnostic messages", async () => {
-    const result = await runDispatch(["start"], "", "0.0.0", {
-      start: () => {
+    const result = await runDispatch(["doctor"], "", "0.0.0", {
+      doctor: () => {
         throw { message: "Cannot find module '@koi/example'" };
       },
     });

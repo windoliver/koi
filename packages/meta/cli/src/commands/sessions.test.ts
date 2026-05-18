@@ -224,13 +224,14 @@ describe("loadSessionSummary", () => {
 
   test("caps content scanning for very large session files", async () => {
     const path = join(tmpDir, "large.jsonl");
-    const lines = [makeLine("user", "first", 1000)];
+    const firstLine = makeLine("user", "first", 1000);
+    const lines = [firstLine];
     const filler = makeLine("assistant", "x".repeat(120), 2000);
-    while (
-      new TextEncoder().encode(`${lines.join("\n")}\n`).byteLength <
-      MAX_SUMMARY_BYTES + 8_192
-    ) {
+    let byteLength = new TextEncoder().encode(`${firstLine}\n`).byteLength;
+    const fillerByteLength = new TextEncoder().encode(`${filler}\n`).byteLength;
+    while (byteLength < MAX_SUMMARY_BYTES + 8_192) {
       lines.push(filler);
+      byteLength += fillerByteLength;
     }
     await writeFile(path, `${lines.join("\n")}\n`);
 
