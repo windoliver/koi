@@ -4,7 +4,8 @@
  * L2 feature package. Depends on @koi/core (L0) and @koi/nexus-client (L0u).
  *
  * Includes sequence-cursor sync, vector-clock metadata, conflict reporting,
- * and cross-zone tool routing.
+ * cross-zone tool routing, zone-aware routing, and Raft-style critical-state
+ * consensus primitives.
  */
 
 // config
@@ -18,6 +19,16 @@ export type {
   TenantResolverContext,
 } from "./federation-middleware.js";
 export { createFederationMiddleware } from "./federation-middleware.js";
+// consensus
+export type {
+  InMemoryRaftCluster,
+  RaftCommand,
+  RaftLogEntry,
+  RaftNodeRole,
+  RaftNodeSnapshot,
+  SplitBrainSnapshot,
+} from "./raft-consensus.js";
+export { createInMemoryRaftCluster } from "./raft-consensus.js";
 // sync engine
 export type { RemoteHealth, SyncEngineConfig, SyncEngineHandle } from "./sync-engine.js";
 export { createSyncEngine } from "./sync-engine.js";
@@ -50,3 +61,11 @@ export {
 // zone registry (Nexus-backed)
 export type { ServerReadsMode, ZoneRegistryNexusConfig } from "./zone-registry-nexus.js";
 export { createZoneRegistryNexus } from "./zone-registry-nexus.js";
+// zone-aware routing
+export type {
+  StaticZoneHealthMonitor,
+  ZoneRouteCandidate,
+  ZoneRouteRequest,
+  ZoneRouter,
+} from "./zone-router.js";
+export { createStaticZoneHealthMonitor, createZoneRouter, pickHealthyZone } from "./zone-router.js";

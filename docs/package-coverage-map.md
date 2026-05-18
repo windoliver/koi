@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 153 | 791 | 134 |
+| lib | 153 | 793 | 134 |
 | meta | 7 | 122 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 12 | 99 | 12 |
@@ -95,7 +95,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/event-delivery` (packages/lib/event-delivery) - Manage event subscriptions with serialized delivery, retry, dead letter queue, and replay. Tests: 2. Docs: -.
 - `@koi/event-trace` (packages/lib/event-trace) - ATIF trajectory recording middleware — records every model/tool call to an inspectable trajectory document. Tests: 5. Docs: docs/L2/event-trace.md.
 - `@koi/execution-context` (packages/lib/execution-context) - Store and retrieve session context via AsyncLocalStorage for tool execution. Tests: 4. Docs: -.
-- `@koi/federation` (packages/lib/federation) - Multi-zone agent coordination — zone registry, sequence-cursor sync, cross-zone tool routing. Tests: 7. Docs: docs/L2/federation.md.
+- `@koi/federation` (packages/lib/federation) - Multi-zone agent coordination — zone registry, sequence-cursor sync, cross-zone tool routing. Tests: 9. Docs: docs/L2/federation.md.
 - `@koi/file-resolution` (packages/lib/file-resolution) - Read markdown files, resolve directory structures, enforce token budgets. Tests: 7. Docs: docs/L2/file-resolution.md.
 - `@koi/file-type` (packages/lib/file-type) - Magic-byte MIME detection for user-originated file content — clipboard, @-reference, upload. Tests: 1. Docs: docs/L2/file-type.md.
 - `@koi/forge-demand` (packages/lib/forge-demand) - Demand-triggered forge detection: capability gaps, repeated failures, latency degradation, user corrections.. Tests: 4. Docs: docs/L2/forge-demand.md.
