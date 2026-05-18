@@ -1226,6 +1226,23 @@
         "@koi/tasks": "workspace:*",
       },
     },
+    "packages/lib/swarm": {
+      "name": "@koi/swarm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/federation": "workspace:*",
+        "@koi/ipc-local": "workspace:*",
+      },
+      "peerDependencies": {
+        "@koi/federation": "workspace:*",
+      },
+      "optionalPeers": [
+        "@koi/federation",
+      ],
+    },
     "packages/lib/task-board": {
       "name": "@koi/task-board",
       "version": "0.0.0",
@@ -3199,6 +3216,8 @@
     "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/lib/snapshot-store-sqlite"],
 
     "@koi/spawn-tools": ["@koi/spawn-tools@workspace:packages/lib/spawn-tools"],
+
+    "@koi/swarm": ["@koi/swarm@workspace:packages/lib/swarm"],
 
     "@koi/task-board": ["@koi/task-board@workspace:packages/lib/task-board"],
 
