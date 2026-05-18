@@ -1,15 +1,16 @@
 # @koi/forge-integrity
 
-Content-consistency verification, minimal provenance construction, and
-lineage helpers for forged bricks (L2). Issue #1348.
+Content-consistency verification, minimal provenance construction,
+cryptographic attestations, SLSA serialization, install-time provenance
+verification, and trust scoring helpers for forged bricks (L2). Issues
+#1348 and #1402.
 
-**Scope: content-consistency, not authenticity.** A successful verification
-result proves only that the brick's stored `id` matches the canonical
-recomputation under the expected producer's identity scheme. It does NOT
-prove cryptographic authorship — `provenance.builder.id` is read from the
-unverified artifact, so a brick fabricated under a trusted producer's name
-will still pass here. Producer authenticity requires a separate
-signed-attestation check (out of scope for this package).
+**Scope: content-consistency and provenance authenticity are separate
+checks.** A successful `BrickVerifier` result proves only that the brick's
+stored `id` matches the canonical recomputation under the expected
+producer's identity scheme. Producer authenticity requires
+`verifyAttestation()` over the unsigned provenance payload. Install-time
+callers should use `verifyInstallProvenance()` to compose both checks.
 
 ## Surface (exact `src/index.ts` exports)
 
@@ -34,6 +35,41 @@ signed-attestation check (out of scope for this package).
   values (Map/Set/Date/functions) are rejected so the record stays stable
   across persist/sign round-trips. The returned struct (and its mutable
   subtrees) is deep-frozen.
+- `mapProvenanceToSlsa(provenance): SlsaProvenanceV1` — maps Koi
+  provenance to a SLSA v1.0 predicate and preserves Koi verification,
+  classification, content markers, source, and content hash as explicit
+  extensions.
+- `mapProvenanceToStatement(provenance, brickId): InTotoStatementV1<SlsaProvenanceV1>`
+  — wraps the SLSA predicate in an in-toto Statement v1 envelope.
+- `signAttestation(provenance, signer, options?): Promise<ForgeProvenance>`
+  — signs the canonical unsigned provenance payload with the provided
+  `SigningBackend` and returns a new provenance value with
+  `attestation` attached.
+- `verifyAttestation(provenance, signer, options?): Promise<AttestationVerificationResult>`
+  — verifies the signed unsigned-provenance payload, rejects missing or
+  invalid signatures, and can reject expired provenance with
+  `maxAgeMs`.
+- `verifyInstallProvenance(brick, options): Promise<InstallProvenanceResult>`
+  — fail-closed install boundary that requires both content integrity and
+  attestation verification to pass.
+- `mapVirusTotalAnalysisToSignal(analysis): VirusTotalSignal` — converts
+  an injected VirusTotal analysis result into a local trust signal. The
+  package defines a `VirusTotalClient` interface but does not hard-code
+  HTTP calls or API keys.
+- `scanBrickWithVirusTotal(brick, client): Promise<VirusTotalSignal>` —
+  submits the brick's executable or declared content bytes through an
+  injected `VirusTotalClient` and maps the returned analysis to a local
+  trust signal.
+- `computeTrustScore(input): TrustScoreResult` — deterministic scoring
+  model that combines provenance, local scanner results, VirusTotal,
+  publisher identity, and community feedback.
+- `evaluateMarketplaceTrust(brick, options): Promise<MarketplaceTrustResult>`
+  — publish/install gate that composes `verifyInstallProvenance()`, an
+  optional local scanner result, an optional VirusTotal signal, an
+  optional publisher identity verifier, and optional community trust
+  inputs. It blocks failed integrity or attestation, local scanner
+  rejection, malicious VirusTotal findings, unverified publishers, and
+  blocked trust scores.
 - `getParentBrickId(brick): BrickId | undefined` — defensive accessor for
   `provenance.parentBrickId`. Returns `undefined` for malformed shapes.
 - `isDerivedFromUnchecked(child, ancestor, store): Promise<LineageOutcome>`
@@ -84,10 +120,9 @@ trusted producer → recompute pairs into `createBrickVerifier`.
 
 ## Out of scope
 
-- Cryptographic attestation / signing (`brick-signing` from v1).
-- SLSA v1.0 serialization (`slsa-serializer` from v1).
 - LRU attestation caches (`attestation-cache` from v1).
-- Producer authenticity beyond content-consistency.
+- Concrete VirusTotal HTTP client wiring and API-key storage.
+- Active v2 community-registry publish/install route integration.
 - The canonical identity scheme itself (lives with each producer).
 - Verification pipeline orchestration (`@koi/forge-verifier`, #1347).
 - Forge policy enforcement (`@koi/forge-policy`, #1349).
@@ -106,6 +141,10 @@ trusted producer → recompute pairs into `createBrickVerifier`.
   caller must supply `expectedBuilderId` out-of-band.
 - `createForgeProvenance` never invents trust- or sensitivity-bearing
   values (`verification`, `classification`, `contentMarkers`).
+- Attestation signatures are computed over canonical provenance with the
+  `attestation` field removed, so signatures never sign themselves.
+- Install verification fails closed on any integrity, attestation, or
+  expiry failure.
 - `isDerivedFrom` reads through `ForgeStore.load`; cycles, depth overruns,
   store errors, missing ancestors, and integrity failures all surface as
   distinct `LineageOutcome` variants rather than collapsing to `false`.

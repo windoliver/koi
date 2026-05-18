@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 151 | 783 | 132 |
+| lib | 151 | 789 | 132 |
 | meta | 7 | 121 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 12 | 99 | 12 |
@@ -100,7 +100,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/file-type` (packages/lib/file-type) - Magic-byte MIME detection for user-originated file content — clipboard, @-reference, upload. Tests: 1. Docs: docs/L2/file-type.md.
 - `@koi/forge-demand` (packages/lib/forge-demand) - Demand-triggered forge detection: capability gaps, repeated failures, latency degradation, user corrections.. Tests: 4. Docs: docs/L2/forge-demand.md.
 - `@koi/forge-exaptation` (packages/lib/forge-exaptation) - Purpose-drift detection for forge artifacts: pure functions over usage observations.. Tests: 3. Docs: docs/L2/forge-exaptation.md.
-- `@koi/forge-integrity` (packages/lib/forge-integrity) - Content-addressable integrity, provenance, and lineage helpers for forged bricks. L2.. Tests: 3. Docs: docs/L2/forge-integrity.md.
+- `@koi/forge-integrity` (packages/lib/forge-integrity) - Content-addressable integrity, provenance, and lineage helpers for forged bricks. L2.. Tests: 9. Docs: docs/L2/forge-integrity.md.
 - `@koi/forge-optimizer` (packages/lib/forge-optimizer) - Advisory artifact-optimization helpers: scoring, merge/simplify/retirement suggestions, lifecycle validation (L2).. Tests: 7. Docs: docs/L2/forge-optimizer.md.
 - `@koi/forge-policy` (packages/lib/forge-policy) - Sync deterministic policy evaluator + audit log for forge candidates. L2.. Tests: 6. Docs: docs/L2/forge-policy.md.
 - `@koi/forge-tools` (packages/lib/forge-tools) - Primordial forge tools and in-memory ForgeStore (L2). Tests: 6. Docs: docs/L2/forge-tools.md.

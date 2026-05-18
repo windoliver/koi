@@ -4,6 +4,22 @@
  */
 
 export type {
+  AttestationExpired,
+  AttestationInvalid,
+  AttestationMalformed,
+  AttestationMissing,
+  AttestationOk,
+  AttestationVerificationResult,
+  SignAttestationOptions,
+  VerifyAttestationOptions,
+} from "./attestation.js";
+export { signAttestation, verifyAttestation } from "./attestation.js";
+export type {
+  InstallProvenanceResult,
+  VerifyInstallProvenanceOptions,
+} from "./install-verification.js";
+export { verifyInstallProvenance } from "./install-verification.js";
+export type {
   BrickVerifier,
   IntegrityContentMismatch,
   IntegrityMalformed,
@@ -21,7 +37,6 @@ export type {
 // preventing request-scoped or attacker-controlled registries from being
 // passed into the verifier on each call.
 export { createBrickVerifier } from "./integrity.js";
-
 export type { ProvenanceEquivalent } from "./lineage.js";
 // Both lineage helpers (`isDerivedFrom`, `isDerivedFromUnchecked`) are
 // intentionally NOT exported in this release. The trusted variant
@@ -33,6 +48,27 @@ export type { ProvenanceEquivalent } from "./lineage.js";
 // `getParentBrickId` accessor is exported so callers can implement
 // narrow, non-policy-bearing inspections without a walk.
 export { findContentEquivalentById, getParentBrickId } from "./lineage.js";
-
+export type {
+  CommunityTrustSignal,
+  EvaluateMarketplaceTrustOptions,
+  LocalScanSignal,
+  MarketplaceDecision,
+  MarketplaceTrustResult,
+  PublisherIdentityResult,
+  PublisherIdentityVerifier,
+} from "./marketplace.js";
+export { evaluateMarketplaceTrust } from "./marketplace.js";
 export type { CreateProvenanceOptions } from "./provenance.js";
 export { createForgeProvenance, MAX_PROVENANCE_DEPTH } from "./provenance.js";
+export type { SlsaProvenanceV1 } from "./slsa.js";
+export { mapProvenanceToSlsa, mapProvenanceToStatement, SLSA_PROVENANCE_V1_TYPE } from "./slsa.js";
+export type { TrustScoreInput, TrustScoreLevel, TrustScoreResult } from "./trust-score.js";
+export { computeTrustScore } from "./trust-score.js";
+export type {
+  VirusTotalAnalysis,
+  VirusTotalClient,
+  VirusTotalSignal,
+  VirusTotalStats,
+  VirusTotalVerdict,
+} from "./virustotal.js";
+export { mapVirusTotalAnalysisToSignal, scanBrickWithVirusTotal } from "./virustotal.js";
