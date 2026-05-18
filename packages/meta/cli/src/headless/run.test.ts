@@ -273,6 +273,112 @@ describe("runHeadless", () => {
     expect(kinds.indexOf("tool_call")).toBeLessThan(kinds.indexOf("tool_result"));
   });
 
+  test("many sequential tool-call cycles emit exactly one tool_call each (no leak/double-emit)", async () => {
+    // The pending map must be drained per call: each completed cycle deletes
+    // its entry so the map cannot grow unbounded and the finally-flush has
+    // nothing left to re-emit. Observable proxy for "map size does not grow".
+    const stdout: string[] = [];
+    const cycles = 50;
+    const events: EngineEvent[] = [];
+    for (let i = 0; i < cycles; i++) {
+      const callId = toolCallId(`c${i}`);
+      events.push(
+        { kind: "tool_call_start", callId, toolName: `t${i}` },
+        {
+          kind: "tool_call_end",
+          callId,
+          result: { toolName: `t${i}`, callId, rawArgs: "{}", parsedArgs: { i } },
+        },
+        { kind: "tool_result", callId, output: { ok: true } },
+      );
+    }
+    events.push(DONE);
+    await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: (s) => stdout.push(s),
+      writeStderr: () => {},
+      runtime: runtimeFromEvents(events),
+    });
+    const parsed = stdout
+      .join("")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const calls = parsed.filter((e) => e.kind === "tool_call");
+    // Exactly one tool_call per cycle — no duplicates from a retained entry,
+    // no extras from the finally flush.
+    expect(calls).toHaveLength(cycles);
+    expect(calls.map((c) => c.toolName)).toEqual(Array.from({ length: cycles }, (_, i) => `t${i}`));
+  });
+
+  test("flushes a started tool call when the stream aborts before tool_call_end/tool_result", async () => {
+    // Regression: emission is deferred to tool_call_end (or the tool_result
+    // fallback). If the run is interrupted (timeout, SIGINT, mid-stream
+    // exception) after tool_call_start but before either event, the call
+    // would silently vanish from the NDJSON — operators could not tell which
+    // tool was in flight. The finally-block flush must still emit it once.
+    const stdout: string[] = [];
+    const callId = toolCallId("c1");
+    const { exitCode } = await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: (s) => stdout.push(s),
+      writeStderr: () => {},
+      // Stream ends after tool_call_start: no tool_call_end, no tool_result,
+      // no done — the non-done exit path.
+      runtime: runtimeFromEvents([
+        { kind: "tool_call_start", callId, toolName: "Bash", args: { command: "ls" } },
+      ]),
+    });
+    expect(exitCode).toBe(1);
+    const parsed = stdout
+      .join("")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const calls = parsed.filter((e) => e.kind === "tool_call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      toolName: "Bash",
+      args: { type: "object", size: 1 },
+    });
+    // CI-log safety preserved on the flush path too: no raw arg values.
+    expect(JSON.stringify(calls[0])).not.toContain("ls");
+  });
+
+  test("flushes a started tool call when the stream throws mid-run", async () => {
+    const stdout: string[] = [];
+    const callId = toolCallId("c1");
+    const { exitCode } = await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: (s) => stdout.push(s),
+      writeStderr: () => {},
+      runtime: runtimeFromFn(
+        (): AsyncIterable<EngineEvent> => ({
+          async *[Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+            yield { kind: "tool_call_start", callId, toolName: "fs_write", args: { path: "a" } };
+            throw new Error("stream blew up");
+          },
+        }),
+      ),
+    });
+    // mapErrorToExitCode for a generic Error → INTERNAL (5).
+    expect(exitCode).toBe(5);
+    const calls = stdout
+      .join("")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.kind === "tool_call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ toolName: "fs_write", args: { type: "object", size: 1 } });
+  });
+
   test("redacts TOOL_EXECUTION_ERROR payload (code + errorSize, no raw message)", async () => {
     // Raw error messages from query-engine can include Bash stderr
     // fragments, URLs, or tokens. Headless emits only the fixed-vocabulary

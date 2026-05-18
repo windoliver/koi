@@ -242,6 +242,21 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     opts.externalSignal?.removeEventListener("abort", externalAbortHandler);
+    // Flush any tool call that started but never reached tool_call_end /
+    // tool_result. On abort (timeout, SIGINT) or a mid-stream exception the
+    // loop exits before those events, so without this every interrupted
+    // invocation would silently drop its tool_call record — operators could
+    // not tell which tool was in flight or correlate partial side effects.
+    // Emit-on-completion is the normal path; this is the only safety net for
+    // the non-done exit paths.
+    for (const [callId, pending] of pendingToolCalls) {
+      emit({
+        kind: "tool_call",
+        toolName: pending.toolName,
+        args: pending.startArgsSummary,
+      });
+      pendingToolCalls.delete(callId);
+    }
   }
 
   // let: true once emitResult has been invoked. Guards against double-emit
@@ -509,8 +524,10 @@ export function redactEngineBanners(text: string): string {
  *  therefore logged `args:{type:"undefined"}` for every streamed call. */
 interface PendingToolCall {
   readonly toolName: string;
-  readonly startArgs: unknown;
-  emitted: boolean;
+  // Only the redacted shape is retained — never the raw argument object.
+  // Storing the summary at start time keeps zero sensitive payload in memory
+  // for the lifetime of the run (heap-snapshot / crash-artifact safety).
+  readonly startArgsSummary: { readonly type: string; readonly size?: number };
 }
 
 /** Structural guard for the AccumulatedToolCall carried on
@@ -543,8 +560,7 @@ function translateEvent(
       // adapter did provide up front (non-streaming adapters) as a fallback.
       pendingToolCalls.set(event.callId, {
         toolName: event.toolName,
-        startArgs: event.args,
-        emitted: false,
+        startArgsSummary: summarizePayload(event.args),
       });
       return false;
     }
@@ -556,14 +572,19 @@ function translateEvent(
     case "tool_call_end": {
       const pending = pendingToolCalls.get(event.callId);
       const toolName = pending?.toolName ?? toolNamesByCallId.get(event.callId) ?? "unknown";
-      if (pending?.emitted) return false;
       // Prefer the finalized parsed args from the AccumulatedToolCall; fall
       // back to any args the adapter supplied on tool_call_start. Still
       // redacted: only the shape (type + size) reaches CI logs.
       const finalArgs = hasParsedArgs(event.result) ? event.result.parsedArgs : undefined;
-      const argsForSummary = finalArgs !== undefined ? finalArgs : pending?.startArgs;
-      emit({ kind: "tool_call", toolName, args: summarizePayload(argsForSummary) });
-      if (pending) pending.emitted = true;
+      const argsSummary =
+        finalArgs !== undefined
+          ? summarizePayload(finalArgs)
+          : (pending?.startArgsSummary ?? summarizePayload(undefined));
+      emit({ kind: "tool_call", toolName, args: argsSummary });
+      // Drop the pending record now that it's emitted: bounds the map on
+      // many-tool-call streams and shrinks the abort-path flush set.
+      // toolNamesByCallId is intentionally kept — tool_result still reads it.
+      pendingToolCalls.delete(event.callId);
       return false;
     }
     case "tool_result": {
@@ -572,14 +593,16 @@ function translateEvent(
       // tool_call event is still logged (once) before its result, using
       // whatever args were provided up front.
       const pending = pendingToolCalls.get(event.callId);
-      if (pending && !pending.emitted) {
+      if (pending !== undefined) {
         emit({
           kind: "tool_call",
           toolName: pending.toolName,
-          args: summarizePayload(pending.startArgs),
+          args: pending.startArgsSummary,
         });
-        pending.emitted = true;
       }
+      // Whether emitted here or earlier at tool_call_end, the call is now
+      // accounted for — drop it so the map doesn't grow across the run.
+      pendingToolCalls.delete(event.callId);
       const ok = !isToolExecutionError(event.output);
       // TOOL_EXECUTION_ERROR payloads carry { error, code } where `error`
       // is the caught exception's .message — for Bash/HTTP tools that can
