@@ -1,0 +1,25 @@
+{
+  "name": "@koi/sensor-neuroskill",
+  "description": "Real-time BCI/EXG signal sensor with preprocessing, cognitive-state estimates, and event streaming",
+  "version": "0.0.0",
+  "private": true,
+  "koi": {
+    "optional": true
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "scripts": {
+    "build": "bun ../../../scripts/run-tsup.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}
