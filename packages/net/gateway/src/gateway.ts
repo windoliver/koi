@@ -2,12 +2,12 @@
  * Gateway factory: wires transport, auth, sessions, sequencing, and backpressure
  * into a minimal WebSocket control-plane entry point.
  *
- * Intentionally omits: node registry, tool routing, channel binding, scheduler,
- * heartbeat sweep, and per-route onFrame handler isolation (routing enforcement
- * lives in the node-registry layer) — those belong in future issues.
+ * Includes the v2 transport/session control plane plus thin node registration
+ * and capability discovery. Heavy scheduling/tool routing remains outside this
+ * gateway core.
  */
 
-import type { KoiError, Result } from "@koi/core";
+import type { KoiError, NodeCapability, Result } from "@koi/core";
 import { notFound } from "@koi/core";
 import { swallowError } from "@koi/errors";
 import type { Gateway as GatewayContract } from "@koi/gateway-types";
@@ -15,6 +15,17 @@ import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
 import { CLOSE_CODES } from "./close-codes.js";
+import type { NodeCapabilitiesPayload, NodeFrame, NodeHandshakePayload } from "./node-protocol.js";
+import {
+  encodeNodeFrame,
+  parseNodeFrame,
+  peekNodeFrameKind,
+  validateNodeCapabilitiesPayload,
+  validateNodeHandshakePayload,
+  validateNodeToolsUpdatedPayload,
+} from "./node-protocol.js";
+import type { NodeRegistry, NodeRegistryEvent, RegisteredNode } from "./node-registry.js";
+import { createInMemoryNodeRegistry } from "./node-registry.js";
 import {
   createAckFrame,
   createErrorFrame,
@@ -58,6 +69,10 @@ export interface Gateway {
   readonly dispatch: (session: Session, frame: GatewayFrame) => void;
   readonly destroySession: (sessionId: string, reason?: string) => Promise<Result<void, KoiError>>;
   readonly onSessionEvent: (handler: (event: SessionEvent) => void) => () => void;
+  readonly nodeRegistry: () => NodeRegistry;
+  readonly discoverNodeCapabilities: (toolName: string) => readonly NodeCapability[];
+  readonly queryNodeCapabilities: (nodeId: string) => Result<number, KoiError>;
+  readonly onNodeEvent: (handler: (event: NodeRegistryEvent) => void) => () => void;
   // Ingestion contract methods (additive; satisfies @koi/gateway-types Gateway).
   // `ingest` reuses the in-process dispatch path so HTTP ingestion shares the same
   // subscriber fan-out as WS frames. `pauseIngress` silences external WS-frame ingress
@@ -93,6 +108,7 @@ export function createGateway(
 ): Gateway {
   const config: GatewayConfig = { ...DEFAULT_GATEWAY_CONFIG, ...configOverrides };
   const store = deps.store ?? createInMemorySessionStore();
+  const nodeRegistry = createInMemoryNodeRegistry();
   const bp = createBackpressureMonitor(config);
   const nextId = createFrameIdGenerator();
 
@@ -142,6 +158,12 @@ export function createGateway(
   // Used by send() to fire a best-effort outbound-seq persist without a store.get()
   // round-trip, reducing the seq-reuse window after a process crash.
   const connSessionCache = new Map<string, Session>();
+  const nodeIdByConn = new Map<string, string>();
+  const connIdByNode = new Map<string, string>();
+  const pendingNodeHandshakes = new Map<
+    string,
+    { readonly nodeId: string; readonly capacity: RegisteredNode["capacity"] }
+  >();
   // Set to true by stop() so pending handshake continuations bail out before store.set().
   let stopped = false;
   // Set to true by pauseIngress() so external WS-frame ingestion is silenced during
@@ -157,6 +179,7 @@ export function createGateway(
     Set<(session: Session, frame: GatewayFrame) => void | Promise<void>>
   >();
   const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
+  const nodeEventHandlers = new Set<(event: NodeRegistryEvent) => void>();
 
   let criticalSweep: ReturnType<typeof setInterval> | undefined;
 
@@ -174,6 +197,189 @@ export function createGateway(
         swallowError(err, { package: "gateway", operation: "onSessionEvent" });
       }
     }
+  }
+
+  function emitNodeEvent(event: NodeRegistryEvent): void {
+    for (const handler of nodeEventHandlers) {
+      try {
+        handler(event);
+      } catch (err: unknown) {
+        swallowError(err, { package: "gateway", operation: "onNodeEvent" });
+      }
+    }
+  }
+
+  function cleanupNodeConnection(conn: TransportConnection, reason: string): boolean {
+    const pending = pendingNodeHandshakes.get(conn.id);
+    const nodeId = nodeIdByConn.get(conn.id) ?? pending?.nodeId;
+    pendingNodeHandshakes.delete(conn.id);
+    if (nodeId === undefined) return false;
+    nodeIdByConn.delete(conn.id);
+    connIdByNode.delete(nodeId);
+    const removed = nodeRegistry.deregister(nodeId);
+    if (removed.ok && removed.value) {
+      emitNodeEvent({ kind: "deregistered", nodeId, reason });
+    }
+    return true;
+  }
+
+  function handleNodeFirstMessage(conn: TransportConnection, data: string): void {
+    const frameResult = parseNodeFrame(data);
+    if (!frameResult.ok || frameResult.value.kind !== "node:handshake") {
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Invalid node handshake");
+      cleanupConn(conn, "invalid node handshake");
+      return;
+    }
+    const payloadResult = validateNodeHandshakePayload(frameResult.value.payload);
+    if (!payloadResult.ok || payloadResult.value.nodeId !== frameResult.value.nodeId) {
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Invalid node handshake payload");
+      cleanupConn(conn, "invalid node handshake payload");
+      return;
+    }
+
+    const previousConnId = connIdByNode.get(frameResult.value.nodeId);
+    if (previousConnId !== undefined && previousConnId !== conn.id) {
+      const previousConn = connMap.get(previousConnId);
+      if (previousConn !== undefined) {
+        cleanupConn(previousConn, "node reconnected");
+        previousConn.close(CLOSE_CODES.ADMIN_CLOSED, "Node reconnected");
+      }
+    }
+
+    nodeIdByConn.set(conn.id, frameResult.value.nodeId);
+    connIdByNode.set(frameResult.value.nodeId, conn.id);
+    pendingNodeHandshakes.set(conn.id, {
+      nodeId: frameResult.value.nodeId,
+      capacity: payloadResult.value.capacity,
+    });
+  }
+
+  function handleNodeMessage(conn: TransportConnection, data: string): void {
+    const frameResult = parseNodeFrame(data);
+    if (!frameResult.ok) {
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, frameResult.error.message);
+      cleanupConn(conn, "invalid node frame");
+      return;
+    }
+    const frame = frameResult.value;
+    const nodeId = nodeIdByConn.get(conn.id);
+    if (nodeId === undefined || nodeId !== frame.nodeId) {
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Node identity mismatch");
+      cleanupConn(conn, "node identity mismatch");
+      return;
+    }
+
+    if (frame.kind === "node:capabilities") {
+      handleNodeCapabilities(conn, nodeId, frame);
+      return;
+    }
+
+    if (frame.kind === "node:heartbeat") {
+      handleNodeHeartbeat(nodeId);
+      return;
+    }
+
+    if (frame.kind === "node:tools_updated") {
+      handleNodeToolsUpdated(conn, nodeId, frame);
+    }
+  }
+
+  function handleNodeCapabilities(
+    conn: TransportConnection,
+    nodeId: string,
+    frame: NodeFrame,
+  ): void {
+    const payloadResult = validateNodeCapabilitiesPayload(frame.payload);
+    if (!payloadResult.ok) {
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, payloadResult.error.message);
+      cleanupConn(conn, "invalid node capabilities");
+      return;
+    }
+    const pending = pendingNodeHandshakes.get(conn.id);
+    if (pending === undefined) {
+      updateNodeCapabilities(nodeId, payloadResult.value.nodeType, payloadResult.value.tools);
+      return;
+    }
+    registerNodeCapabilities(conn, nodeId, frame.correlationId, pending, payloadResult.value);
+  }
+
+  function updateNodeCapabilities(
+    nodeId: string,
+    nodeType: RegisteredNode["nodeType"],
+    tools: RegisteredNode["tools"],
+  ): void {
+    const updateResult = nodeRegistry.updateCapabilities(nodeId, nodeType, tools);
+    if (updateResult.ok) emitNodeEvent({ kind: "capabilities_updated", nodeId });
+  }
+
+  function registerNodeCapabilities(
+    conn: TransportConnection,
+    nodeId: string,
+    correlationId: string,
+    pending: Pick<NodeHandshakePayload, "nodeId" | "capacity">,
+    payload: NodeCapabilitiesPayload,
+  ): void {
+    pendingNodeHandshakes.delete(conn.id);
+    const now = Date.now();
+    const node = createRegisteredNode(conn.id, nodeId, pending.capacity, payload, now);
+    const result = nodeRegistry.register(node);
+    if (!result.ok) {
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, result.error.message);
+      cleanupConn(conn, "node registration failed");
+      return;
+    }
+    conn.send(
+      encodeNodeFrame({
+        kind: "node:registered",
+        nodeId,
+        agentId: "",
+        correlationId,
+        payload: { registeredAt: now },
+      }),
+    );
+    emitNodeEvent({ kind: "registered", node });
+  }
+
+  function createRegisteredNode(
+    connId: string,
+    nodeId: string,
+    capacity: RegisteredNode["capacity"],
+    payload: NodeCapabilitiesPayload,
+    now: number,
+  ): RegisteredNode {
+    return {
+      nodeId,
+      nodeType: payload.nodeType,
+      tools: payload.tools,
+      capacity,
+      connectedAt: now,
+      lastHeartbeat: now,
+      connId,
+    };
+  }
+
+  function handleNodeHeartbeat(nodeId: string): void {
+    const result = nodeRegistry.updateHeartbeat(nodeId);
+    if (result.ok) emitNodeEvent({ kind: "heartbeat", nodeId });
+  }
+
+  function handleNodeToolsUpdated(
+    conn: TransportConnection,
+    nodeId: string,
+    frame: NodeFrame,
+  ): void {
+    const payloadResult = validateNodeToolsUpdatedPayload(frame.payload);
+    if (!payloadResult.ok) {
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, payloadResult.error.message);
+      cleanupConn(conn, "invalid node tools update");
+      return;
+    }
+    const updateResult = nodeRegistry.updateTools(
+      nodeId,
+      payloadResult.value.added,
+      payloadResult.value.removed,
+    );
+    if (updateResult.ok) emitNodeEvent({ kind: "capabilities_updated", nodeId });
   }
 
   // Deliver a single frame to all registered handlers for the session's agentId.
@@ -292,6 +498,7 @@ export function createGateway(
   }
 
   function cleanupConn(conn: TransportConnection, reason: string): void {
+    cleanupNodeConnection(conn, reason);
     const sessionId = sessionByConn.get(conn.id);
     // Capture before deleting: the current server outbound counter for this connection.
     const seqToSave = connOutboundSeq.get(conn.id) ?? 0;
@@ -401,7 +608,19 @@ export function createGateway(
 
     const handshakeHandler = pendingHandshakes.get(conn.id);
     if (handshakeHandler !== undefined) {
+      if (peekNodeFrameKind(data) === "node:handshake") {
+        handshakeAborts.get(conn.id)?.();
+        pendingHandshakes.delete(conn.id);
+        handshakeAborts.delete(conn.id);
+        handleNodeFirstMessage(conn, data);
+        return;
+      }
       handshakeHandler(data);
+      return;
+    }
+
+    if (nodeIdByConn.has(conn.id)) {
+      handleNodeMessage(conn, data);
       return;
     }
 
@@ -921,8 +1140,10 @@ export function createGateway(
         .catch(() => {
           pendingHandshakes.delete(conn.id);
           handshakeAborts.delete(conn.id);
-          connMap.delete(conn.id);
-          bp.remove(conn.id);
+          if (!nodeIdByConn.has(conn.id)) {
+            connMap.delete(conn.id);
+            bp.remove(conn.id);
+          }
         });
       pendingHandshakePromises.add(handshakeChain);
       void handshakeChain.finally(() => {
@@ -1126,7 +1347,19 @@ export function createGateway(
             }
           }
         }
-      }, 5_000);
+
+        for (const [nodeId, connId] of connIdByNode) {
+          const node = nodeRegistry.lookup(nodeId);
+          if (node === undefined) continue;
+          if (now - node.lastHeartbeat <= config.nodeHeartbeatTimeoutMs) continue;
+          const conn = connMap.get(connId);
+          if (conn !== undefined) {
+            emitNodeEvent({ kind: "offline", nodeId, reason: "heartbeat timeout" });
+            cleanupConn(conn, "node heartbeat timeout");
+            conn.close(CLOSE_CODES.ADMIN_CLOSED, "Node heartbeat timeout");
+          }
+        }
+      }, config.nodeSweepIntervalMs);
     },
 
     async stop(): Promise<Result<void, KoiError>> {
@@ -1230,6 +1463,9 @@ export function createGateway(
       ownedSessionIds.clear();
 
       connMap.clear();
+      nodeIdByConn.clear();
+      connIdByNode.clear();
+      pendingNodeHandshakes.clear();
       sessionByConn.clear();
       connBySession.clear();
       trackers.clear();
@@ -1258,6 +1494,58 @@ export function createGateway(
 
     sessions(): SessionStore {
       return store;
+    },
+
+    nodeRegistry(): NodeRegistry {
+      return nodeRegistry;
+    },
+
+    discoverNodeCapabilities(toolName: string): readonly NodeCapability[] {
+      return nodeRegistry.resolve(toolName);
+    },
+
+    queryNodeCapabilities(nodeId: string): Result<number, KoiError> {
+      if (nodeRegistry.lookup(nodeId) === undefined) {
+        return { ok: false, error: notFound(nodeId, `Node not registered: ${nodeId}`) };
+      }
+      const connId = connIdByNode.get(nodeId);
+      if (connId === undefined) {
+        return { ok: false, error: notFound(nodeId, `Node not connected: ${nodeId}`) };
+      }
+      const conn = connMap.get(connId);
+      if (conn === undefined) {
+        return { ok: false, error: notFound(connId, `Connection not found for node: ${nodeId}`) };
+      }
+      const bytes = conn.send(
+        encodeNodeFrame({
+          kind: "node:capabilities_query",
+          nodeId,
+          agentId: "",
+          correlationId: crypto.randomUUID(),
+          payload: null,
+        }),
+      );
+      if (bytes < 0) {
+        cleanupConn(conn, "node query send failed");
+        conn.close(CLOSE_CODES.ADMIN_CLOSED, "Node query send failed");
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Node query send failed: ${nodeId}`,
+            retryable: false,
+            context: { nodeId },
+          },
+        };
+      }
+      return { ok: true, value: bytes };
+    },
+
+    onNodeEvent(handler: (event: NodeRegistryEvent) => void): () => void {
+      nodeEventHandlers.add(handler);
+      return () => {
+        nodeEventHandlers.delete(handler);
+      };
     },
 
     // Trust model: onFrame and send() are in-process APIs used by the koi engine whose

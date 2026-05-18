@@ -617,8 +617,16 @@ describe("e2e: server send seq monotonicity", () => {
     await waitForMessages(4); // ack + 3 sends
 
     const seqs = messages.slice(1).map((m) => parseFrame(m).seq);
-    expect(seqs[0]! < seqs[1]!).toBe(true);
-    expect(seqs[1]! < seqs[2]!).toBe(true);
+    expect(seqs.length).toBe(3);
+    const [firstSeq, secondSeq, thirdSeq] = seqs;
+    expect(firstSeq).toBeDefined();
+    expect(secondSeq).toBeDefined();
+    expect(thirdSeq).toBeDefined();
+    if (firstSeq === undefined || secondSeq === undefined || thirdSeq === undefined) {
+      throw new Error("expected three server frames");
+    }
+    expect(firstSeq < secondSeq).toBe(true);
+    expect(secondSeq < thirdSeq).toBe(true);
 
     ws.close();
   });

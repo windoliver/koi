@@ -16,10 +16,10 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 153 | 793 | 134 |
+| lib | 153 | 794 | 134 |
 | meta | 7 | 122 | 5 |
 | mm | 12 | 54 | 12 |
-| net | 12 | 99 | 12 |
+| net | 12 | 100 | 12 |
 | sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
 | security | 22 | 122 | 22 |
@@ -88,7 +88,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/decision-graph` (packages/lib/decision-graph) - Materialized decision trace graph over ledger snapshots. Tests: 3. Docs: docs/L2/decision-graph.md.
 - `@koi/decision-index` (packages/lib/decision-index) - Search-backed cross-session decision index over ledger snapshots. Tests: 1. Docs: docs/L2/decision-index.md.
 - `@koi/decision-ledger` (packages/lib/decision-ledger) - Per-session decision ledger projection — read-only join over trajectory + audit with run report as a sidecar summary. Tests: 1. Docs: docs/L2/decision-ledger.md.
-- `@koi/device` (packages/lib/device) - Device capability ComponentProviders for location, motion, SMS, push, camera, and contacts. Tests: 1. Docs: docs/L2/device.md.
+- `@koi/device` (packages/lib/device) - Device capability ComponentProviders for location, motion, SMS, push, camera, and contacts. Tests: 2. Docs: docs/L2/device.md.
 - `@koi/edit-match` (packages/lib/edit-match) - Search and replace files using cascading match strategies from exact to fuzzy. Tests: 4. Docs: -.
 - `@koi/errors` (packages/lib/errors) - Provide KoiRuntimeError class, circuit breaker, retry logic, and filesystem error mapping. Tests: 7. Docs: -.
 - `@koi/eval` (packages/lib/eval) - Agent eval framework: run suites, score transcripts, persist runs, detect regressions, self-test capabilities. Tests: 8. Docs: docs/L2/eval.md.
@@ -232,7 +232,7 @@ Each line shows package name, package directory, package description, test-file 
 
 - `@koi/community-registry` (packages/net/community-registry) - Standalone marketplace HTTP registry for publishing, discovering, searching, and installing Koi skills and plugins. Tests: 1. Docs: docs/L2/community-registry.md.
 - `@koi/daemon` (packages/net/daemon) - OS-process supervisor and worker backends (subprocess) for long-running agent workers. Tests: 15. Docs: docs/L2/daemon.md.
-- `@koi/gateway` (packages/net/gateway) - WebSocket gateway core — routing, auth, sequencing, backpressure (v2 minimal, no node registry or tool routing). Tests: 9. Docs: docs/L2/gateway.md.
+- `@koi/gateway` (packages/net/gateway) - WebSocket gateway core — routing, auth, sequencing, backpressure (v2 minimal, no node registry or tool routing). Tests: 10. Docs: docs/L2/gateway.md.
 - `@koi/gateway-canvas` (packages/net/gateway-canvas) - Canvas HTTP server: surface CRUD with ETag CAS and SSE streaming for real-time agent-rendered content. Tests: 3. Docs: docs/L2/gateway-canvas.md.
 - `@koi/gateway-http` (packages/net/gateway-http) - Production HTTP/WS gateway: HMAC auth, replay/idempotency, rate limits, CORS, audit log, graceful shutdown. Tests: 22. Docs: docs/L2/gateway-http.md.
 - `@koi/gateway-nexus` (packages/net/gateway-nexus) - Nexus-backed SessionStore for HA gateway: write-through cache, coalesced async writes, degradation state machine. Tests: 4. Docs: docs/L2/gateway-nexus.md.

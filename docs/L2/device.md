@@ -20,12 +20,14 @@ names.
 - `createDeviceComponentProvider()` aggregate provider
 - Per-capability providers for hosts that want to advertise a smaller set
 - Typed `UNAVAILABLE` errors when a platform capability is not injected
+- `createDeviceGatewayClient()` for thin nodes that advertise injected
+  device providers to `@koi/gateway`
 
 ## What it does NOT own
 
 - Native iOS, Android, desktop, browser, or OS API calls
 - Permission prompts or OS-level consent UX
-- Gateway connection and network capability advertising
+- Gateway server ownership, node registry persistence, or remote tool execution
 - Durable delivery, retry, or fan-out for SMS or push messages
 
 ## Dependencies
@@ -33,6 +35,28 @@ names.
 | Package | Layer | Purpose |
 |---------|-------|---------|
 | `@koi/core` | L0 | `ComponentProvider`, `SubsystemToken`, `Result`, `KoiError` |
+
+## Gateway Advertising
+
+`createDeviceGatewayClient(config)` is the thin-node bridge for issue #1396.
+Hosts pass a gateway URL, stable `nodeId`, optional capacity report, and the
+currently injected `ComponentProvider[]`. On WebSocket open the client sends:
+
+- `node:handshake` with `nodeId`, version, and capacity
+- `node:capabilities` with `nodeType: "thin"` and advertised device tools
+- periodic `node:heartbeat` frames
+
+Provider names are mapped onto stable tool names (`device.location`,
+`device.motion`, `device.sms`, `device.push`, `device.camera`,
+`device.contacts`). Duplicate tool names are collapsed before advertising.
+When `updateProviders(nextProviders)` changes the provider set, the client
+sends `node:tools_updated` with added tool descriptors and removed tool names.
+If the gateway sends `node:capabilities_query` for this node, the client
+replies with a fresh `node:capabilities` frame using the query correlation id.
+
+The client owns only connection/reconnect timers and capability advertisement;
+actual platform permissions and operation implementations still live in the
+host-injected providers.
 
 ## API
 

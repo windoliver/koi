@@ -16,6 +16,25 @@ export {
   type SessionEvent,
 } from "./gateway.js";
 export {
+  encodeNodeFrame,
+  type NodeCapabilitiesPayload,
+  type NodeFrame,
+  type NodeFrameKind,
+  type NodeHandshakePayload,
+  type NodeToolsUpdatedPayload,
+  parseNodeFrame,
+  peekNodeFrameKind,
+  validateNodeCapabilitiesPayload,
+  validateNodeHandshakePayload,
+  validateNodeToolsUpdatedPayload,
+} from "./node-protocol.js";
+export {
+  createInMemoryNodeRegistry,
+  type NodeRegistry,
+  type NodeRegistryEvent,
+  type RegisteredNode,
+} from "./node-registry.js";
+export {
   createAckFrame,
   createErrorFrame,
   createFrameIdGenerator,

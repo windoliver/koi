@@ -12,6 +12,7 @@ import type {
 } from "@koi/core";
 import { agentId, RETRYABLE_DEFAULTS, workspaceId } from "@koi/core";
 import type { Gateway, GatewayFrame, Session, SessionEvent, Transport } from "@koi/gateway";
+import { createInMemoryNodeRegistry } from "@koi/gateway";
 import {
   attachRemoteSessionBridge,
   createGatewayRemoteSessionRuntime,
@@ -36,6 +37,7 @@ interface HarnessGateway extends Gateway {
 }
 
 function makeGateway(): HarnessGateway {
+  const nodeRegistry = createInMemoryNodeRegistry();
   const frameHandlers = new Map<
     string,
     (session: Session, frame: GatewayFrame) => void | Promise<void>
@@ -54,6 +56,10 @@ function makeGateway(): HarnessGateway {
     sessions: () => {
       throw new Error("not needed");
     },
+    nodeRegistry: () => nodeRegistry,
+    discoverNodeCapabilities: () => [],
+    queryNodeCapabilities: () => ({ ok: true, value: 0 }),
+    onNodeEvent: () => () => {},
     onFrame: (agent, handler) => {
       frameHandlers.set(agent, handler);
       return () => frameHandlers.delete(agent);
