@@ -23,21 +23,11 @@ type ParseBodyResult =
     }
   | { readonly ok: false; readonly status: number; readonly message: string };
 
-/**
- * Stream-read a request body with size enforcement, then try to JSON-parse it.
- * Returns the raw bytes (for byte-exact HMAC verification), the decoded string
- * (for JSON parsing and dedup key extraction), and the parsed JSON value.
- * Non-JSON bodies succeed with `parsed` set to the raw string.
- *
- * Body bytes are collected before decoding to ensure the HMAC is computed
- * over the exact wire bytes, not over a re-encoded text round-trip.
- */
-export async function parseJsonBody(request: Request, maxBytes: number): Promise<ParseBodyResult> {
-  const declaredLength = request.headers.get("Content-Length");
-  if (declaredLength !== null && parseInt(declaredLength, 10) > maxBytes) {
-    return { ok: false, status: 413, message: "Payload too large" };
-  }
+type ReadBodyResult =
+  | { readonly ok: true; readonly chunks: Uint8Array[]; readonly totalBytes: number }
+  | { readonly ok: false; readonly status: number; readonly message: string };
 
+async function readRequestBody(request: Request, maxBytes: number): Promise<ReadBodyResult> {
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
   try {
@@ -57,18 +47,38 @@ export async function parseJsonBody(request: Request, maxBytes: number): Promise
   } catch {
     return { ok: false, status: 400, message: "Failed to read request body" };
   }
+  return { ok: true, chunks, totalBytes };
+}
+
+/**
+ * Stream-read a request body with size enforcement, then try to JSON-parse it.
+ * Returns the raw bytes (for byte-exact HMAC verification), the decoded string
+ * (for JSON parsing and dedup key extraction), and the parsed JSON value.
+ * Non-JSON bodies succeed with `parsed` set to the raw string.
+ *
+ * Body bytes are collected before decoding to ensure the HMAC is computed
+ * over the exact wire bytes, not over a re-encoded text round-trip.
+ */
+export async function parseJsonBody(request: Request, maxBytes: number): Promise<ParseBodyResult> {
+  const declaredLength = request.headers.get("Content-Length");
+  if (declaredLength !== null && parseInt(declaredLength, 10) > maxBytes) {
+    return { ok: false, status: 413, message: "Payload too large" };
+  }
+
+  const body = await readRequestBody(request, maxBytes);
+  if (!body.ok) return body;
 
   // Concatenate all chunks into a single buffer, then release chunk refs before
   // decoding so chunk memory can be GC'd while the decoded string is built.
   // This preserves exact wire bytes for HMAC and avoids multi-byte sequence
   // corruption that can occur when decoding in streaming mode across chunks.
-  const rawBytes = new Uint8Array(totalBytes);
+  const rawBytes = new Uint8Array(body.totalBytes);
   let offset = 0;
-  for (const chunk of chunks) {
+  for (const chunk of body.chunks) {
     rawBytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  chunks.length = 0; // release chunk refs — rawBytes is now the single source
+  body.chunks.length = 0; // release chunk refs — rawBytes is now the single source
   const raw = new TextDecoder().decode(rawBytes);
 
   if (raw.length === 0) {
