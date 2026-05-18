@@ -7,8 +7,10 @@ monotonic per-zone sequence number.
 
 > **Current contract:** zone registry, fixed-poll sync engine, sequence-cursor
 > deduplication, optional vector-clock metadata, concurrent shared-resource
-> conflict reports (`lww`, `merge`, `manual`), and cross-zone tool routing.
-> Adaptive polling and durable snapshot/truncation policy remain future work.
+> conflict reports (`lww`, `merge`, `manual`), explicit and zone-router driven
+> cross-zone tool routing, plus in-memory Raft-style consensus primitives for
+> federation critical state. Adaptive polling and durable snapshot/truncation
+> policy remain future work.
 
 ---
 
@@ -72,8 +74,15 @@ index.ts                  ← public re-exports
 ├── zone-registry-nexus.ts ← createZoneRegistryNexus() — Nexus-backed
 │                             ZoneRegistry with in-memory projection
 │
-└── federation-middleware.ts ← createFederationMiddleware() — cross-zone
-                               tool call routing via wrapToolCall
+├── zone-router.ts        ← createZoneRouter(), pickHealthyZone() —
+│                            health-aware remote-zone selection
+│
+├── raft-consensus.ts     ← createInMemoryRaftCluster() — deterministic
+│                            leader election, quorum append, partition,
+│                            split-brain detection, and healing
+│
+└── federation-middleware.ts ← createFederationMiddleware() — explicit or
+                               router-selected cross-zone tool routing
 ```
 
 ---
@@ -140,6 +149,12 @@ Agent in Zone B → bash("ls") with targetZoneId: "zone-a"
               ▼
          ToolResponse from Zone A
 ```
+
+When the middleware is constructed with `zoneRouter`, it can also select a
+remote zone when `ctx.metadata.targetZoneId` is absent. This keeps explicit
+operator or gateway routing authoritative: only `undefined` triggers
+auto-routing. Present-but-invalid metadata, such as a numeric `targetZoneId`,
+falls through locally rather than being silently replaced by a router choice.
 
 ### Event-sourced sync
 
@@ -299,16 +314,23 @@ await engine[Symbol.asyncDispose]();
 
 ### `createFederationMiddleware(config)`
 
-`KoiMiddleware` that transparently routes cross-zone tool calls.
+`KoiMiddleware` that transparently routes cross-zone tool calls. Explicit
+`ctx.metadata.targetZoneId` still wins. If it is absent and `zoneRouter` is
+configured, the middleware asks the router for the healthiest target zone.
 
 ```typescript
-import { createFederationMiddleware } from "@koi/federation";
+import { createFederationMiddleware, createZoneRouter } from "@koi/federation";
+
+const zoneRouter = createZoneRouter({
+  healthMonitor,
+});
 
 const mw = createFederationMiddleware({
   localZoneId: zoneId("us-east-1"),
   remoteClients: new Map([
     ["us-west-2", nexusClientForWest],
   ]),
+  zoneRouter,
   onDelegated: (targetZone, request) => {
     console.log(`Delegated ${request.toolId} to ${targetZone}`);
   },
@@ -322,12 +344,64 @@ const mw = createFederationMiddleware({
 
 | `ctx.metadata.targetZoneId` | Behavior |
 |-----------------------------|----------|
-| absent | Pass through (local) |
+| absent + no `zoneRouter` | Pass through (local) |
+| absent + `zoneRouter` selects remote | Route via `rpc("federation.zone_execute")` |
+| present but not a string | Pass through (local) |
 | matches `localZoneId` | Pass through (local) |
 | known remote zone | Route via `rpc("federation.zone_execute")` |
 | unknown zone | Return `EXTERNAL` error |
 
 ---
+
+### `createZoneRouter(config)` and `pickHealthyZone(candidates)`
+
+Zone routing is intentionally small and deterministic. A
+`StaticZoneHealthMonitor` snapshot lists remote candidates with health, latency,
+and optional load. `pickHealthyZone()` filters to `active` zones, then chooses by
+lowest latency, lowest load, and finally zone id for stable tie-breaking.
+
+```typescript
+import { createStaticZoneHealthMonitor, createZoneRouter } from "@koi/federation";
+
+const healthMonitor = createStaticZoneHealthMonitor([
+  { zoneId: "us-west-2", status: "active", latencyMs: 35, load: 0.6 },
+  { zoneId: "eu-west-1", status: "offline", latencyMs: 20, load: 0.1 },
+]);
+
+const router = createZoneRouter({ healthMonitor });
+const target = router.selectZone({ toolId: "bash", input: { command: "uptime" } });
+// → { zoneId: "us-west-2", ... }
+```
+
+Routers return `undefined` when every known zone is unhealthy, allowing the
+middleware to keep the call local instead of fabricating a remote target.
+
+### `createInMemoryRaftCluster(config)`
+
+The Raft helper is a deterministic in-memory consensus model for federation
+critical state. It is not a durable transport implementation; it is the package
+contract and replacement point for production backends that need leader
+election, quorum replication, partition behavior, split-brain detection, and
+healing semantics.
+
+```typescript
+import { createInMemoryRaftCluster } from "@koi/federation";
+
+const cluster = createInMemoryRaftCluster({
+  nodeIds: ["zone-a", "zone-b", "zone-c"],
+});
+
+const leader = cluster.electLeader();
+const append = cluster.append({
+  kind: "zone_descriptor_put",
+  key: "zone-a",
+  value: { status: "active" },
+});
+```
+
+`append()` requires a quorum and fails closed while split-brain is detected.
+After partitions heal, `healPartition()` converges nodes onto the longest
+committed log and elects a single leader.
 
 ## Sync cursor
 
@@ -433,6 +507,9 @@ isVisibleToAgent(brick, "agent-1", "us-east-1");
 | `createSyncEngine(config)` | `SyncEngineHandle` | Fixed-interval sync engine with conflict reporting |
 | `createNexusSyncClient(config)` | `SyncClient` | Nexus-backed sync client |
 | `createFederationMiddleware(config)` | `KoiMiddleware` | Cross-zone tool call routing |
+| `createStaticZoneHealthMonitor(candidates)` | `StaticZoneHealthMonitor` | Immutable health snapshot for routing |
+| `createZoneRouter(config)` | `ZoneRouter` | Health-aware remote-zone selector |
+| `createInMemoryRaftCluster(config)` | `InMemoryRaftCluster` | Deterministic Raft-style consensus cluster |
 | `validateFederationConfig(config)` | `Result<FederationConfig>` | Config validation with defaults |
 
 ### Pure functions
@@ -441,6 +518,7 @@ isVisibleToAgent(brick, "agent-1", "us-east-1");
 |----------|-------------|
 | `advanceCursor(cursor, events)` | Advance cursor through highest contiguous prefix (gaps stop progression) |
 | `deduplicateEvents(events, cursor)` | Filter already-seen events (seq > lastSequence) |
+| `pickHealthyZone(candidates)` | Select the active zone with best latency/load ordering |
 | `incrementVectorClock(clock, zoneId)` | Return a clock with the zone component incremented |
 | `mergeVectorClock(left, right)` | Return the component-wise maximum clock |
 | `compareVectorClock(left, right)` | Classify clocks as before, after, equal, or concurrent |

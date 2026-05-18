@@ -13,6 +13,19 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
   overlay/fork/accept UI exists. Standalone golden coverage exercises the
   runtime export and an in-memory pre-exec accept path. See
   `docs/L2/speculation.md` for the full contract.
+- 2026-05-18: `@koi/federation` adds zone-aware routing and deterministic
+  Raft-style consensus primitives (#1410). Runtime dependency set is unchanged,
+  but the integrated federation surface now includes `createZoneRouter`,
+  `createStaticZoneHealthMonitor`, `pickHealthyZone`, and
+  `createInMemoryRaftCluster`. `createFederationMiddleware` can route to the
+  healthiest remote zone when `ctx.metadata.targetZoneId` is absent and a
+  `zoneRouter` is configured; explicit targets still win, and present
+  non-string targets pass through locally. The Raft helper provides an
+  in-memory replacement point for leader election, quorum append, split-brain
+  detection, append rejection during split-brain, and heal convergence. Golden
+  runtime tool exposure is unchanged because these are library-level federation
+  primitives covered by `@koi/federation` tests. See
+  `docs/L2/federation.md`.
 - 2026-05-16: Integrated `@koi/model-openai-compat` now honors a `KOI_MAX_TOKENS`
   output-token cap (sends `min(request.maxTokens, KOI_MAX_TOKENS)`, or the cap alone
   when the request omits `maxTokens`). No-op when unset/non-positive, so runtime
