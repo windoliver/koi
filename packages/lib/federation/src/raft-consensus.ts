@@ -48,32 +48,47 @@ export interface InMemoryRaftCluster {
 export function createInMemoryRaftCluster(config: {
   readonly nodes: readonly ZoneId[];
 }): InMemoryRaftCluster {
-  const nodeIds = uniqueSorted(config.nodes);
-  const nodeState = new Map<ZoneId, { role: RaftNodeRole; term: number; healthy: boolean }>(
-    nodeIds.map((id) => [id, { role: "follower", term: 0, healthy: true }]),
-  );
-  const logs = new Map<ZoneId, readonly RaftLogEntry[]>(nodeIds.map((id) => [id, []]));
-  const partitions = new Map<ZoneId, number>(nodeIds.map((id) => [id, 0]));
+  return new InMemoryRaftClusterState(config.nodes);
+}
 
-  electLeader();
+type MutableRaftNodeState = { role: RaftNodeRole; term: number; healthy: boolean };
 
-  function getLeader(): ZoneId | undefined {
-    return [...nodeState.entries()].find(([, node]) => node.role === "leader" && node.healthy)?.[0];
+class InMemoryRaftClusterState implements InMemoryRaftCluster {
+  private readonly nodeIds: readonly ZoneId[];
+  private readonly nodeState: Map<ZoneId, MutableRaftNodeState>;
+  private readonly logs: Map<ZoneId, readonly RaftLogEntry[]>;
+  private readonly partitions: Map<ZoneId, number>;
+
+  constructor(nodes: readonly ZoneId[]) {
+    this.nodeIds = uniqueSorted(nodes);
+    this.nodeState = new Map(
+      this.nodeIds.map((id) => [id, { role: "follower", term: 0, healthy: true }]),
+    );
+    this.logs = new Map(this.nodeIds.map((id) => [id, []]));
+    this.partitions = new Map(this.nodeIds.map((id) => [id, 0]));
+
+    this.electLeader();
   }
 
-  function electLeader(): void {
-    clearLeaders();
-    const eligible = healthyNodesInLargestPartition();
-    if (eligible.length < quorumSize()) return;
+  getLeader(): ZoneId | undefined {
+    return [...this.nodeState.entries()].find(
+      ([, node]) => node.role === "leader" && node.healthy,
+    )?.[0];
+  }
+
+  private electLeader(): void {
+    this.clearLeaders();
+    const eligible = this.healthyNodesInLargestPartition();
+    if (eligible.length < this.quorumSize()) return;
 
     const leaderId = eligible[0];
     if (leaderId === undefined) return;
 
-    const nextTerm = currentTerm() + 1;
-    for (const id of nodeIds) {
-      const current = nodeState.get(id);
+    const nextTerm = this.currentTerm() + 1;
+    for (const id of this.nodeIds) {
+      const current = this.nodeState.get(id);
       if (current === undefined) continue;
-      nodeState.set(id, {
+      this.nodeState.set(id, {
         ...current,
         role: id === leaderId ? "leader" : "follower",
         term: nextTerm,
@@ -81,8 +96,8 @@ export function createInMemoryRaftCluster(config: {
     }
   }
 
-  function append(command: RaftCommand): Result<RaftLogEntry, KoiError> {
-    if (detectSplitBrain() !== undefined) {
+  append(command: RaftCommand): Result<RaftLogEntry, KoiError> {
+    if (this.detectSplitBrain() !== undefined) {
       return {
         ok: false,
         error: {
@@ -93,7 +108,7 @@ export function createInMemoryRaftCluster(config: {
       };
     }
 
-    const leader = getLeader();
+    const leader = this.getLeader();
     if (leader === undefined) {
       return {
         ok: false,
@@ -101,8 +116,8 @@ export function createInMemoryRaftCluster(config: {
       };
     }
 
-    const replicaIds = reachableHealthyNodes(leader);
-    if (replicaIds.length < quorumSize()) {
+    const replicaIds = this.reachableHealthyNodes(leader);
+    if (replicaIds.length < this.quorumSize()) {
       return {
         ok: false,
         error: {
@@ -114,66 +129,71 @@ export function createInMemoryRaftCluster(config: {
     }
 
     const entry: RaftLogEntry = {
-      term: nodeState.get(leader)?.term ?? currentTerm(),
-      index: longestLog().length + 1,
+      term: this.nodeState.get(leader)?.term ?? this.currentTerm(),
+      index: this.longestLog().length + 1,
       command,
       committed: true,
     };
 
     for (const id of replicaIds) {
-      logs.set(id, [...(logs.get(id) ?? []), entry]);
+      this.logs.set(id, [...(this.logs.get(id) ?? []), entry]);
     }
-    convergePartitionFor(leader);
+    this.convergePartitionFor(leader);
 
     return { ok: true, value: entry };
   }
 
-  function markNodeUnhealthy(id: ZoneId): void {
-    const current = nodeState.get(id);
+  markNodeUnhealthy(id: ZoneId): void {
+    const current = this.nodeState.get(id);
     if (current === undefined) return;
-    nodeState.set(id, { ...current, healthy: false, role: "follower" });
-    if (getLeader() === undefined) electLeader();
+    this.nodeState.set(id, { ...current, healthy: false, role: "follower" });
+    if (this.getLeader() === undefined) this.electLeader();
   }
 
-  function markNodeHealthy(id: ZoneId): void {
-    const current = nodeState.get(id);
+  markNodeHealthy(id: ZoneId): void {
+    const current = this.nodeState.get(id);
     if (current === undefined) return;
-    nodeState.set(id, { ...current, healthy: true, role: "follower", term: currentTerm() });
-    convergeAll();
-    if (getLeader() === undefined) electLeader();
+    this.nodeState.set(id, {
+      ...current,
+      healthy: true,
+      role: "follower",
+      term: this.currentTerm(),
+    });
+    this.convergeAll();
+    if (this.getLeader() === undefined) this.electLeader();
   }
 
-  function partition(groups: readonly (readonly ZoneId[])[]): void {
+  partition(groups: readonly (readonly ZoneId[])[]): void {
     const next = new Map<ZoneId, number>();
     groups.forEach((group, groupIndex) => {
       for (const id of group) {
         next.set(id, groupIndex);
       }
     });
-    for (const id of nodeIds) {
-      partitions.set(id, next.get(id) ?? groups.length);
+    for (const id of this.nodeIds) {
+      this.partitions.set(id, next.get(id) ?? groups.length);
     }
-    clearLeaders();
+    this.clearLeaders();
   }
 
-  function healPartition(): void {
-    for (const id of nodeIds) {
-      partitions.set(id, 0);
+  healPartition(): void {
+    for (const id of this.nodeIds) {
+      this.partitions.set(id, 0);
     }
-    convergeAll();
-    electLeader();
+    this.convergeAll();
+    this.electLeader();
   }
 
-  function forceElection(id: ZoneId): void {
-    const current = nodeState.get(id);
+  forceElection(id: ZoneId): void {
+    const current = this.nodeState.get(id);
     if (current === undefined || !current.healthy) return;
-    const group = partitions.get(id) ?? 0;
-    const nextTerm = currentTerm() + 1;
-    for (const nodeId of nodeIds) {
-      const node = nodeState.get(nodeId);
+    const group = this.partitions.get(id) ?? 0;
+    const nextTerm = this.currentTerm() + 1;
+    for (const nodeId of this.nodeIds) {
+      const node = this.nodeState.get(nodeId);
       if (node === undefined) continue;
-      const sameGroup = (partitions.get(nodeId) ?? 0) === group;
-      nodeState.set(nodeId, {
+      const sameGroup = (this.partitions.get(nodeId) ?? 0) === group;
+      this.nodeState.set(nodeId, {
         ...node,
         role: nodeId === id ? "leader" : sameGroup ? "follower" : node.role,
         term: sameGroup ? nextTerm : node.term,
@@ -181,60 +201,67 @@ export function createInMemoryRaftCluster(config: {
     }
   }
 
-  function detectSplitBrain(): SplitBrainSnapshot | undefined {
-    const leaders = [...nodeState.entries()]
+  detectSplitBrain(): SplitBrainSnapshot | undefined {
+    const leaders = [...this.nodeState.entries()]
       .filter(([, node]) => node.role === "leader" && node.healthy)
       .map(([id]) => id)
       .toSorted();
 
     if (leaders.length < 2) return undefined;
-    return { term: currentTerm(), leaders };
+    return { term: this.currentTerm(), leaders };
   }
 
-  function getNode(id: ZoneId): RaftNodeSnapshot | undefined {
-    const node = nodeState.get(id);
+  getNode(id: ZoneId): RaftNodeSnapshot | undefined {
+    const node = this.nodeState.get(id);
     if (node === undefined) return undefined;
     return { zoneId: id, ...node };
   }
 
-  function getCommittedState(): Readonly<Record<string, unknown>> {
+  getLog(id: ZoneId): readonly RaftLogEntry[] {
+    return this.logs.get(id) ?? [];
+  }
+
+  getCommittedState(): Readonly<Record<string, unknown>> {
     return Object.fromEntries(
-      longestLog()
+      this.longestLog()
         .filter((entry) => entry.committed)
         .map((entry) => [entry.command.key, entry.command.value]),
     );
   }
 
-  function convergeAll(): void {
-    const committed = longestLog();
-    for (const id of nodeIds) {
-      if (nodeState.get(id)?.healthy === true) {
-        logs.set(id, committed);
+  private convergeAll(): void {
+    const committed = this.longestLog();
+    for (const id of this.nodeIds) {
+      if (this.nodeState.get(id)?.healthy === true) {
+        this.logs.set(id, committed);
       }
     }
   }
 
-  function convergePartitionFor(id: ZoneId): void {
-    const group = partitions.get(id) ?? 0;
-    const committed = longestLogInGroup(group);
-    for (const nodeId of nodeIds) {
-      if ((partitions.get(nodeId) ?? 0) === group && nodeState.get(nodeId)?.healthy === true) {
-        logs.set(nodeId, committed);
+  private convergePartitionFor(id: ZoneId): void {
+    const group = this.partitions.get(id) ?? 0;
+    const committed = this.longestLogInGroup(group);
+    for (const nodeId of this.nodeIds) {
+      if (
+        (this.partitions.get(nodeId) ?? 0) === group &&
+        this.nodeState.get(nodeId)?.healthy === true
+      ) {
+        this.logs.set(nodeId, committed);
       }
     }
   }
 
-  function clearLeaders(): void {
-    for (const [id, node] of nodeState.entries()) {
-      nodeState.set(id, { ...node, role: "follower" });
+  private clearLeaders(): void {
+    for (const [id, node] of this.nodeState.entries()) {
+      this.nodeState.set(id, { ...node, role: "follower" });
     }
   }
 
-  function healthyNodesInLargestPartition(): readonly ZoneId[] {
+  private healthyNodesInLargestPartition(): readonly ZoneId[] {
     const groups = new Map<number, readonly ZoneId[]>();
-    for (const id of nodeIds) {
-      if (nodeState.get(id)?.healthy !== true) continue;
-      const group = partitions.get(id) ?? 0;
+    for (const id of this.nodeIds) {
+      if (this.nodeState.get(id)?.healthy !== true) continue;
+      const group = this.partitions.get(id) ?? 0;
       groups.set(group, [...(groups.get(group) ?? []), id]);
     }
     return (
@@ -244,45 +271,34 @@ export function createInMemoryRaftCluster(config: {
     );
   }
 
-  function reachableHealthyNodes(from: ZoneId): readonly ZoneId[] {
-    const group = partitions.get(from) ?? 0;
-    return nodeIds.filter(
-      (id) => nodeState.get(id)?.healthy === true && (partitions.get(id) ?? 0) === group,
+  private reachableHealthyNodes(from: ZoneId): readonly ZoneId[] {
+    const group = this.partitions.get(from) ?? 0;
+    return this.nodeIds.filter(
+      (id) => this.nodeState.get(id)?.healthy === true && (this.partitions.get(id) ?? 0) === group,
     );
   }
 
-  function longestLog(): readonly RaftLogEntry[] {
-    return [...logs.values()].toSorted(compareLogs)[0] ?? [];
+  private longestLog(): readonly RaftLogEntry[] {
+    return [...this.logs.values()].toSorted(compareLogs)[0] ?? [];
   }
 
-  function longestLogInGroup(group: number): readonly RaftLogEntry[] {
-    const groupLogs = nodeIds
-      .filter((id) => (partitions.get(id) ?? 0) === group && nodeState.get(id)?.healthy === true)
-      .map((id) => logs.get(id) ?? []);
+  private longestLogInGroup(group: number): readonly RaftLogEntry[] {
+    const groupLogs = this.nodeIds
+      .filter(
+        (id) =>
+          (this.partitions.get(id) ?? 0) === group && this.nodeState.get(id)?.healthy === true,
+      )
+      .map((id) => this.logs.get(id) ?? []);
     return groupLogs.toSorted(compareLogs)[0] ?? [];
   }
 
-  function currentTerm(): number {
-    return Math.max(0, ...[...nodeState.values()].map((node) => node.term));
+  private currentTerm(): number {
+    return Math.max(0, ...[...this.nodeState.values()].map((node) => node.term));
   }
 
-  function quorumSize(): number {
-    return Math.floor(nodeIds.length / 2) + 1;
+  private quorumSize(): number {
+    return Math.floor(this.nodeIds.length / 2) + 1;
   }
-
-  return {
-    getLeader,
-    getNode,
-    getLog: (id) => logs.get(id) ?? [],
-    getCommittedState,
-    append,
-    markNodeUnhealthy,
-    markNodeHealthy,
-    partition,
-    healPartition,
-    forceElection,
-    detectSplitBrain,
-  };
 }
 
 function uniqueSorted(ids: readonly ZoneId[]): readonly ZoneId[] {
