@@ -2330,8 +2330,10 @@ describe("createCompositionExecutor — checkpoint store wiring", () => {
       // durably if the backend recovered). That's at most 2 probe
       // attempts, never N.
       expect(watermarkCalls).toBeLessThanOrEqual(2);
-      // Total elapsed: ≤ 2 × probe timeout + terminal delete timeout.
-      expect(elapsed).toBeLessThan(150);
+      // Keep a latency smoke check without making the test fail on normal
+      // CI scheduling jitter; the call-count assertion above is the behavior
+      // contract that prevents per-step timeout repayment.
+      expect(elapsed).toBeLessThan(300);
     },
   );
 

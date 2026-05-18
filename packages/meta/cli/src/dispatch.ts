@@ -26,12 +26,15 @@ import {
   type CliFlags,
   COMMAND_NAMES,
   isKnownCommand,
+  isStartFlags,
   isTuiFlags,
   type KnownCommand,
   ParseError,
   parseArgs,
   type TuiFlags,
 } from "./args.js";
+import { resolveApiConfig } from "./env.js";
+import { resolveManifestPath } from "./resolve-manifest-path.js";
 import type { CommandModule } from "./types.js";
 
 /**
@@ -51,6 +54,13 @@ export type DispatchResult =
   | { readonly kind: "run"; readonly mod: CommandModule; readonly flags: CliFlags };
 
 type CommandLoaderMap = Readonly<Partial<Record<KnownCommand, () => Promise<unknown>>>>;
+const MANIFEST_REQUIRED_COMMANDS = new Set<KnownCommand>([
+  "serve",
+  "logs",
+  "status",
+  "stop",
+  "deploy",
+]);
 
 function formatThrownMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -60,6 +70,69 @@ function formatThrownMessage(e: unknown): string {
     if (typeof message === "string") return message;
   }
   return "";
+}
+
+function noManifestMessage(searched: readonly string[]): string {
+  const tried =
+    searched.length > 0 ? `\n  Searched:\n${searched.map((p) => `    ${p}`).join("\n")}` : "";
+  return `no koi.yaml found — pass --manifest <path>, create one with koi init, or pass --no-manifest to run with built-in defaults${tried}`;
+}
+
+function preflightStart(flags: CliFlags): DispatchResult | undefined {
+  if (!isStartFlags(flags)) return undefined;
+  if (flags.dryRun) {
+    return {
+      kind: "exit",
+      code: 2,
+      stderr: "koi start: --dry-run is not yet supported (tracking: #1264)\n",
+    };
+  }
+  if (flags.logFormat === "json") {
+    return {
+      kind: "exit",
+      code: 2,
+      stderr: "koi start: --log-format json is not yet supported (tracking: #1264)\n",
+    };
+  }
+
+  const skipManifestDiscovery =
+    flags.noManifest || (flags.resume !== undefined && flags.manifest === undefined);
+  const manifest = resolveManifestPath(process.cwd(), flags.manifest, skipManifestDiscovery);
+  if (!manifest.ok) {
+    return { kind: "exit", code: 2, stderr: `koi start: ${manifest.error}\n` };
+  }
+  if (manifest.path === undefined && flags.manifest === undefined && !skipManifestDiscovery) {
+    return {
+      kind: "exit",
+      code: 2,
+      stderr: `koi start: ${noManifestMessage(manifest.searched)}\n`,
+    };
+  }
+
+  const apiConfig = resolveApiConfig();
+  if (!apiConfig.ok) {
+    return { kind: "exit", code: 2, stderr: `koi start: ${apiConfig.error}\n` };
+  }
+  return undefined;
+}
+
+function preflightManifestRequired(flags: CliFlags): DispatchResult | undefined {
+  if (!isKnownCommand(flags.command) || !MANIFEST_REQUIRED_COMMANDS.has(flags.command)) {
+    return undefined;
+  }
+  const manifestFlag = "manifest" in flags ? flags.manifest : undefined;
+  const manifest = resolveManifestPath(process.cwd(), manifestFlag, false);
+  if (!manifest.ok) {
+    return { kind: "exit", code: 2, stderr: `koi ${flags.command}: ${manifest.error}\n` };
+  }
+  if (manifest.path === undefined && manifestFlag === undefined) {
+    return {
+      kind: "exit",
+      code: 2,
+      stderr: `koi ${flags.command}: ${noManifestMessage(manifest.searched)}\n`,
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -114,10 +187,16 @@ export async function runDispatch(
     if (process.env.KOI_TUI_BROWSER_SOLID !== "1") {
       return { kind: "tui-reexec" };
     }
+    if (process.stdin.isTTY !== true) {
+      return { kind: "exit", code: 1, stderr: "koi tui requires a TTY\n" };
+    }
     return { kind: "tui", flags };
   }
 
   if (isKnownCommand(flags.command)) {
+    const early = preflightStart(flags) ?? preflightManifestRequired(flags);
+    if (early !== undefined) return early;
+
     const registryLoaders = commandLoaders ?? (await import("./registry.js")).COMMAND_LOADERS;
     const loader = registryLoaders[flags.command];
     if (loader === undefined) {
