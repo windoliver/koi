@@ -11,6 +11,7 @@ import type {
 import { runId, sessionId, zoneId } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import { createFederationMiddleware } from "./federation-middleware.js";
+import { createStaticZoneHealthMonitor, createZoneRouter } from "./zone-router.js";
 
 const ZA = zoneId("zone-a");
 const ZB = zoneId("zone-b");
@@ -105,6 +106,31 @@ describe("createFederationMiddleware", () => {
     expect(result?.output).toBe("remote-result");
     expect(calledMethod).toBe("federation.zone_execute");
     expect(delegated).toEqual([{ zoneId: "zone-b", toolId: "bash" }]);
+  });
+
+  test("routes to the nearest healthy zone when no explicit targetZoneId is provided", async () => {
+    const nearTransport = makeTransport(() => ({ output: "near" }) as ToolResponse);
+    const farTransport = makeTransport(() => ({ output: "far" }) as ToolResponse);
+    const router = createZoneRouter({
+      monitor: createStaticZoneHealthMonitor([
+        { zoneId: zoneId("zone-near"), status: "active", latencyMs: 8 },
+        { zoneId: zoneId("zone-far"), status: "active", latencyMs: 50 },
+      ]),
+    });
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([
+        ["zone-near", nearTransport.transport],
+        ["zone-far", farTransport.transport],
+      ]),
+      zoneRouter: router,
+    });
+
+    const result = await mw.wrapToolCall?.(makeCtx({}), baseRequest, localHandler);
+
+    expect(result?.output).toBe("near");
+    expect(nearTransport.calls).toHaveLength(1);
+    expect(farTransport.calls).toHaveLength(0);
   });
 
   test("throws when targetZoneId is unknown", async () => {

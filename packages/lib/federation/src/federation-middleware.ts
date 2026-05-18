@@ -6,6 +6,7 @@
 import type { KoiMiddleware, ToolRequest, ToolResponse, ZoneId } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import { FEDERATION_PROTOCOL_VERSION } from "./types.js";
+import type { ZoneRouter } from "./zone-router.js";
 
 /**
  * How the local origin's principal (agent/session/turn identity) is
@@ -120,6 +121,12 @@ export interface FederationMiddlewareConfig {
    * lands in #1410.
    */
   readonly forwardedMetadataKeys?: ReadonlySet<string>;
+  /**
+   * Optional zone-aware router. When `ctx.metadata.targetZoneId` is absent,
+   * the router selects the best healthy zone for the request. Returning
+   * `undefined` keeps the call local.
+   */
+  readonly zoneRouter?: ZoneRouter | undefined;
   /** Optional callback invoked when a tool call is delegated to a remote zone. */
   readonly onDelegated?: (zoneId: string, request: ToolRequest) => void;
 }
@@ -145,6 +152,7 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
     principalForwarding,
     tenantIdResolver,
     forwardedMetadataKeys,
+    zoneRouter,
     onDelegated,
   } = config;
 
@@ -188,10 +196,15 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
     },
 
     wrapToolCall: async (ctx, request, next) => {
-      const targetZoneId = ctx.metadata.targetZoneId;
+      const explicitTargetZoneId = ctx.metadata.targetZoneId;
+      const routedTargetZoneId =
+        typeof explicitTargetZoneId === "string"
+          ? explicitTargetZoneId
+          : zoneRouter?.selectZone({ toolId: request.toolId, input: request.input })?.zoneId;
+      const targetZoneId = routedTargetZoneId;
 
       // No target zone or non-string → local execution
-      if (typeof targetZoneId !== "string") {
+      if (targetZoneId === undefined) {
         return next(request);
       }
 
