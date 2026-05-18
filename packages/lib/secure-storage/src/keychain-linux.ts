@@ -16,6 +16,28 @@ import type { SecureStorage } from "./types.js";
 const ATTRIBUTE_SERVICE = "koi-secure-storage";
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function spawnSecretTool(args: readonly string[], stdin?: Uint8Array) {
+  return Bun.spawn(["secret-tool", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    ...(stdin !== undefined ? { stdin } : {}),
+  });
+}
+
+async function clearSecret(key: string): Promise<boolean> {
+  try {
+    const proc = spawnSecretTool(["clear", "service", ATTRIBUTE_SERVICE, "key", key]);
+    const exitCode = await proc.exited;
+    return exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -24,10 +46,7 @@ export function createLinuxSecretStorage(lockDir?: string): SecureStorage {
 
   const get = async (key: string): Promise<string | undefined> => {
     try {
-      const proc = Bun.spawn(["secret-tool", "lookup", "service", ATTRIBUTE_SERVICE, "key", key], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      const proc = spawnSecretTool(["lookup", "service", ATTRIBUTE_SERVICE, "key", key]);
       const exitCode = await proc.exited;
       if (exitCode !== 0) return undefined;
       const text = await new Response(proc.stdout).text();
@@ -39,13 +58,9 @@ export function createLinuxSecretStorage(lockDir?: string): SecureStorage {
   };
 
   const set = async (key: string, value: string): Promise<void> => {
-    const proc = Bun.spawn(
+    const proc = spawnSecretTool(
       ["secret-tool", "store", "--label", `koi: ${key}`, "service", ATTRIBUTE_SERVICE, "key", key],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-        stdin: new TextEncoder().encode(value),
-      },
+      new TextEncoder().encode(value),
     );
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
@@ -53,23 +68,10 @@ export function createLinuxSecretStorage(lockDir?: string): SecureStorage {
     }
   };
 
-  const del = async (key: string): Promise<boolean> => {
-    try {
-      const proc = Bun.spawn(["secret-tool", "clear", "service", ATTRIBUTE_SERVICE, "key", key], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const exitCode = await proc.exited;
-      return exitCode === 0;
-    } catch {
-      return false;
-    }
-  };
-
   return {
     get,
     set,
-    delete: del,
+    delete: clearSecret,
     withLock: lock.withLock,
   };
 }
