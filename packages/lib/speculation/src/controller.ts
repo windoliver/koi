@@ -45,85 +45,96 @@ function makeTimeoutPromise(
   };
 }
 
-export function createSpeculationController(
-  config: SpeculationControllerConfig,
-): SpeculationController {
-  const maxConcurrent = config.maxConcurrent ?? 1;
-  const active = new Map<WorkspaceId, ActiveSpeculation>();
-  const inFlight = new Map<WorkspaceId, Promise<void>>();
+class SpeculationControllerState {
+  private readonly active = new Map<WorkspaceId, ActiveSpeculation>();
+  private readonly inFlight = new Map<WorkspaceId, Promise<void>>();
+  private readonly config: SpeculationControllerConfig;
+  private readonly maxConcurrent: number;
 
-  function updateEntry(
+  constructor(config: SpeculationControllerConfig) {
+    this.config = config;
+    this.maxConcurrent = config.maxConcurrent ?? 1;
+  }
+
+  controller(): SpeculationController {
+    return {
+      start: (request) => this.start(request),
+      accept: (id) => this.accept(id),
+      reject: (id) => this.reject(id),
+      cancelAll: () => this.cancelAll(),
+      snapshot: (id) => this.snapshot(id),
+      list: () => this.list(),
+      waitForIdle: () => this.waitForIdle(),
+    };
+  }
+
+  private updateEntry(
     id: WorkspaceId,
     updates: Partial<Pick<ActiveSpeculation, "fallbackReason" | "output" | "status">>,
   ): ActiveSpeculation | undefined {
-    const current = active.get(id);
+    const current = this.active.get(id);
     if (current === undefined) return undefined;
     const next = { ...current, ...updates };
-    active.set(id, next);
+    this.active.set(id, next);
     return next;
   }
 
-  async function cleanup(id: WorkspaceId, reason: SpeculationFallbackReason): Promise<void> {
-    const entry = updateEntry(id, {
+  private async cleanup(id: WorkspaceId, reason: SpeculationFallbackReason): Promise<void> {
+    const entry = this.updateEntry(id, {
       status: reason === "cancelled" ? "cancelled" : "fallback",
       fallbackReason: reason,
     });
     if (entry === undefined) return;
     entry.abortController.abort(reason);
     entry.clearTimer();
-    await config.overlayManager.reject(id);
-    active.delete(id);
+    await this.config.overlayManager.reject(id);
+    this.active.delete(id);
   }
 
-  async function runSpeculation(
+  private async runSpeculation(
     entry: ActiveSpeculation,
     request: StartSpeculationRequest,
     timeoutPromise: Promise<"timeout"> | undefined,
   ): Promise<void> {
     try {
-      const forkPromise = config.forkAgent({
-        description: request.description,
-        agentName: request.agentName,
-        overlay: entry.overlay,
-        signal: entry.abortController.signal,
-        ...(request.spawnRequest !== undefined ? { spawnRequest: request.spawnRequest } : {}),
-      });
-      const result =
-        timeoutPromise === undefined
-          ? await forkPromise
-          : await Promise.race([forkPromise, timeoutPromise]);
-
-      if (result === "timeout") {
-        await cleanup(entry.id, "timeout");
-        return;
-      }
-      if (!result.ok) {
-        await cleanup(entry.id, "fork_failed");
-        return;
-      }
-      if (entry.abortController.signal.aborted) {
-        await cleanup(entry.id, "cancelled");
-        return;
-      }
-      updateEntry(entry.id, { output: result.output, status: "presented" });
-      const presented: SpeculationPresentedResult = {
-        id: entry.id,
-        overlay: entry.overlay,
-        output: result.output,
-      };
-      try {
-        await config.presentResult?.(presented);
-      } catch {
-        await cleanup(entry.id, "present_failed");
-      }
+      const result = await this.runFork(entry, request, timeoutPromise);
+      if (result === "timeout") return await this.cleanup(entry.id, "timeout");
+      if (!result.ok) return await this.cleanup(entry.id, "fork_failed");
+      if (entry.abortController.signal.aborted) return await this.cleanup(entry.id, "cancelled");
+      await this.presentForkResult(entry, result.output);
     } catch {
-      await cleanup(entry.id, "fork_failed").catch(() => {});
+      await this.cleanup(entry.id, "fork_failed").catch(() => {});
     } finally {
       entry.clearTimer();
     }
   }
 
-  function snapshotEntry(entry: ActiveSpeculation): SpeculationSnapshot {
+  private runFork(
+    entry: ActiveSpeculation,
+    request: StartSpeculationRequest,
+    timeoutPromise: Promise<"timeout"> | undefined,
+  ) {
+    const forkPromise = this.config.forkAgent({
+      description: request.description,
+      agentName: request.agentName,
+      overlay: entry.overlay,
+      signal: entry.abortController.signal,
+      ...(request.spawnRequest !== undefined ? { spawnRequest: request.spawnRequest } : {}),
+    });
+    return timeoutPromise === undefined ? forkPromise : Promise.race([forkPromise, timeoutPromise]);
+  }
+
+  private async presentForkResult(entry: ActiveSpeculation, output: string): Promise<void> {
+    this.updateEntry(entry.id, { output, status: "presented" });
+    const presented: SpeculationPresentedResult = { id: entry.id, overlay: entry.overlay, output };
+    try {
+      await this.config.presentResult?.(presented);
+    } catch {
+      await this.cleanup(entry.id, "present_failed");
+    }
+  }
+
+  private snapshotEntry(entry: ActiveSpeculation): SpeculationSnapshot {
     return {
       id: entry.id,
       overlay: entry.overlay,
@@ -133,84 +144,80 @@ export function createSpeculationController(
     };
   }
 
-  return {
-    async start(request: StartSpeculationRequest): Promise<SpeculationStartResult> {
-      if (active.size >= maxConcurrent) return { kind: "fallback", reason: "resource_limit" };
-      const overlay = await config.overlayManager.create();
-      if (!overlay.ok) {
-        return { kind: "fallback", reason: "overlay_create_failed", error: overlay.error };
-      }
-      const abortController = new AbortController();
-      const timeout = makeTimeoutPromise(config.timeoutMs, abortController);
-      const entry: ActiveSpeculation = {
-        id: overlay.value.id,
-        overlay: overlay.value,
-        abortController,
-        status: "running",
-        clearTimer: timeout.clear,
-      };
-      active.set(entry.id, entry);
-      const done = runSpeculation(entry, request, timeout.promise).finally(() => {
-        inFlight.delete(entry.id);
-      });
-      inFlight.set(entry.id, done);
-      return { kind: "started", id: entry.id, overlay: entry.overlay };
-    },
+  private async start(request: StartSpeculationRequest): Promise<SpeculationStartResult> {
+    if (this.active.size >= this.maxConcurrent)
+      return { kind: "fallback", reason: "resource_limit" };
+    const overlay = await this.config.overlayManager.create();
+    if (!overlay.ok) {
+      return { kind: "fallback", reason: "overlay_create_failed", error: overlay.error };
+    }
+    const abortController = new AbortController();
+    const timeout = makeTimeoutPromise(this.config.timeoutMs, abortController);
+    const entry: ActiveSpeculation = {
+      id: overlay.value.id,
+      overlay: overlay.value,
+      abortController,
+      status: "running",
+      clearTimer: timeout.clear,
+    };
+    this.active.set(entry.id, entry);
+    const done = this.runSpeculation(entry, request, timeout.promise).finally(() => {
+      this.inFlight.delete(entry.id);
+    });
+    this.inFlight.set(entry.id, done);
+    return { kind: "started", id: entry.id, overlay: entry.overlay };
+  }
 
-    async accept(id: WorkspaceId): Promise<SpeculationAcceptResponse> {
-      const entry = active.get(id);
-      if (entry === undefined) {
-        return { kind: "fallback", id, reason: "cancelled" };
-      }
-      entry.abortController.abort("accepted");
-      entry.clearTimer();
-      await inFlight.get(id)?.catch(() => {});
-      const accepted = await config.overlayManager.accept(id);
-      active.delete(id);
-      if (!accepted.ok) {
-        return {
-          kind: "fallback",
-          id,
-          reason: "accept_failed",
-          error: accepted.error,
-        };
-      }
-      return { kind: "accepted", id, changedPaths: accepted.value.changedPaths };
-    },
+  private async accept(id: WorkspaceId): Promise<SpeculationAcceptResponse> {
+    const entry = this.active.get(id);
+    if (entry === undefined) return { kind: "fallback", id, reason: "cancelled" };
+    entry.abortController.abort("accepted");
+    entry.clearTimer();
+    await this.inFlight.get(id)?.catch(() => {});
+    const accepted = await this.config.overlayManager.accept(id);
+    this.active.delete(id);
+    if (!accepted.ok) {
+      return { kind: "fallback", id, reason: "accept_failed", error: accepted.error };
+    }
+    return { kind: "accepted", id, changedPaths: accepted.value.changedPaths };
+  }
 
-    async reject(id: WorkspaceId): Promise<SpeculationRejectResponse> {
-      const entry = active.get(id);
-      if (entry === undefined) {
-        return { kind: "fallback", id, reason: "cancelled" };
-      }
-      entry.abortController.abort("rejected");
-      entry.clearTimer();
-      await inFlight.get(id)?.catch(() => {});
-      const rejected = await config.overlayManager.reject(id);
-      active.delete(id);
-      if (!rejected.ok) {
-        return { kind: "fallback", id, reason: "reject_failed", error: rejected.error };
-      }
-      return { kind: "rejected", id };
-    },
+  private async reject(id: WorkspaceId): Promise<SpeculationRejectResponse> {
+    const entry = this.active.get(id);
+    if (entry === undefined) return { kind: "fallback", id, reason: "cancelled" };
+    entry.abortController.abort("rejected");
+    entry.clearTimer();
+    await this.inFlight.get(id)?.catch(() => {});
+    const rejected = await this.config.overlayManager.reject(id);
+    this.active.delete(id);
+    if (!rejected.ok) {
+      return { kind: "fallback", id, reason: "reject_failed", error: rejected.error };
+    }
+    return { kind: "rejected", id };
+  }
 
-    async cancelAll(): Promise<readonly WorkspaceId[]> {
-      const ids = [...active.keys()];
-      await Promise.all(ids.map((id) => cleanup(id, "cancelled").catch(() => {})));
-      return ids;
-    },
+  private async cancelAll(): Promise<readonly WorkspaceId[]> {
+    const ids = [...this.active.keys()];
+    await Promise.all(ids.map((id) => this.cleanup(id, "cancelled").catch(() => {})));
+    return ids;
+  }
 
-    snapshot(id: WorkspaceId): SpeculationSnapshot | undefined {
-      const entry = active.get(id);
-      return entry === undefined ? undefined : snapshotEntry(entry);
-    },
+  private snapshot(id: WorkspaceId): SpeculationSnapshot | undefined {
+    const entry = this.active.get(id);
+    return entry === undefined ? undefined : this.snapshotEntry(entry);
+  }
 
-    list(): readonly SpeculationSnapshot[] {
-      return [...active.values()].map(snapshotEntry);
-    },
+  private list(): readonly SpeculationSnapshot[] {
+    return [...this.active.values()].map((entry) => this.snapshotEntry(entry));
+  }
 
-    async waitForIdle(): Promise<void> {
-      await Promise.all([...inFlight.values()].map((done) => done.catch(() => {})));
-    },
-  };
+  private async waitForIdle(): Promise<void> {
+    await Promise.all([...this.inFlight.values()].map((done) => done.catch(() => {})));
+  }
+}
+
+export function createSpeculationController(
+  config: SpeculationControllerConfig,
+): SpeculationController {
+  return new SpeculationControllerState(config).controller();
 }
