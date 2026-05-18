@@ -170,6 +170,7 @@
     "@koi/skills-runtime": "workspace:*",
     "@koi/snapshot-store-sqlite": "workspace:*",
     "@koi/spawn-tools": "workspace:*",
+    "@koi/speculation": "workspace:*",
     "@koi/task-spawn": "workspace:*",
     "@koi/task-tools": "workspace:*",
     "@koi/tasks": "workspace:*",

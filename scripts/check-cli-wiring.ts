@@ -136,6 +136,9 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/scratchpad-local",
   // Skill distillation is an offline/autonomous pipeline, separate from the default Skill meta-tool.
   "@koi/skill-distiller",
+  // Speculation is a host-injected pre-execution coordinator; default TUI has
+  // no concrete overlay/fork/accept UI wiring yet.
+  "@koi/speculation",
   // The TUI exposes the engine Spawn tool plus task_* board tools; this alternate task tool is opt-in.
   "@koi/task-spawn",
   "@koi/toolsets",

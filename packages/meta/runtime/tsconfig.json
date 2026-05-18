@@ -164,6 +164,7 @@
     { "path": "../../lib/playbook-store-nexus" },
     { "path": "../../lib/playbook-store-sqlite" },
     { "path": "../../lib/skills-runtime" },
+    { "path": "../../lib/speculation" },
     { "path": "../../lib/model-router" },
     { "path": "../../security/middleware-audit" },
     { "path": "../../security/audit-sink-nexus" },

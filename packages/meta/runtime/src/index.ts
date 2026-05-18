@@ -162,6 +162,27 @@ export type {
   WasmExecutor,
   WasmResult,
 } from "@koi/sandbox-wasm";
+// Speculative fork execution API — hosts inject fork, overlay, and UI adapters.
+export type {
+  PresentSpeculationResult,
+  SpeculationAcceptResponse,
+  SpeculationAcceptResult,
+  SpeculationController,
+  SpeculationControllerConfig,
+  SpeculationFallbackReason,
+  SpeculationForkAgent,
+  SpeculationForkRequest,
+  SpeculationForkResult,
+  SpeculationOverlay,
+  SpeculationOverlayManager,
+  SpeculationPresentedResult,
+  SpeculationRejectResponse,
+  SpeculationSnapshot,
+  SpeculationStartResult,
+  SpeculationStatus,
+  StartSpeculationRequest,
+} from "@koi/speculation";
+export { createSpeculationController } from "@koi/speculation";
 // Activity-based stream timeouts (#1638)
 export type {
   ActivityTerminationReason,
