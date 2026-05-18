@@ -14,6 +14,22 @@ export {
   type LocalGatewayLauncherConfig,
   type LocalGatewayLaunchHandle,
 } from "./local-launcher.js";
+export {
+  attachRemoteSessionBridge,
+  createGatewayRemoteSessionRuntime,
+  createRemoteGatewayAuthenticator,
+  createRemoteGatewayStack,
+  type GatewayRemoteSessionRuntimeConfig,
+  type RemoteEngineRuntime,
+  type RemoteGatewayAuthenticatorConfig,
+  type RemoteGatewayStack,
+  type RemoteGatewayStackConfig,
+  type RemoteGatewayStackDeps,
+  type RemoteRuntimeCreateInput,
+  type RemoteSessionBridgeConfig,
+  type RemoteSessionBridgeHandle,
+  type RemoteSessionRuntime,
+} from "./remote-bridge.js";
 export type {
   GatewayStack,
   GatewayStackConfig,

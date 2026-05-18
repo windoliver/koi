@@ -23,6 +23,7 @@
     "@koi/gateway-nexus": "workspace:*",
     "@koi/gateway-types": "workspace:*",
     "@koi/gateway-webhook": "workspace:*",
-    "@koi/nexus-client": "workspace:*"
+    "@koi/nexus-client": "workspace:*",
+    "@koi/remote": "workspace:*"
   }
 }
