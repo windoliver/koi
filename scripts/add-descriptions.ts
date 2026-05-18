@@ -150,6 +150,8 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
   "@koi/mcp-server": "Expose agent tools via Model Context Protocol",
   "@koi/mcp": "Bridge MCP tool servers and attach discovered tools as Koi components",
   "@koi/name-service": "Register and resolve agent names with TTL expiry and fuzzy suggestions",
+  "@koi/remote":
+    "Authenticate remote Koi clients with JWTs, trusted devices, permission bridging, and transport policy",
   "@koi/webhook-delivery":
     "Deliver agent events as signed HTTP POSTs with retry and circuit breaking",
   "@koi/webhook-provider": "Expose read-only webhook health and configuration as agent tools",

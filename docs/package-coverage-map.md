@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 229 workspace packages
+- 230 workspace packages
 - 11 package families
-- 229 packages with local test files
-- 204 packages with dedicated package docs
+- 230 packages with local test files
+- 205 packages with dedicated package docs
 
 ## Family Summary
 
@@ -19,7 +19,7 @@ Current snapshot:
 | lib | 149 | 781 | 130 |
 | meta | 7 | 121 | 5 |
 | mm | 12 | 54 | 12 |
-| net | 11 | 92 | 11 |
+| net | 12 | 98 | 12 |
 | sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
 | security | 22 | 122 | 22 |
@@ -224,7 +224,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/session-repair` (packages/mm/session-repair) - Validate and repair message history through orphan repair, dedup, and merge phases. Tests: 3. Docs: docs/L2/session-repair.md.
 - `@koi/token-estimator` (packages/mm/token-estimator) - Estimate tokens using configurable heuristics (default: 4 chars per token). Tests: 2. Docs: docs/L2/token-estimator.md.
 
-## net (11)
+## net (12)
 
 - `@koi/community-registry` (packages/net/community-registry) - Standalone marketplace HTTP registry for publishing, discovering, searching, and installing Koi skills and plugins. Tests: 1. Docs: docs/L2/community-registry.md.
 - `@koi/daemon` (packages/net/daemon) - OS-process supervisor and worker backends (subprocess) for long-running agent workers. Tests: 15. Docs: docs/L2/daemon.md.
@@ -237,6 +237,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/mcp` (packages/net/mcp) - MCP transport layer, connection lifecycle, and state management. Tests: 25. Docs: docs/L2/mcp.md.
 - `@koi/mcp-server` (packages/net/mcp-server) - Expose agent tools and platform capabilities via Model Context Protocol. Tests: 3. Docs: docs/L2/mcp-server.md.
 - `@koi/nexus-sandbox` (packages/net/nexus-sandbox) - Spawn local nexus-ai-fs[sandbox] subprocess: zero external services, SQLite + LRU + BM25S. Tests: 4. Docs: docs/L2/nexus-sandbox.md.
+- `@koi/remote` (packages/net/remote) - Authenticate remote Koi clients with JWTs, trusted devices, permission bridging, and transport policy. Tests: 6. Docs: docs/L2/remote.md.
 
 ## sandbox (12)
 

@@ -1,0 +1,25 @@
+export type {
+  RemoteAuthenticatorOptions,
+  RemoteAuthRejectReason,
+  RemoteAuthRequest,
+  RemoteAuthResult,
+} from "./authenticator.js";
+export { authenticateRemoteRequest } from "./authenticator.js";
+export { verifyRemoteJwt } from "./jwt.js";
+export type { RemotePermissionMapping, RemotePermissionMapResult } from "./permission-bridge.js";
+export { mapRemotePermissions } from "./permission-bridge.js";
+export type {
+  RemoteOperationKind,
+  RemoteTransportKind,
+  RemoteTransportPolicyInput,
+  RemoteTransportPolicyResult,
+} from "./transport-policy.js";
+export { enforceRemoteTransportPolicy } from "./transport-policy.js";
+export type { TrustedDeviceRecord, TrustedDeviceRegistry } from "./trusted-device.js";
+export { createInMemoryTrustedDeviceRegistry } from "./trusted-device.js";
+export type {
+  RemoteJwtClaims,
+  RemoteJwtRejectReason,
+  RemoteJwtVerifierOptions,
+  RemoteJwtVerifyResult,
+} from "./types.js";

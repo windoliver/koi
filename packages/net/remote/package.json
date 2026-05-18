@@ -1,0 +1,25 @@
+{
+  "name": "@koi/remote",
+  "description": "Authenticate remote Koi clients with JWTs, trusted devices, permission bridging, and transport policy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "koi": {
+    "optional": true
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../../scripts/run-tsup.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  }
+}

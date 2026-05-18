@@ -23,7 +23,7 @@
  *
  * ## What this measures
  *
- * For `rawArgv = ["start"]`, runDispatch performs:
+ * For `rawArgv = ["start", "--no-manifest", "--log-format", "text"]`, runDispatch performs:
  *   1. dynamic import of ./args.js
  *   2. parseArgs(rawArgv)
  *   3. flags.help / flags.version / flags.command === undefined checks
@@ -40,12 +40,12 @@
  * documented scope limitation — see docs/contributing/perf-budgets.md.
  */
 
-const rawArgv: readonly string[] = ["start"];
+const rawArgv: readonly string[] = ["start", "--no-manifest", "--log-format", "text"];
 
 // Mirror bin.ts's raw-argv fast-path so the measurement includes the
 // same no-op cost bin.ts pays before reaching dispatch. The gate only
 // fires when no subcommand precedes the flag (see #1729) — for
-// `["start"]` the fast-path is skipped entirely because the first
+// `["start", "--no-manifest", "--log-format", "text"]` the fast-path is skipped entirely because the first
 // token is a subcommand, which matches the shipped CLI.
 const firstArg = rawArgv[0];
 const hasSubcommand = firstArg !== undefined && !firstArg.startsWith("-");
