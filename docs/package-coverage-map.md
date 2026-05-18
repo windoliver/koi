@@ -88,6 +88,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/decision-graph` (packages/lib/decision-graph) - Materialized decision trace graph over ledger snapshots. Tests: 3. Docs: docs/L2/decision-graph.md.
 - `@koi/decision-index` (packages/lib/decision-index) - Search-backed cross-session decision index over ledger snapshots. Tests: 1. Docs: docs/L2/decision-index.md.
 - `@koi/decision-ledger` (packages/lib/decision-ledger) - Per-session decision ledger projection — read-only join over trajectory + audit with run report as a sidecar summary. Tests: 1. Docs: docs/L2/decision-ledger.md.
+- `@koi/device` (packages/lib/device) - Device capability ComponentProviders for location, motion, SMS, push, camera, and contacts. Tests: 1. Docs: docs/L2/device.md.
 - `@koi/edit-match` (packages/lib/edit-match) - Search and replace files using cascading match strategies from exact to fuzzy. Tests: 4. Docs: -.
 - `@koi/errors` (packages/lib/errors) - Provide KoiRuntimeError class, circuit breaker, retry logic, and filesystem error mapping. Tests: 7. Docs: -.
 - `@koi/eval` (packages/lib/eval) - Agent eval framework: run suites, score transcripts, persist runs, detect regressions, self-test capabilities. Tests: 8. Docs: docs/L2/eval.md.
