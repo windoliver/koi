@@ -1726,8 +1726,8 @@ describe("Golden: @koi/model-router", () => {
 // Golden: @koi/middleware-otel (#1628)
 // ---------------------------------------------------------------------------
 
-import type { Agent, AgentManifest, ProcessId, ProcessState } from "@koi/core";
-import { agentId } from "@koi/core";
+import type { Agent, AgentManifest, ProcessId, ProcessState, WorkspaceId } from "@koi/core";
+import { agentId, workspaceId } from "@koi/core";
 import {
   createDebugAttach,
   createEventRingBuffer,
@@ -3881,6 +3881,88 @@ describe("Golden: @koi/task-spawn", () => {
     })) as string;
     expect(out).toContain("unknown agent type 'deployer'");
     expect(out).toContain("researcher");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/speculation (#1406)
+// ---------------------------------------------------------------------------
+
+import type {
+  SpeculationAcceptResult,
+  SpeculationOverlay,
+  SpeculationOverlayManager,
+  SpeculationPresentedResult,
+} from "@koi/speculation";
+import { createSpeculationController } from "@koi/speculation";
+
+function makeSpeculationOverlay(idText = "spec-overlay-1"): SpeculationOverlay {
+  return { id: workspaceId(idText), path: `/tmp/${idText}` };
+}
+
+function makeGoldenSpeculationOverlayManager(): SpeculationOverlayManager & {
+  readonly accepted: readonly WorkspaceId[];
+  readonly rejected: readonly WorkspaceId[];
+} {
+  const accepted: WorkspaceId[] = [];
+  const rejected: WorkspaceId[] = [];
+  return {
+    accepted,
+    rejected,
+    async create(): Promise<Result<SpeculationOverlay, KoiError>> {
+      return { ok: true, value: makeSpeculationOverlay() };
+    },
+    async accept(id: WorkspaceId): Promise<Result<SpeculationAcceptResult, KoiError>> {
+      accepted.push(id);
+      return { ok: true, value: { changedPaths: ["src/answer.ts"] } };
+    },
+    async reject(id: WorkspaceId): Promise<Result<void, KoiError>> {
+      rejected.push(id);
+      return { ok: true, value: undefined };
+    },
+  };
+}
+
+describe("Golden: @koi/speculation", () => {
+  test("runtime re-exports the speculation controller for host wiring", async () => {
+    const runtime = await import("../index.js");
+
+    expect(typeof runtime.createSpeculationController).toBe("function");
+  });
+
+  test("pre-exec fork result can be presented and accepted into the base workspace", async () => {
+    const overlays = makeGoldenSpeculationOverlayManager();
+    const presented: SpeculationPresentedResult[] = [];
+    const controller = createSpeculationController({
+      overlayManager: overlays,
+      forkAgent: async (request) => ({
+        ok: true,
+        output: `speculated ${request.description} in ${request.overlay.id}`,
+      }),
+      presentResult: (result) => {
+        presented.push(result);
+      },
+    });
+
+    const started = await controller.start({
+      agentName: "coder",
+      description: "draft the patch",
+    });
+    expect(started.kind).toBe("started");
+    if (started.kind !== "started") throw new Error("speculation did not start");
+
+    await controller.waitForIdle();
+    expect(controller.snapshot(started.id)?.status).toBe("presented");
+    expect(presented[0]?.output).toContain("draft the patch");
+
+    const accepted = await controller.accept(started.id);
+    expect(accepted).toEqual({
+      kind: "accepted",
+      id: started.id,
+      changedPaths: ["src/answer.ts"],
+    });
+    expect(overlays.accepted).toEqual([started.id]);
+    expect(overlays.rejected).toEqual([]);
   });
 });
 

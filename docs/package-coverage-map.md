@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 233 workspace packages
+- 234 workspace packages
 - 11 package families
-- 233 packages with local test files
-- 208 packages with dedicated package docs
+- 234 packages with local test files
+- 209 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,8 +16,8 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 152 | 790 | 133 |
-| meta | 7 | 121 | 5 |
+| lib | 153 | 791 | 134 |
+| meta | 7 | 122 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 12 | 99 | 12 |
 | sandbox | 12 | 67 | 12 |
@@ -47,7 +47,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 7. Docs: -.
 - `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 22. Docs: -.
 
-## lib (152)
+## lib (153)
 
 - `@koi/ace-types` (packages/lib/ace-types) - Shared domain types for ACE (Adaptive Continuous Enhancement) middleware and stores. Tests: 1. Docs: -.
 - `@koi/agent-discovery` (packages/lib/agent-discovery) - Runtime discovery of external coding agents (CLI, filesystem registry, MCP). Tests: 8. Docs: docs/L2/agent-discovery.md.
@@ -179,6 +179,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/snapshot-store-nexus` (packages/lib/snapshot-store-nexus) - L2 storage adapter: SnapshotChainStore<T> over Nexus JSON-RPC. Tests: 4. Docs: docs/L2/snapshot-store-nexus.md.
 - `@koi/snapshot-store-sqlite` (packages/lib/snapshot-store-sqlite) - L2 storage adapter: SnapshotChainStore<T> over SQLite with recursive-CTE walks and mark-sweep GC. Tests: 5. Docs: docs/L2/snapshot-store-sqlite.md.
 - `@koi/spawn-tools` (packages/lib/spawn-tools) - LLM-callable agent spawn tool + TaskCascade helper for coordinator orchestration (L2). Tests: 6. Docs: docs/L2/spawn-tools.md.
+- `@koi/speculation` (packages/lib/speculation) - Speculative fork execution coordinator with overlay accept/reject lifecycle. Tests: 1. Docs: docs/L2/speculation.md.
 - `@koi/swarm` (packages/lib/swarm) - Team swarm coordination over local IPC with optional federation bridge. Tests: 1. Docs: docs/L2/swarm.md.
 - `@koi/task-board` (packages/lib/task-board) - Immutable TaskBoard with DAG validation, cycle detection, and topological sort. Tests: 3. Docs: -.
 - `@koi/task-spawn` (packages/lib/task-spawn) - Lightweight task tool for zero-friction subagent spawning + copilot routing. Tests: 8. Docs: docs/L2/task-spawn.md.
@@ -210,7 +211,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/autonomous` (packages/meta/autonomous) - L3 autonomous composition facade for long-running harness, scheduler, and task-aware helper wiring. Tests: 1. Docs: docs/L2/autonomous.md, docs/L3/autonomous.md.
 - `@koi/nexus` (packages/meta/nexus) - L3 Nexus composition wiring for the active v2 Nexus package set. Tests: 6. Docs: docs/L3/nexus.md.
 - `@koi/rlm-stack` (packages/meta/rlm-stack) - L3 composition wiring @koi/middleware-rlm with @koi/context-manager threshold coordination. Tests: 3. Docs: docs/L2/rlm-stack.md, docs/L3/rlm-stack.md.
-- `@koi/runtime` (packages/meta/runtime) - L3 meta-package: wires Phase 1 kernel + L2 packages into a bootable runtime with progressive stub replacement. Tests: 40. Docs: docs/L3/runtime.md.
+- `@koi/runtime` (packages/meta/runtime) - L3 meta-package: wires Phase 1 kernel + L2 packages into a bootable runtime with progressive stub replacement. Tests: 41. Docs: docs/L3/runtime.md.
 
 ## mm (12)
 

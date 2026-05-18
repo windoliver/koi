@@ -1226,6 +1226,13 @@
         "@koi/tasks": "workspace:*",
       },
     },
+    "packages/lib/speculation": {
+      "name": "@koi/speculation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/swarm": {
       "name": "@koi/swarm",
       "version": "0.0.0",
@@ -1789,6 +1796,7 @@
         "@koi/skills-runtime": "workspace:*",
         "@koi/snapshot-store-sqlite": "workspace:*",
         "@koi/spawn-tools": "workspace:*",
+        "@koi/speculation": "workspace:*",
         "@koi/task-spawn": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
@@ -3216,6 +3224,8 @@
     "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/lib/snapshot-store-sqlite"],
 
     "@koi/spawn-tools": ["@koi/spawn-tools@workspace:packages/lib/spawn-tools"],
+
+    "@koi/speculation": ["@koi/speculation@workspace:packages/lib/speculation"],
 
     "@koi/swarm": ["@koi/swarm@workspace:packages/lib/swarm"],
 
