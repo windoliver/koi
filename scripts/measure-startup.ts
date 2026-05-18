@@ -15,9 +15,10 @@
  *
  * Scenarios:
  *   1. fast-path         — `koi --version` (pre-import fast path in bin.ts)
- *   2. command-dispatch  — `KOI_STARTUP_PROBE=1 koi sessions list` — forces
- *      all lazy imports (args.js, registry.js, command loader) and exits
- *      before the command body runs, via the probe hook in bin.ts
+ *   2. command-dispatch  — bench-entry harness for
+ *      `koi start --no-manifest --log-format text` — forces all lazy imports
+ *      (args.js, registry.js, command loader) and exits before the command
+ *      body runs.
  *
  * Gate logic (per scenario):
  *   1. stats.p50 <= scenario.budgetMs                                  (hard ceiling)
@@ -121,6 +122,9 @@ export const P90_PCT_TOLERANCE = 1.25;
  *   `packages/meta/cli/scripts/bench-entry.ts` which mirrors bin.ts's
  *   dynamic-import sequence (args.ts → registry.ts → start loader with
  *   @koi/channel-cli, @koi/core, @koi/engine, @koi/harness) and exits 0.
+ *   The scenario supplies a dummy API key so dispatch reaches the loader
+ *   boundary while still using --no-manifest to avoid filesystem-dependent
+ *   manifest discovery.
  *   This exists so the production bin.ts can remain free of any probe,
  *   flag, or bypass. `scripts/` is not in the CLI package's published
  *   `files` list, so the harness never ships to users.
@@ -141,7 +145,7 @@ export const SCENARIOS: readonly Scenario[] = [
     name: "command-dispatch",
     description: "bench-entry harness (args + registry + start loader)",
     argv: ["__BENCH_ENTRY__"], // sentinel — replaced with BENCH_ENTRY path in measureOnce
-    env: {},
+    env: { OPENAI_API_KEY: "startup-latency-probe" },
     budgetMs: 2000,
     absSlopMs: 200,
   },
