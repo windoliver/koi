@@ -1,0 +1,35 @@
+{
+  "name": "@koi/swarm",
+  "description": "Team swarm coordination over local IPC with optional federation bridge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../../scripts/run-tsup.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@koi/federation": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@koi/federation": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@koi/federation": "workspace:*",
+    "@koi/ipc-local": "workspace:*"
+  },
+  "koi": {}
+}

@@ -228,6 +228,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/snapshot-store-nexus",
   "@koi/snapshot-store-sqlite",
   "@koi/spawn-tools",
+  "@koi/swarm",
   "@koi/task-spawn",
   "@koi/task-tools",
   "@koi/tasks",
