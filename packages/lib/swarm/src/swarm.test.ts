@@ -109,6 +109,40 @@ describe("createSwarmCoordinator", () => {
     });
   });
 
+  test("local team can delegate to remote member through federation", async () => {
+    const { bridge, events } = createBridge();
+    const coordinator = createSwarmCoordinator({
+      localZoneId: zoneId("local"),
+      federation: bridge,
+    });
+    coordinator.registerTeam({
+      teamId: "hybrid-team",
+      leadAgentId: agentId("lead"),
+      zoneId: zoneId("local"),
+    });
+    coordinator.registerMember({
+      teamId: "hybrid-team",
+      agentId: agentId("remote-worker"),
+      capabilities: ["review"],
+      zoneId: zoneId("remote"),
+    });
+
+    await expect(
+      coordinator.distributeTask("hybrid-team", task("hybrid-1", ["review"]), {
+        strategy: "capability",
+      }),
+    ).resolves.toEqual({ ok: true, value: agentId("remote-worker") });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "swarm.task.assigned",
+      targetZoneId: "remote",
+      teamId: "hybrid-team",
+      agentId: "remote-worker",
+      taskId: "hybrid-1",
+    });
+  });
+
   test("distributes tasks by round-robin, capability, and load", async () => {
     const coordinator = createSwarmCoordinator({ localZoneId: zoneId("local") });
     coordinator.registerTeam({
@@ -141,6 +175,66 @@ describe("createSwarmCoordinator", () => {
     await expect(
       coordinator.distributeTask("alpha", task("load"), { strategy: "load" }),
     ).resolves.toEqual({ ok: true, value: agentId("coder") });
+  });
+
+  test("load strategy accounts for assignments made by the coordinator", async () => {
+    const coordinator = createSwarmCoordinator({ localZoneId: zoneId("local") });
+    coordinator.registerTeam({
+      teamId: "alpha",
+      leadAgentId: agentId("lead"),
+      zoneId: zoneId("local"),
+    });
+    coordinator.registerMember({
+      teamId: "alpha",
+      agentId: agentId("one"),
+      capabilities: ["code"],
+    });
+    coordinator.registerMember({
+      teamId: "alpha",
+      agentId: agentId("two"),
+      capabilities: ["code"],
+    });
+
+    await expect(
+      coordinator.distributeTask("alpha", task("load-1", ["code"]), { strategy: "load" }),
+    ).resolves.toEqual({ ok: true, value: agentId("one") });
+    await expect(
+      coordinator.distributeTask("alpha", task("load-2", ["code"]), { strategy: "load" }),
+    ).resolves.toEqual({ ok: true, value: agentId("two") });
+  });
+
+  test("completed progress releases coordinator-accounted load", async () => {
+    const coordinator = createSwarmCoordinator({ localZoneId: zoneId("local") });
+    coordinator.registerTeam({
+      teamId: "alpha",
+      leadAgentId: agentId("lead"),
+      zoneId: zoneId("local"),
+    });
+    coordinator.registerMember({
+      teamId: "alpha",
+      agentId: agentId("z-one"),
+      capabilities: ["code"],
+    });
+    coordinator.registerMember({
+      teamId: "alpha",
+      agentId: agentId("a-two"),
+      capabilities: ["code"],
+      load: 1,
+    });
+
+    await coordinator.distributeTask("alpha", task("load-1", ["code"]), { strategy: "load" });
+    expect(
+      coordinator.updateProgress({
+        teamId: "alpha",
+        agentId: agentId("z-one"),
+        taskId: "load-1",
+        status: "completed",
+      }),
+    ).toEqual({ ok: true });
+
+    await expect(
+      coordinator.distributeTask("alpha", task("load-2", ["code"]), { strategy: "load" }),
+    ).resolves.toEqual({ ok: true, value: agentId("z-one") });
   });
 
   test("tracks progress per teammate", () => {
@@ -207,6 +301,37 @@ describe("createSwarmCoordinator", () => {
     await expect(coordinator.abortTeam("alpha", "stop requested")).resolves.toEqual({ ok: true });
     expect(aborted.sort()).toEqual(["one", "two"]);
     expect(coordinator.getTeam("alpha")?.aborted).toBe(true);
+  });
+
+  test("team-wide abort routes remote members through federation by member zone", async () => {
+    const { bridge, events } = createBridge();
+    const coordinator = createSwarmCoordinator({
+      localZoneId: zoneId("local"),
+      federation: bridge,
+    });
+    coordinator.registerTeam({
+      teamId: "hybrid-team",
+      leadAgentId: agentId("lead"),
+      zoneId: zoneId("local"),
+    });
+    coordinator.registerMember({
+      teamId: "hybrid-team",
+      agentId: agentId("remote-worker"),
+      capabilities: ["review"],
+      zoneId: zoneId("remote"),
+    });
+
+    await expect(coordinator.abortTeam("hybrid-team", "stop requested")).resolves.toEqual({
+      ok: true,
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "swarm.abort",
+      targetZoneId: "remote",
+      teamId: "hybrid-team",
+      agentId: "remote-worker",
+      reason: "stop requested",
+    });
   });
 
   test("cross-team delegation targets another team", async () => {

@@ -48,6 +48,18 @@ function cloneTeam(team: MutableSwarmTeam): SwarmTeam {
   };
 }
 
+function setMemberLoad(team: MutableSwarmTeam, member: SwarmMember, load: number): void {
+  team.members.set(member.agentId, { ...member, load });
+}
+
+function assignmentLoadKey(teamId: string, agentId: AgentId, taskId: string): string {
+  return `${teamId}:${agentId}:${taskId}`;
+}
+
+function isTerminalStatus(status: SwarmProgress["status"]): boolean {
+  return status === "completed" || status === "failed";
+}
+
 function hasCapabilities(member: SwarmMember, required: readonly string[]): boolean {
   if (required.length === 0) return true;
   const available = new Set(member.capabilities);
@@ -125,11 +137,20 @@ export function createSwarmCoordinator(config: SwarmCoordinatorConfig): SwarmCoo
   const mailboxes = new Map<string, MailboxComponent>();
   const progress = new Map<string, SwarmProgress>();
   const assignments = new Map<string, SwarmAssignment[]>();
+  const activeAssignmentLoads = new Set<string>();
   const roundRobinOffsets = new Map<string, number>();
   const now = config.now ?? (() => Date.now());
 
   function progressKey(teamId: string, agentId: AgentId): string {
     return `${teamId}:${agentId}`;
+  }
+
+  function releaseAssignmentLoad(team: MutableSwarmTeam, agentId: AgentId, taskId: string): void {
+    const key = assignmentLoadKey(team.teamId, agentId, taskId);
+    if (!activeAssignmentLoads.has(key)) return;
+    const member = team.members.get(agentId);
+    if (member !== undefined) setMemberLoad(team, member, Math.max(0, member.load - 1));
+    activeAssignmentLoads.delete(key);
   }
 
   async function publishRemoteAssignment(
@@ -143,7 +164,7 @@ export function createSwarmCoordinator(config: SwarmCoordinatorConfig): SwarmCoo
     }
     return config.federation.publish({
       kind: "swarm.task.assigned",
-      targetZoneId: team.zoneId,
+      targetZoneId: member.zoneId,
       teamId: team.teamId,
       agentId: member.agentId,
       taskId: task.id,
@@ -169,7 +190,7 @@ export function createSwarmCoordinator(config: SwarmCoordinatorConfig): SwarmCoo
     }
 
     const delivery =
-      team.zoneId === config.localZoneId
+      selected.zoneId === config.localZoneId
         ? await sendLocalAssignment(
             mailboxes.get(team.leadAgentId),
             team.leadAgentId,
@@ -178,6 +199,8 @@ export function createSwarmCoordinator(config: SwarmCoordinatorConfig): SwarmCoo
           )
         : await publishRemoteAssignment(team, task, selected, delegatedFromTeamId);
     if (!delivery.ok) return delivery;
+    setMemberLoad(team, selected, selected.load + 1);
+    activeAssignmentLoads.add(assignmentLoadKey(teamId, selected.agentId, task.id));
 
     const record: SwarmAssignment = {
       teamId,
@@ -248,6 +271,9 @@ export function createSwarmCoordinator(config: SwarmCoordinatorConfig): SwarmCoo
         return fail(`Agent "${input.agentId}" is not in team "${input.teamId}"`);
       }
       progress.set(progressKey(input.teamId, input.agentId), { ...input });
+      if (isTerminalStatus(input.status)) {
+        releaseAssignmentLoad(team, input.agentId, input.taskId);
+      }
       return okVoid();
     },
 
@@ -269,7 +295,7 @@ export function createSwarmCoordinator(config: SwarmCoordinatorConfig): SwarmCoo
         const result = await config.abortMember?.({ teamId, agentId: member.agentId, reason });
         if (result !== undefined && !result.ok) return result;
         const sender = mailboxes.get(team.leadAgentId);
-        if (team.zoneId === config.localZoneId && sender !== undefined) {
+        if (member.zoneId === config.localZoneId && sender !== undefined) {
           const sent = await sender.send({
             from: team.leadAgentId,
             to: member.agentId,
@@ -278,10 +304,10 @@ export function createSwarmCoordinator(config: SwarmCoordinatorConfig): SwarmCoo
             payload: { teamId, reason },
           });
           if (!sent.ok) return fail(sent.error.message);
-        } else if (team.zoneId !== config.localZoneId && config.federation !== undefined) {
+        } else if (member.zoneId !== config.localZoneId && config.federation !== undefined) {
           const published = await config.federation.publish({
             kind: "swarm.abort",
-            targetZoneId: team.zoneId,
+            targetZoneId: member.zoneId,
             teamId,
             agentId: member.agentId,
             reason,
