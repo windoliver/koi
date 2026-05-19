@@ -108,7 +108,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/forge-verifier` (packages/lib/forge-verifier) - Sequential short-circuiting verification pipeline for forge artifacts with pluggable stages and caching.. Tests: 2. Docs: docs/L2/forge-verifier.md.
 - `@koi/fs-local` (packages/lib/fs-local) - Local filesystem FileSystemBackend using Bun.file/node:fs. Tests: 1. Docs: docs/L2/fs-local.md.
 - `@koi/fs-nexus` (packages/lib/fs-nexus) - Nexus-backed FileSystemBackend via JSON-RPC. Tests: 8. Docs: docs/L2/fs-nexus.md.
-- `@koi/fs-scoped` (packages/lib/fs-scoped) - Scoped filesystem wrapper — restricts a FileSystemBackend to a root with configurable ro/rw access. Tests: 1. Docs: -.
+- `@koi/fs-scoped` (packages/lib/fs-scoped) - Scoped filesystem wrapper — restricts a FileSystemBackend to a root with configurable ro/rw access. Tests: 2. Docs: docs/L2/fs-scoped.md.
 - `@koi/gateway-types` (packages/lib/gateway-types) - Shared gateway wire-protocol types (GatewayFrame, Session, RoutingContext). L0u — no logic, no deps beyond @koi/core.. Tests: 1. Docs: -.
 - `@koi/git-utils` (packages/lib/git-utils) - Wrap git CLI commands and resolve worktree paths via Bun.spawn. Tests: 4. Docs: -.
 - `@koi/handoff` (packages/lib/handoff) - Structured context relay between agents — typed envelopes + auto-injecting middleware. Tests: 9. Docs: docs/L2/handoff.md.

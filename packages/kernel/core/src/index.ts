@@ -292,6 +292,13 @@ export type {
   ContextOccupancy,
 } from "./context-engine.js";
 export { CONTEXT_ENGINE } from "./context-engine.js";
+// context namespace — shared mounted backends for multi-agent context
+export type {
+  ContextNamespace,
+  ContextNamespaceAccessMode,
+  ContextNamespaceChangeEvent,
+  ContextNamespaceMount,
+} from "./context-namespace.js";
 // correlation
 export type { CorrelationIds } from "./correlation.js";
 // cost tracker — per-session, per-tool, per-model cost transparency

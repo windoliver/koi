@@ -45,6 +45,10 @@
       "types": "./dist/context-engine.d.ts",
       "import": "./dist/context-engine.js"
     },
+    "./context-namespace": {
+      "types": "./dist/context-namespace.d.ts",
+      "import": "./dist/context-namespace.js"
+    },
     "./delegation": {
       "types": "./dist/delegation.d.ts",
       "import": "./dist/delegation.js"

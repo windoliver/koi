@@ -12,6 +12,7 @@ export default defineConfig({
     "src/common.ts",
     "src/context.ts",
     "src/context-engine.ts",
+    "src/context-namespace.ts",
     "src/delegation.ts",
     "src/daemon.ts",
     "src/ecs.ts",
