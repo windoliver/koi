@@ -70,73 +70,111 @@ function pathDenied(path: string, mountPath: string): Result<never, KoiError> {
   };
 }
 
-function createVirtualRootBackend(backend: FileSystemBackend): FileSystemBackend {
+type RewritePath = (path: string) => string | undefined;
+
+function rewriteOrDeny(
+  path: string,
+  rewrite: RewritePath,
+  mountPath: string,
+): Result<string, KoiError> {
+  const rewritten = rewrite(path);
+  return rewritten === undefined ? pathDenied(path, mountPath) : { ok: true, value: rewritten };
+}
+
+function createRoutedRequiredMethods(
+  backend: FileSystemBackend,
+  rewrite: RewritePath,
+  mountPath: string,
+): Pick<FileSystemBackend, "read" | "write" | "edit" | "list" | "search"> {
+  return {
+    read(path, options) {
+      const routed = rewriteOrDeny(path, rewrite, mountPath);
+      return routed.ok ? backend.read(routed.value, options) : routed;
+    },
+    write(path, content, options) {
+      const routed = rewriteOrDeny(path, rewrite, mountPath);
+      return routed.ok ? backend.write(routed.value, content, options) : routed;
+    },
+    edit(path, edits, options) {
+      const routed = rewriteOrDeny(path, rewrite, mountPath);
+      return routed.ok ? backend.edit(routed.value, edits, options) : routed;
+    },
+    list(path, options) {
+      const routed = rewriteOrDeny(path, rewrite, mountPath);
+      return routed.ok ? backend.list(routed.value, options) : routed;
+    },
+    search(pattern, options) {
+      return backend.search(pattern, options);
+    },
+  };
+}
+
+function createRoutedOptionalMethods(
+  backend: FileSystemBackend,
+  rewrite: RewritePath,
+  mountPath: string,
+): Partial<FileSystemBackend> {
   const del = backend.delete;
   const ren = backend.rename;
   const resolveFn = backend.resolvePath;
   const dispose = backend.dispose;
-
   return {
-    name: `context-namespace-virtual(${backend.name})`,
-
-    read(path, options) {
-      const backendPath = toBackendPath(path);
-      if (backendPath === undefined) return pathDenied(path, VIRTUAL_SCOPE_ROOT);
-      return backend.read(backendPath, options);
-    },
-
-    write(path, content, options) {
-      const backendPath = toBackendPath(path);
-      if (backendPath === undefined) return pathDenied(path, VIRTUAL_SCOPE_ROOT);
-      return backend.write(backendPath, content, options);
-    },
-
-    edit(path, edits, options) {
-      const backendPath = toBackendPath(path);
-      if (backendPath === undefined) return pathDenied(path, VIRTUAL_SCOPE_ROOT);
-      return backend.edit(backendPath, edits, options);
-    },
-
-    list(path, options) {
-      const backendPath = toBackendPath(path);
-      if (backendPath === undefined) return pathDenied(path, VIRTUAL_SCOPE_ROOT);
-      return backend.list(backendPath, options);
-    },
-
-    search(pattern, options) {
-      return backend.search(pattern, options);
-    },
-
-    ...(del !== undefined
-      ? {
+    ...(del === undefined
+      ? {}
+      : {
           delete(path: string) {
-            const backendPath = toBackendPath(path);
-            if (backendPath === undefined) return pathDenied(path, VIRTUAL_SCOPE_ROOT);
-            return del(backendPath);
+            const next = rewriteOrDeny(path, rewrite, mountPath);
+            return next.ok ? del(next.value) : next;
           },
-        }
-      : {}),
-    ...(ren !== undefined
-      ? {
-          rename(from: string, to: string) {
-            const backendFrom = toBackendPath(from);
-            if (backendFrom === undefined) return pathDenied(from, VIRTUAL_SCOPE_ROOT);
-            const backendTo = toBackendPath(to);
-            if (backendTo === undefined) return pathDenied(to, VIRTUAL_SCOPE_ROOT);
-            return ren(backendFrom, backendTo);
+        }),
+    ...(ren === undefined
+      ? {}
+      : { rename: (from: string, to: string) => routeRename(ren, rewrite, mountPath, from, to) }),
+    ...(resolveFn === undefined
+      ? {}
+      : {
+          resolvePath(path: string) {
+            const next = rewrite(path);
+            return next === undefined ? undefined : resolveFn(next);
           },
-        }
-      : {}),
-    ...(resolveFn !== undefined
-      ? {
-          resolvePath(path: string): string | undefined {
-            const backendPath = toBackendPath(path);
-            return backendPath === undefined ? undefined : resolveFn(backendPath);
-          },
-        }
-      : {}),
-    ...(dispose !== undefined ? { dispose: () => dispose() } : {}),
+        }),
+    ...(dispose === undefined ? {} : { dispose: () => dispose() }),
   };
+}
+
+function routeRename(
+  rename: NonNullable<FileSystemBackend["rename"]>,
+  rewrite: RewritePath,
+  mountPath: string,
+  from: string,
+  to: string,
+) {
+  const nextFrom = rewriteOrDeny(from, rewrite, mountPath);
+  if (!nextFrom.ok) return nextFrom;
+  const nextTo = rewriteOrDeny(to, rewrite, mountPath);
+  return nextTo.ok ? rename(nextFrom.value, nextTo.value) : nextTo;
+}
+
+function createRoutedBackend(
+  name: string,
+  backend: FileSystemBackend,
+  rewrite: RewritePath,
+  mountPath: string,
+): FileSystemBackend {
+  return {
+    name,
+    ...createRoutedRequiredMethods(backend, rewrite, mountPath),
+    ...createRoutedOptionalMethods(backend, rewrite, mountPath),
+  };
+}
+
+function createVirtualRootBackend(backend: FileSystemBackend): FileSystemBackend {
+  return createRoutedBackend(
+    `context-namespace-virtual(${backend.name})`,
+    backend,
+    toBackendPath,
+    VIRTUAL_SCOPE_ROOT,
+  );
 }
 
 function createResolvedMountBackend(mount: ContextNamespaceMount): FileSystemBackend {
@@ -144,74 +182,35 @@ function createResolvedMountBackend(mount: ContextNamespaceMount): FileSystemBac
     root: VIRTUAL_SCOPE_ROOT,
     mode: mount.mode,
   });
+  return createRoutedBackend(
+    `context-namespace(${mount.backend.name}:${mount.path})`,
+    scoped,
+    (path) => toMountRelativePath(mount.path, path),
+    mount.path,
+  );
+}
 
-  const rewrite = (path: string): string | undefined => toMountRelativePath(mount.path, path);
-  const del = scoped.delete;
-  const ren = scoped.rename;
-  const resolveFn = scoped.resolvePath;
-  const dispose = scoped.dispose;
+function normalizeMount(mount: ContextNamespaceMount, path: string): ContextNamespaceMount {
+  if (mount.metadata === undefined) {
+    return { path, backend: mount.backend, mode: mount.mode };
+  }
+  return { path, backend: mount.backend, mode: mount.mode, metadata: mount.metadata };
+}
 
-  return {
-    name: `context-namespace(${mount.backend.name}:${mount.path})`,
+function toMountedEvent(mount: ContextNamespaceMount): ContextNamespaceChangeEvent {
+  if (mount.metadata === undefined) {
+    return { kind: "mounted", path: mount.path, mode: mount.mode };
+  }
+  return { kind: "mounted", path: mount.path, mode: mount.mode, metadata: mount.metadata };
+}
 
-    read(path, options) {
-      const relative = rewrite(path);
-      if (relative === undefined) return pathDenied(path, mount.path);
-      return scoped.read(relative, options);
-    },
-
-    write(path, content, options) {
-      const relative = rewrite(path);
-      if (relative === undefined) return pathDenied(path, mount.path);
-      return scoped.write(relative, content, options);
-    },
-
-    edit(path, edits, options) {
-      const relative = rewrite(path);
-      if (relative === undefined) return pathDenied(path, mount.path);
-      return scoped.edit(relative, edits, options);
-    },
-
-    list(path, options) {
-      const relative = rewrite(path);
-      if (relative === undefined) return pathDenied(path, mount.path);
-      return scoped.list(relative, options);
-    },
-
-    search(pattern, options) {
-      return scoped.search(pattern, options);
-    },
-
-    ...(del !== undefined
-      ? {
-          delete(path: string) {
-            const relative = rewrite(path);
-            if (relative === undefined) return pathDenied(path, mount.path);
-            return del(relative);
-          },
-        }
-      : {}),
-    ...(ren !== undefined
-      ? {
-          rename(from: string, to: string) {
-            const relativeFrom = rewrite(from);
-            if (relativeFrom === undefined) return pathDenied(from, mount.path);
-            const relativeTo = rewrite(to);
-            if (relativeTo === undefined) return pathDenied(to, mount.path);
-            return ren(relativeFrom, relativeTo);
-          },
-        }
-      : {}),
-    ...(resolveFn !== undefined
-      ? {
-          resolvePath(path: string): string | undefined {
-            const relative = rewrite(path);
-            return relative === undefined ? undefined : resolveFn(relative);
-          },
-        }
-      : {}),
-    ...(dispose !== undefined ? { dispose: () => dispose() } : {}),
-  };
+function findMount(
+  mounts: Iterable<ContextNamespaceMount>,
+  path: string,
+): ContextNamespaceMount | undefined {
+  return [...mounts]
+    .filter((mount) => mountContainsPath(mount.path, path))
+    .sort((left, right) => right.path.length - left.path.length)[0];
 }
 
 export function createContextNamespace(): ContextNamespace {
@@ -222,18 +221,10 @@ export function createContextNamespace(): ContextNamespace {
   return {
     mount(mount) {
       const path = assertMountPath(mount.path);
-      const normalized: ContextNamespaceMount =
-        mount.metadata === undefined
-          ? { path, backend: mount.backend, mode: mount.mode }
-          : { path, backend: mount.backend, mode: mount.mode, metadata: mount.metadata };
+      const normalized = normalizeMount(mount, path);
       mounts.set(path, normalized);
       resolved.set(path, createResolvedMountBackend(normalized));
-      emit(
-        listeners,
-        normalized.metadata === undefined
-          ? { kind: "mounted", path, mode: normalized.mode }
-          : { kind: "mounted", path, mode: normalized.mode, metadata: normalized.metadata },
-      );
+      emit(listeners, toMountedEvent(normalized));
     },
 
     unmount(path) {
@@ -248,12 +239,8 @@ export function createContextNamespace(): ContextNamespace {
 
     resolve(path) {
       const normalized = normalizeNamespacePath(path);
-      const match = [...mounts.values()]
-        .filter((mount) => mountContainsPath(mount.path, normalized))
-        .sort((left, right) => right.path.length - left.path.length)[0];
-      if (match === undefined) {
-        return undefined;
-      }
+      const match = findMount(mounts.values(), normalized);
+      if (match === undefined) return undefined;
       emit(listeners, {
         kind: "resolved",
         path: normalized,

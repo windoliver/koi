@@ -242,7 +242,7 @@
     "build": "bun ../../../scripts/run-tsup.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test",
+    "test": "bun test src",
     "test:api": "bun test src/__tests__/api-surface.test.ts"
   }
 }

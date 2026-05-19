@@ -103,6 +103,10 @@ describe("createExecuteCodeTool — timeout_ms validation", () => {
 describe("createExecuteCodeTool — abort signal propagation", () => {
   test("aborting execute_code cancels worker and in-flight inner tool", async () => {
     let innerSignal: AbortSignal | undefined;
+    let resolveInnerSignal!: (signal: AbortSignal) => void;
+    const innerSignalReady = new Promise<AbortSignal>((resolve) => {
+      resolveInnerSignal = resolve;
+    });
     const watch: Tool = {
       descriptor: {
         name: "watch",
@@ -114,8 +118,13 @@ describe("createExecuteCodeTool — abort signal propagation", () => {
       policy: { sandbox: false, capabilities: {} },
       execute: async (_args, ctx) =>
         new Promise((_resolve, reject) => {
-          innerSignal = ctx?.signal;
-          ctx?.signal?.addEventListener("abort", () => reject(new Error("inner-aborted")));
+          if (ctx?.signal === undefined) {
+            reject(new Error("missing signal"));
+            return;
+          }
+          innerSignal = ctx.signal;
+          resolveInnerSignal(ctx.signal);
+          ctx.signal.addEventListener("abort", () => reject(new Error("inner-aborted")));
         }),
     };
 
@@ -129,12 +138,15 @@ describe("createExecuteCodeTool — abort signal propagation", () => {
 
     const controller = new AbortController();
     const userReason = new Error("outer-cancel");
-    setTimeout(() => controller.abort(userReason), 50);
 
-    const scriptResult = (await tool.execute(
+    const scriptRun = tool.execute(
       { script: `await tools.watch({}); return "never";` } satisfies JsonObject,
       { signal: controller.signal },
-    )) as { readonly ok: boolean; readonly error?: string };
+    );
+    await innerSignalReady;
+    controller.abort(userReason);
+
+    const scriptResult = (await scriptRun) as { readonly ok: boolean; readonly error?: string };
 
     expect(scriptResult.ok).toBe(false);
     expect(scriptResult.error).toMatch(/aborted/i);
