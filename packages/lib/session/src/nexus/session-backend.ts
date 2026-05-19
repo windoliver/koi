@@ -6,6 +6,8 @@ import { createNexusSessionPersistence } from "./persistence-store.js";
 import { createNexusTranscriptStore } from "./transcript-store.js";
 import type { NexusSessionBackend, NexusSessionBackendConfig } from "./types.js";
 
+type NexusSessionPersistence = NexusSessionBackend["persistence"];
+
 export function createNexusSessionBackend(config: NexusSessionBackendConfig): NexusSessionBackend {
   const basePath = config.basePath ?? DEFAULT_NEXUS_SESSION_BASE_PATH;
   const validBasePath = validateBasePath(basePath);
@@ -28,63 +30,82 @@ export function createNexusSessionBackend(config: NexusSessionBackendConfig): Ne
     return result.value.entries;
   }
 
-  async function saveCheckpoint(sessionId: SessionId, state: EngineState): Promise<void> {
-    const loaded = await persistence.loadSession(sessionId);
-    if (loaded.ok) {
-      const updated = await persistence.updateLastEngineState?.(
-        sessionId,
-        () => state,
-        Date.now(),
-        loaded.value.lastPersistedAt,
-      );
-      if (updated === undefined) throw new Error("Nexus persistence missing checkpoint support");
-      if (!updated.ok) throw new Error(updated.error.message, { cause: updated.error });
-      return;
-    }
-    if (loaded.error.code !== "NOT_FOUND") {
-      throw new Error(loaded.error.message, { cause: loaded.error });
-    }
-    const now = Date.now();
-    const saved = await persistence.saveSession({
-      sessionId,
-      agentId: agentId("nexus-session-backend"),
-      manifestSnapshot: {
-        name: "nexus-session-backend",
-        version: "0.0.0",
-        description: "Synthetic session record for checkpoint-only persistence",
-        model: { name: "unknown" },
-      },
-      seq: 0,
-      remoteSeq: 0,
-      connectedAt: now,
-      lastPersistedAt: now,
-      lastEngineState: state,
-      status: "idle",
-      metadata: { createdBy: "createNexusSessionBackend.saveCheckpoint" },
-    });
-    if (!saved.ok) throw new Error(saved.error.message, { cause: saved.error });
-  }
-
-  async function loadCheckpoint(sessionId: SessionId): Promise<EngineState | undefined> {
-    const result = await persistence.loadSession(sessionId);
-    if (!result.ok) {
-      if (result.error.code === "NOT_FOUND") return undefined;
-      throw new Error(result.error.message, { cause: result.error });
-    }
-    return result.value.lastEngineState;
-  }
-
   return {
     transcript,
     persistence,
     artifacts,
     saveTurn,
     loadHistory,
-    saveCheckpoint,
-    loadCheckpoint,
+    saveCheckpoint: (sessionId, state) => saveCheckpoint(persistence, sessionId, state),
+    loadCheckpoint: (sessionId) => loadCheckpoint(persistence, sessionId),
     close: async () => {
       await transcript.close();
       await persistence.close();
     },
   };
+}
+
+async function saveCheckpoint(
+  persistence: NexusSessionPersistence,
+  sessionId: SessionId,
+  state: EngineState,
+): Promise<void> {
+  const loaded = await persistence.loadSession(sessionId);
+  if (loaded.ok) {
+    await updateExistingCheckpoint(persistence, sessionId, state, loaded.value.lastPersistedAt);
+    return;
+  }
+  if (loaded.error.code !== "NOT_FOUND") {
+    throw new Error(loaded.error.message, { cause: loaded.error });
+  }
+  const saved = await persistence.saveSession(createCheckpointRecord(sessionId, state, Date.now()));
+  if (!saved.ok) throw new Error(saved.error.message, { cause: saved.error });
+}
+
+async function updateExistingCheckpoint(
+  persistence: NexusSessionPersistence,
+  sessionId: SessionId,
+  state: EngineState,
+  expectedVersion: number,
+): Promise<void> {
+  const updated = await persistence.updateLastEngineState?.(
+    sessionId,
+    () => state,
+    Date.now(),
+    expectedVersion,
+  );
+  if (updated === undefined) throw new Error("Nexus persistence missing checkpoint support");
+  if (!updated.ok) throw new Error(updated.error.message, { cause: updated.error });
+}
+
+function createCheckpointRecord(sessionId: SessionId, state: EngineState, now: number) {
+  return {
+    sessionId,
+    agentId: agentId("nexus-session-backend"),
+    manifestSnapshot: {
+      name: "nexus-session-backend",
+      version: "0.0.0",
+      description: "Synthetic session record for checkpoint-only persistence",
+      model: { name: "unknown" },
+    },
+    seq: 0,
+    remoteSeq: 0,
+    connectedAt: now,
+    lastPersistedAt: now,
+    lastEngineState: state,
+    status: "idle" as const,
+    metadata: { createdBy: "createNexusSessionBackend.saveCheckpoint" },
+  };
+}
+
+async function loadCheckpoint(
+  persistence: NexusSessionPersistence,
+  sessionId: SessionId,
+): Promise<EngineState | undefined> {
+  const result = await persistence.loadSession(sessionId);
+  if (!result.ok) {
+    if (result.error.code === "NOT_FOUND") return undefined;
+    throw new Error(result.error.message, { cause: result.error });
+  }
+  return result.value.lastEngineState;
 }
