@@ -6,6 +6,17 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Nexus-backed memory store foundation (#2204)**: no CLI flag or command
+  change. `@koi/memory-fs` now exposes `createBackendMemoryStore()`, allowing
+  runtime hosts to back long-term memory with a `FileSystemBackend` such as the
+  Nexus filesystem backend instead of direct local disk I/O. The CLI keeps its
+  current local memory defaults, but the runtime wiring can now accept
+  `memory.backend` alongside `filesystem.backend: "nexus"` and construct memory
+  over the resolved Nexus transport. Ambiguous configs that provide both a
+  local memory directory and a backend memory config are rejected so hosts do
+  not accidentally split an agent's memory across stores. See
+  `docs/L2/memory-fs.md` and `docs/L3/runtime.md` for the lower-level contract.
+
 - **Nexus session backend foundation (#2203)**: `@koi/session` now exports
   `createNexusSessionBackend()`, an opt-in Nexus-backed composition of
   transcript, persistence, checkpoint, and session-scoped artifact storage.

@@ -39,7 +39,7 @@ import { createDecisionLedger } from "@koi/decision-ledger";
 import { createInMemorySpawnLedger, createSpawnToolProvider } from "@koi/engine";
 import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
 import { createLspComponentProvider } from "@koi/lsp";
-import { createMemoryStore, type MemoryStore } from "@koi/memory-fs";
+import { createFileSystemMemoryStore, createMemoryStore, type MemoryStore } from "@koi/memory-fs";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createCallDedupMiddleware } from "@koi/middleware-call-dedup";
 import {
@@ -1456,10 +1456,18 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
           }
         : undefined;
 
-    // File-based memory store (@koi/memory-fs) — exposed as-is on the handle.
-    // A MemoryToolBackend adapter for @koi/memory-tools is tracked as follow-up.
+    if (config.memoryFs !== undefined && config.memoryBackend !== undefined) {
+      throw new Error("createRuntime: memoryFs and memoryBackend are mutually exclusive");
+    }
+
+    // Memory store (@koi/memory-fs) — local paths use createMemoryStore, while
+    // backend-backed memory stays behind the FileSystemBackend boundary.
     const memoryStore: MemoryStore | undefined =
-      config.memoryFs !== undefined ? createMemoryStore(config.memoryFs) : undefined;
+      config.memoryBackend !== undefined
+        ? createFileSystemMemoryStore(config.memoryBackend)
+        : config.memoryFs !== undefined
+          ? createMemoryStore(config.memoryFs)
+          : undefined;
 
     // Decision-ledger factory — present only when the runtime has a
     // trajectoryStore to anchor the join. The returned reader wires

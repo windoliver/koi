@@ -18,7 +18,7 @@ Current snapshot:
 | kernel | 4 | 126 | 0 |
 | lib | 153 | 795 | 134 |
 | meta | 7 | 122 | 5 |
-| mm | 12 | 54 | 12 |
+| mm | 12 | 55 | 12 |
 | net | 12 | 100 | 12 |
 | sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
@@ -217,7 +217,7 @@ Each line shows package name, package directory, package description, test-file 
 
 - `@koi/dream` (packages/mm/dream) - Dream consolidation — offline memory merging, pruning, and upgrade. Tests: 3. Docs: docs/L2/dream.md.
 - `@koi/memory` (packages/mm/memory) - Session-start memory recall — scan, score, budget, and format persisted memories. Tests: 4. Docs: docs/L2/memory.md.
-- `@koi/memory-fs` (packages/mm/memory-fs) - File-based memory storage with CRUD, MEMORY.md indexing, and Jaccard deduplication. Tests: 8. Docs: docs/L2/memory-fs.md.
+- `@koi/memory-fs` (packages/mm/memory-fs) - File-based memory storage with CRUD, MEMORY.md indexing, and Jaccard deduplication. Tests: 9. Docs: docs/L2/memory-fs.md.
 - `@koi/memory-team-sync` (packages/mm/memory-team-sync) - Team memory sync — type filtering, secret scanning, and fail-closed sync boundary. Tests: 2. Docs: docs/L2/memory-team-sync.md.
 - `@koi/memory-tools` (packages/mm/memory-tools) - Memory tools for LLM agent execution — store, recall, search, delete. Tests: 8. Docs: docs/L2/memory-tools.md.
 - `@koi/middleware-collective-memory` (packages/mm/middleware-collective-memory) - Cross-spawn learning injection — extracts and injects collective memory from brick artifacts. Tests: 6. Docs: docs/L2/middleware-collective-memory.md.

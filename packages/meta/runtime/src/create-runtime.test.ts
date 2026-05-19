@@ -5,7 +5,13 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  FileDeleteResult,
+  FileListEntry,
+  FileListResult,
+  FileReadResult,
+  FileSearchResult,
   FileSystemBackend,
+  FileWriteResult,
   IndexDocument,
   KoiError,
   KoiMiddleware,
@@ -135,6 +141,75 @@ function matchesSearchFilter(
       return typeof value === "number" && value < filter.value;
     }
   }
+}
+
+function createRuntimeMemoryBackend(): FileSystemBackend {
+  const files = new Map<string, string>();
+
+  const normalizePath = (path: string): string => {
+    const prefixed = path.startsWith("/") ? path : `/${path}`;
+    const parts: string[] = [];
+    for (const part of prefixed.split("/")) {
+      if (part === "" || part === ".") continue;
+      if (part === "..") throw new Error(`path escapes root: ${path}`);
+      parts.push(part);
+    }
+    return `/${parts.join("/")}`;
+  };
+
+  const err = (message: string): Result<never, KoiError> => ({
+    ok: false,
+    error: { code: "NOT_FOUND", message, retryable: false },
+  });
+
+  return {
+    name: "runtime-memory-test",
+    read(path): Result<FileReadResult, KoiError> {
+      const normalized = normalizePath(path);
+      const content = files.get(normalized);
+      if (content === undefined) return err(`not found: ${normalized}`);
+      return {
+        ok: true,
+        value: { path: normalized, content, size: new TextEncoder().encode(content).byteLength },
+      };
+    },
+    write(path, content): Result<FileWriteResult, KoiError> {
+      const normalized = normalizePath(path);
+      files.set(normalized, content);
+      return {
+        ok: true,
+        value: { path: normalized, bytesWritten: new TextEncoder().encode(content).byteLength },
+      };
+    },
+    edit(): Result<never, KoiError> {
+      return { ok: false, error: { code: "INTERNAL", message: "edit unused", retryable: false } };
+    },
+    list(path, options): Result<FileListResult, KoiError> {
+      const normalized = normalizePath(path);
+      const prefix = normalized === "/" ? "/" : `${normalized}/`;
+      const entries: FileListEntry[] = [];
+      for (const [filePath, content] of files) {
+        if (!filePath.startsWith(prefix)) continue;
+        const relative = filePath.slice(prefix.length);
+        if (options?.recursive !== true && relative.includes("/")) continue;
+        if (options?.glob === "**/*.md" && !filePath.endsWith(".md")) continue;
+        entries.push({
+          path: filePath,
+          kind: "file",
+          size: new TextEncoder().encode(content).byteLength,
+        });
+      }
+      return { ok: true, value: { entries, truncated: false } };
+    },
+    search(): Result<FileSearchResult, KoiError> {
+      return { ok: true, value: { matches: [], truncated: false } };
+    },
+    delete(path): Result<FileDeleteResult, KoiError> {
+      const normalized = normalizePath(path);
+      if (!files.delete(normalized)) return err(`not found: ${normalized}`);
+      return { ok: true, value: { path: normalized } };
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +748,54 @@ describe("createRuntime", () => {
     await runtime.dispose();
 
     expect(disposeCalls).toBe(1);
+  });
+
+  test("exposes FileSystemBackend-backed memory store for Nexus boundaries", async () => {
+    const fs = createRuntimeMemoryBackend();
+    const runtime = createRuntime({ memoryBackend: { fs, memoryDir: "/memory" } });
+
+    const written = await runtime.memoryStore?.write({
+      name: "Nexus memory",
+      description: "Stored through a FileSystemBackend",
+      type: "project",
+      content: "Runtime memory survives behind the backend boundary.",
+    });
+
+    expect(written?.action).toBe("created");
+    const listing = await runtime.memoryStore?.list();
+    expect(listing?.map((record) => record.name)).toEqual(["Nexus memory"]);
+    expect(fs.read("/memory/MEMORY.md")).toMatchObject({
+      ok: true,
+      value: { path: "/memory/MEMORY.md" },
+    });
+  });
+
+  test("FileSystemBackend-backed memory persists across runtime instances", async () => {
+    const fs = createRuntimeMemoryBackend();
+    const first = createRuntime({ memoryBackend: { fs, memoryDir: "/memory" } });
+    const second = createRuntime({ memoryBackend: { fs, memoryDir: "/memory" } });
+
+    const written = await first.memoryStore?.write({
+      name: "Cross session note",
+      description: "Written by another runtime",
+      type: "project",
+      content: "The second runtime should read this note from shared backend storage.",
+    });
+    expect(written?.action).toBe("created");
+
+    const read = await second.memoryStore?.read(written?.record.id ?? ("missing" as never));
+    expect(read?.name).toBe("Cross session note");
+  });
+
+  test("rejects ambiguous local and backend memory configuration", () => {
+    const fs = createRuntimeMemoryBackend();
+
+    expect(() =>
+      createRuntime({
+        memoryFs: { dir: "/tmp/koi-memory" },
+        memoryBackend: { fs },
+      }),
+    ).toThrow("memoryFs and memoryBackend are mutually exclusive");
   });
 
   test("filesystem provider detach skips backend already disposed by runtime", async () => {
