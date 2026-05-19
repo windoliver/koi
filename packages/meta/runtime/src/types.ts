@@ -52,7 +52,7 @@ import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import type { SpawnPolicy } from "@koi/engine-compose";
 import type { GovernanceMiddlewareConfig } from "@koi/governance-core";
 import type { LspClient, LspProviderConfig, LspServerFailure } from "@koi/lsp";
-import type { MemoryStore, MemoryStoreConfig } from "@koi/memory-fs";
+import type { FileSystemMemoryStoreConfig, MemoryStore, MemoryStoreConfig } from "@koi/memory-fs";
 import type { ExfiltrationGuardConfig } from "@koi/middleware-exfiltration-guard";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { SpawnResultCache } from "@koi/spawn-tools";
@@ -675,11 +675,19 @@ export interface RuntimeConfig {
   /**
    * File-based memory store configuration. When provided, `@koi/memory-fs`'s
    * `createMemoryStore` is invoked and the resulting `MemoryStore` is exposed on
-   * `RuntimeHandle.memoryStore`. A `MemoryToolBackend` adapter that plugs this
-   * store into `@koi/memory-tools` is tracked as follow-up work; for now callers
-   * wanting memory tools can use the in-memory preset or provide their own adapter.
+   * `RuntimeHandle.memoryStore`.
    */
   readonly memoryFs?: MemoryStoreConfig | undefined;
+
+  /**
+   * FileSystemBackend-backed memory store configuration. When provided,
+   * `@koi/memory-fs` stores memory markdown and `MEMORY.md` through the supplied
+   * backend, so callers may route memory through Nexus without importing
+   * `@koi/fs-nexus` into the memory package. Mutually exclusive with
+   * `memoryFs`; use `memoryFs` for local file paths and `memoryBackend` for
+   * already-resolved backend boundaries.
+   */
+  readonly memoryBackend?: FileSystemMemoryStoreConfig | undefined;
 
   /**
    * Auto-harness pipeline configuration. When provided, wires
@@ -994,11 +1002,7 @@ export interface RuntimeHandle {
       }>)
     | undefined;
 
-  /**
-   * File-based memory store. Only populated when `config.memoryFs` is provided.
-   * Exposes the raw `MemoryStore` CRUD surface; a `MemoryToolBackend` adapter
-   * for `@koi/memory-tools` is tracked as follow-up work.
-   */
+  /** File-based or FileSystemBackend-backed memory store. */
   readonly memoryStore?: MemoryStore | undefined;
 
   /**

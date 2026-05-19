@@ -4,6 +4,15 @@
 
 ## Recent updates
 
+**Nexus/FileSystemBackend memory store (#2204)**: `@koi/memory-fs` now also
+exports `createBackendMemoryStore()`, a `MemoryStore` implementation backed by
+any `FileSystemBackend`. Local callers keep using `createMemoryStore()` /
+`createFsMemory()` unchanged, while runtime hosts can pass a Nexus-backed
+filesystem and store memories under a configurable base path. The backend store
+persists the same memory/index files through the filesystem contract, preserves
+deduplication and rebuilds `MEMORY.md` after mutations, and validates the base
+path so empty paths, trailing slashes, and `..` segments fail closed.
+
 **exactReplay check includes `confidence` (#1966)**: `storeRecord` now includes the `confidence` field in the exact-replay guard. Previously, a re-store of the same `(name, type, description, content)` with a different `confidence` value was silently skipped as a duplicate — the confidence change was lost. The fix ensures a write with a different confidence produces a new record (name-conflict path) or triggers an upsert (force path) rather than being swallowed. This also means that **frontmatter parsing is now fail-closed for blank `confidence:` fields**: a blank `confidence:` line in a `.md` file drops the whole record rather than defaulting to `undefined` (which would be treated as full-trust 1.0 by callers). Unknown frontmatter keys also drop the record — typos like `confdence:` silently granting full trust are no longer possible.
 
 ---
@@ -67,6 +76,9 @@ packages/memory-fs/
 │   ├── slug.ts               ─ Entity name sanitization (path traversal guard)
 │   ├── summary.ts            ─ Rebuild summary.md from active facts
 │   ├── session-log.ts        ─ Append-only daily log
+│   ├── backend-store.ts      ─ FileSystemBackend-backed MemoryStore public factory
+│   ├── backend-store-io.ts   ─ FileSystemBackend record scan/read/path helpers
+│   ├── backend-store-ops.ts  ─ FileSystemBackend MemoryStore CRUD/upsert/index operations
 │   ├── provider/             ─ Agent-facing layer (tools + skill)
 │   │   ├── memory-component-provider.ts  ─ ComponentProvider factory
 │   │   ├── skill.ts          ─ Behavioral instructions for the LLM
@@ -1001,7 +1013,7 @@ Use `MemoryStore.rebuildIndex()` to force a repair from a fresh disk scan; it ac
 
 ## Testing
 
-230+ tests total across 19 test files:
+230+ tests total across 20 test files:
 
 | Test File | Count | What It Covers |
 |-----------|-------|----------------|
@@ -1018,6 +1030,7 @@ Use `MemoryStore.rebuildIndex()` to force a repair from a fresh disk scan; it ac
 | `category-inferrer.test.ts` | 28 | Keyword rules (6 categories), fallback, case insensitivity, ordering, custom rules, custom fallback |
 | `fs-memory.test.ts` | 38 | Full integration: store → recall → dedup → decay → causal → graph expansion → salience |
 | `fs-memory-category.test.ts` | 6 | Category inference integration: infer, override, backward compat, async, error fallback, dedup |
+| `backend-store.test.ts` | 6 | FileSystemBackend store: CRUD, dedup, index rebuild, persistence, path validation |
 | `provider/tools/store.test.ts` | 10 | Store tool: validation, causal_parents, dedup, errors |
 | `provider/tools/recall.test.ts` | 12 | Recall tool: limits, tiers, graph_expand, max_hops, errors |
 | `provider/tools/search.test.ts` | 7 | Search tool: entity list, entity lookup, errors |

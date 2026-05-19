@@ -4,6 +4,8 @@
  * L2 package. Depends only on @koi/core.
  */
 
+export type { FileSystemMemoryStoreConfig } from "./backend-store.js";
+export { createFileSystemMemoryStore } from "./backend-store.js";
 export { findDuplicate, jaccard, tokenize } from "./dedup.js";
 export { readIndex, rebuildIndex } from "./index-file.js";
 export type {
