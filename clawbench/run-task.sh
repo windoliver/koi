@@ -253,7 +253,11 @@ for iter in $(seq 1 $MAX_ITER); do
   # rejects with "can only afford N" when the reservation exceeds the daily
   # allowance. Escalating UP (the generic path below) makes this strictly
   # worse. Parse the affordable N and clamp the NEXT iter's cap below it.
-  afford=$(grep -oE 'can only afford [0-9]+' "$RESULTS_DIR/agent.iter${iter}.ndjson" 2>/dev/null | grep -oE '[0-9]+' | head -1)
+  # `|| true`: under `set -euo pipefail` a no-match grep makes this
+  # command-substitution exit non-zero, which would abort the whole run
+  # (the common success path has no budget-402 string) before the verifier
+  # ever executes. The empty-string result is the intended "not found".
+  afford=$(grep -oE 'can only afford [0-9]+' "$RESULTS_DIR/agent.iter${iter}.ndjson" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
   if [ -n "${afford:-}" ]; then
     # Clamp strictly below the affordable amount (OpenRouter requires
     # max_tokens <= afford). Leave ~10% headroom; never go below 1000.
@@ -298,8 +302,10 @@ for iter in $(seq 1 $MAX_ITER); do
     continue
   fi
 
-  # Extract failed test names + assertion messages for feedback
-  feedback=$(echo "$fails" | grep -E "^(FAILED|E  |assert )" | head -20)
+  # Extract failed test names + assertion messages for feedback.
+  # `|| true`: a no-match grep here would otherwise abort the run under
+  # `set -e` (pipefail) on the very iteration we need feedback for.
+  feedback=$(echo "$fails" | grep -E "^(FAILED|E  |assert )" | head -20 || true)
   CURRENT_PROMPT="$PROMPT
 
 PREVIOUS ATTEMPT FAILED THE VERIFIER. Failing checks from pytest output:

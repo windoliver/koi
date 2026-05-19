@@ -18,8 +18,11 @@ mkdir -p "$REPO_ROOT/clawbench/results"
 
 failures=0
 for id in "${QUICK_IDS[@]}"; do
-  # Find task dir: tasks/*/{id}-*
-  task_dir=$(find "$TASKS_ROOT" -mindepth 2 -maxdepth 2 -type d -name "${id}-*" | head -1)
+  # Find task dir. The corpus mixes two naming conventions: bare "<id>"
+  # (e.g. data-002) and slug-suffixed "<id>-<slug>" (e.g. cal-006-...).
+  # Match both, exact-id first, so validly-named tasks aren't skipped.
+  task_dir=$(find "$TASKS_ROOT" -mindepth 2 -maxdepth 2 -type d \
+    \( -name "$id" -o -name "${id}-*" \) | sort | head -1)
   if [ -z "$task_dir" ]; then
     echo "SKIP $id (not found)" | tee -a "$SUMMARY"
     failures=$((failures + 1))
