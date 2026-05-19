@@ -4,6 +4,19 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+- 2026-05-18: `@koi/session` adds an opt-in Nexus session backend (#2203).
+  The runtime dependency set is unchanged: `@koi/runtime` already integrates
+  `@koi/session`, and local JSONL/SQLite session stores remain the default
+  runtime path. Hosts that need remote durability can now select
+  `createNexusSessionBackend()` explicitly to compose Nexus-backed
+  `SessionTranscript`, `SessionPersistence`, checkpoint helpers, and
+  session-scoped artifacts over a `NexusTransport`. The backend uses the same
+  L0 contracts as the local stores, URL-encodes session/artifact ids inside the
+  Nexus namespace, stores checkpoints in `SessionRecord.lastEngineState` with
+  the existing CAS semantics, and exposes thin `saveTurn`/`loadHistory` and
+  `saveCheckpoint`/`loadCheckpoint` helpers. Golden runtime behavior is
+  unchanged because this is a host-selected storage adapter with contract tests
+  in `@koi/session`; see `docs/L2/session.md` for the namespace layout.
 - 2026-05-18: `@koi/speculation` wired (#1406). Runtime now depends on and
   re-exports the host-injected speculation controller for best-effort
   pre-execution forks. The controller coordinates overlay creation, speculative
