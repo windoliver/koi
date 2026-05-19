@@ -1140,15 +1140,19 @@ describe("createRateLimiter", () => {
         sendTimeoutMs: 20,
         onLateSuccess: () => lateOutcomes.push("late-success"),
       });
-      // Resolves at +60ms — well past the bounded final-attempt grace.
-      const slowSuccess: SendFn = () => new Promise<void>((resolve) => setTimeout(resolve, 60));
+      let resolveSlow!: () => void;
+      const slowSuccess: SendFn = () =>
+        new Promise<void>((resolve) => {
+          resolveSlow = resolve;
+        });
       expect(await captureRejection(limiter.enqueue(slowSuccess))).toMatchObject({
         code: "TIMEOUT",
         retryable: false,
         context: { phase: "delivery-unknown" },
       });
       // Late success eventually flows to the telemetry hook.
-      await new Promise<void>((res) => setTimeout(res, 80));
+      resolveSlow();
+      await new Promise<void>((res) => setTimeout(res, 10));
       expect(lateOutcomes).toEqual(["late-success"]);
     });
 
