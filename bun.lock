@@ -1151,7 +1151,11 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
         "@koi/session-repair": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/fs-nexus": "workspace:*",
       },
     },
     "packages/lib/settings": {

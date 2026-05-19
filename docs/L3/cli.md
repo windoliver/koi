@@ -6,6 +6,16 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Nexus session backend foundation (#2203)**: `@koi/session` now exports
+  `createNexusSessionBackend()`, an opt-in Nexus-backed composition of
+  transcript, persistence, checkpoint, and session-scoped artifact storage.
+  CLI/TUI defaults are unchanged in this slice: transcript JSONL and optional
+  SQLite cancel-resume persistence remain the active local path, and the CLI
+  does not auto-switch sessions to Nexus merely because a Nexus endpoint is
+  resolved for filesystem, scheduler, delegation, or audit subsystems. Future
+  host wiring can inject the backend explicitly over the resolved
+  `NexusTransport` while preserving the same `SessionTranscript` and
+  `SessionPersistence` contracts documented in `docs/L2/session.md`.
 - **CI/benchmark runtime knobs**: the CLI runtime now reads two env vars, both
   no-ops when unset so interactive/`tui` behavior is unchanged. (1) Integrated
   `@koi/model-openai-compat` honors `KOI_MAX_TOKENS` as an output-token cap. (2)
