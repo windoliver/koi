@@ -7,7 +7,7 @@ Current snapshot:
 - 234 workspace packages
 - 11 package families
 - 234 packages with local test files
-- 209 packages with dedicated package docs
+- 210 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 153 | 795 | 134 |
+| lib | 153 | 796 | 135 |
 | meta | 7 | 122 | 5 |
 | mm | 12 | 55 | 12 |
 | net | 12 | 100 | 12 |
