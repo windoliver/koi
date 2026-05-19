@@ -1,12 +1,13 @@
 # @koi/session
 
 **Layer**: L2 — Feature package  
-**Dependencies**: `@koi/core` (L0), `@koi/errors` (L0u), `@koi/session-repair` (L0u)
+**Dependencies**: `@koi/core` (L0), `@koi/errors` (L0u), `@koi/nexus-client` (L0u), `@koi/session-repair` (L0u)
 
 Provides two implementations of the L0 session contracts for crash recovery, plus a pure resume function for converting transcript history back to engine-ready messages:
 
 - **`SessionPersistence`** via SQLite/WAL — durable metadata store for session records and pending outbound frames
 - **`SessionTranscript`** via append-only JSONL — per-session conversation log for replay on restart
+- **Nexus session backend** — opt-in remote composition of `SessionPersistence`, `SessionTranscript`, checkpoint state, and session-scoped artifacts
 - **`resumeFromTranscript()`** — pure function: `TranscriptEntry[]` → `InboundMessage[]` for engine replay
 
 ## Why It Exists
@@ -29,6 +30,14 @@ src/
 │   ├── open-db.ts                    # Inline WAL helper (~25 lines, no @koi/sqlite-utils dep)
 │   ├── sqlite-store.ts               # createSqliteSessionPersistence — bun:sqlite backend
 │   └── memory-store.ts               # createInMemorySessionPersistence — Map-based, tests only
+├── nexus/
+│   ├── session-backend.ts            # createNexusSessionBackend — composed Nexus backend
+│   ├── transcript-store.ts           # SessionTranscript over Nexus JSONL files
+│   ├── persistence-store.ts          # SessionPersistence over Nexus JSON files
+│   ├── artifact-store.ts             # session-scoped artifact persistence
+│   ├── json-io.ts                    # Nexus read/write/list/delete helpers
+│   ├── paths.ts                      # namespace layout and path validation
+│   └── types.ts                      # Nexus backend and artifact contracts
 └── transcript/
     ├── jsonl-store.ts                # createJsonlTranscript — flat JSONL, per-session queue
     └── memory-store.ts               # createInMemoryTranscript — Map-based, tests only
@@ -73,6 +82,20 @@ const result = await transcript.compact(sessionId, "Summary of first 10 turns", 
 const { messages, issues } = (await resumeForSession(sessionId, transcript)).value;
 // messages: InboundMessage[] ready for the engine's context builder
 // issues: RepairIssue[] from repairSession() (orphan repairs, deduplication, merges)
+
+// Nexus-backed session state (opt-in; local stores remain the default)
+const nexus = createNexusSessionBackend({
+  transport,
+  basePath: "sessions",
+});
+await nexus.saveTurn(sessionId, transcriptEntry);
+await nexus.saveCheckpoint(sessionId, engineState);
+await nexus.artifacts.saveArtifact(sessionId, {
+  artifactId: "tool-output",
+  content: JSON.stringify(output),
+  contentType: "application/json",
+  createdAt: Date.now(),
+});
 ```
 
 ## Design Decisions
@@ -124,6 +147,45 @@ All ~12 SQLite queries are `db.prepare()`'d once at construction. Query plans ca
 
 ### Batch pending-frame query in `recover()`
 `recover()` loads all pending frames in one `SELECT * FROM pending_frames` query, then groups by `sessionId` in memory. Avoids N+1 pattern when recovering many sessions.
+
+### Nexus session backend composition
+`createNexusSessionBackend()` deliberately composes existing contracts instead
+of introducing a parallel L0 `SessionBackend` abstraction. Its
+`transcript` member implements `SessionTranscript`, its `persistence` member
+implements `SessionPersistence`, and the high-level helpers
+`saveTurn/loadHistory/saveCheckpoint/loadCheckpoint` are thin conveniences over
+those contracts. This keeps existing local SQLite/JSONL stores as the default
+and lets assembly/runtime code select Nexus explicitly when remote durability is
+required.
+
+### Nexus namespace layout
+All paths live under `basePath` (default `"sessions"`), with URL-encoded session
+IDs and artifact IDs so runtime IDs containing `/` or `:` cannot escape the
+namespace:
+
+```
+<basePath>/transcripts/<sessionId>.jsonl
+<basePath>/records/<sessionId>.json
+<basePath>/pending/<sessionId>/<frameId>.json
+<basePath>/content-replacements/<sessionId>/<messageId>.json
+<basePath>/artifacts/<sessionId>/<artifactId>.json
+```
+
+Transcript history remains append-first JSONL at the contract surface. Because
+the current Nexus file RPC exposes read/write rather than an atomic append verb,
+the v2 adapter serializes per-session transcript mutations in-process, reads
+the existing JSONL, appends new lines, and writes the file back. A future Nexus
+append RPC can replace that internal implementation without changing callers.
+
+### Nexus checkpoint and artifact state
+Checkpoint state is stored in the existing `SessionRecord.lastEngineState`
+field and updated through `SessionPersistence.updateLastEngineState()` with the
+same `expectedVersion` CAS behavior used by local stores. Session-scoped
+artifacts are intentionally separate from `@koi/artifacts`: this first slice
+needs durable per-session tool outputs, not the full versioned artifact
+lifecycle. The artifact store persists plain JSON records under the session
+artifact namespace and can later be backed by content-addressed storage without
+changing the session backend facade.
 
 ## Cancel-Resume (issue #1683)
 
@@ -179,6 +241,12 @@ interface SessionStoreConfig {
 interface JsonlTranscriptConfig {
   readonly baseDir: string;                 // Directory for .jsonl files
 }
+
+interface NexusSessionBackendConfig {
+  readonly transport: NexusTransport;
+  readonly basePath?: string;               // default: "sessions"
+  readonly lockScope?: string;              // default: basePath
+}
 ```
 
 ### Trajectory Visibility
@@ -192,12 +260,15 @@ Contract test factories live in `src/__tests__/contracts/`. Both implementations
 ```typescript
 runSessionPersistenceContractTests(() => createInMemorySessionPersistence());
 runSessionPersistenceContractTests(() => createSqliteSessionPersistence({ dbPath: ":memory:" }));
+runSessionPersistenceContractTests(() => createNexusSessionBackend({ transport }).persistence);
 
 runSessionTranscriptContractTests(() => createInMemoryTranscript());
 runSessionTranscriptContractTests(() => createJsonlTranscript({ baseDir: tmpDir }));
+runSessionTranscriptContractTests(() => createNexusSessionBackend({ transport }).transcript);
 ```
 
 Additional tests specific to each backend:
 - `sqlite-store.test.ts` — corruption injection, status lifecycle, content replacement round-trips, v1→v2 migration
 - `jsonl-store.test.ts` — concurrency (`Promise.all(10 appends)`), crash artifact detection, compaction boundary extension (cases A/B/C)
+- `nexus/session-backend.test.ts` — Nexus contract parity, high-level history/checkpoint helpers, session-scoped artifact isolation
 - `resume.test.ts` — empty/compaction-only/tool-pair/dangling/orphan cases, determinism, validation

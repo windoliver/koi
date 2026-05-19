@@ -1,5 +1,12 @@
 export type { SessionTranscriptMiddlewareConfig } from "./middleware/session-transcript.js";
 export { createSessionTranscriptMiddleware } from "./middleware/session-transcript.js";
+export { createNexusSessionBackend } from "./nexus/session-backend.js";
+export type {
+  NexusSessionBackend,
+  NexusSessionBackendConfig,
+  SessionArtifactRecord,
+  SessionArtifactStore,
+} from "./nexus/types.js";
 export type {
   PersistEngineStateOptions,
   SessionRecordTemplate,

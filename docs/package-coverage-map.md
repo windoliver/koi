@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 153 | 794 | 134 |
+| lib | 153 | 795 | 134 |
 | meta | 7 | 122 | 5 |
 | mm | 12 | 54 | 12 |
 | net | 12 | 100 | 12 |
@@ -170,7 +170,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/secure-storage` (packages/lib/secure-storage) - OS keychain token storage with file-based locking for concurrent access. Tests: 3. Docs: -.
 - `@koi/sensor-ide` (packages/lib/sensor-ide) - Low-overhead IDE activity sensor for typing, diagnostics, file switching, and flow signals. Tests: 1. Docs: docs/L2/sensor-ide.md.
 - `@koi/sensor-neuroskill` (packages/lib/sensor-neuroskill) - Real-time BCI/EXG signal sensor with preprocessing, cognitive-state estimates, and event streaming. Tests: 1. Docs: docs/L2/sensor-neuroskill.md.
-- `@koi/session` (packages/lib/session) - Session persistence (SQLite/WAL) and transcript (append-only JSONL) for crash recovery. Tests: 9. Docs: docs/L2/session.md.
+- `@koi/session` (packages/lib/session) - Session persistence (SQLite/WAL) and transcript (append-only JSONL) for crash recovery. Tests: 10. Docs: docs/L2/session.md.
 - `@koi/settings` (packages/lib/settings) - Hierarchical settings cascade: user → project → local → flag → policy. Tests: 4. Docs: docs/L2/settings.md.
 - `@koi/shutdown` (packages/lib/shutdown) - Handle graceful shutdown signals and map exit codes for CLI and deploy. Tests: 3. Docs: -.
 - `@koi/skill-distiller` (packages/lib/skill-distiller) - Distill reusable skill drafts from successful task traces with content-hash dedupe and provenance audit. Tests: 12. Docs: docs/L2/skill-distiller.md.
