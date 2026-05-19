@@ -2,7 +2,15 @@ import type {
   ContextNamespace,
   ContextNamespaceChangeEvent,
   ContextNamespaceMount,
+  FileDeleteResult,
+  FileEditResult,
+  FileListResult,
+  FileReadResult,
+  FileRenameResult,
+  FileSearchOptions,
+  FileSearchResult,
   FileSystemBackend,
+  FileWriteResult,
   KoiError,
   Result,
 } from "@koi/core";
@@ -26,6 +34,11 @@ function assertMountPath(path: string): string {
     throw new Error("Context namespace cannot mount at root '/'");
   }
   return normalized;
+}
+
+function assertAccessMode(mode: ContextNamespaceMount["mode"]): ContextNamespaceMount["mode"] {
+  if (mode === "ro" || mode === "rw") return mode;
+  throw new Error(`Context namespace access mode must be 'ro' or 'rw', got ${String(mode)}.`);
 }
 
 function mountContainsPath(mountPath: string, path: string): boolean {
@@ -71,6 +84,10 @@ function pathDenied(path: string, mountPath: string): Result<never, KoiError> {
 }
 
 type RewritePath = (path: string) => string | undefined;
+type MapSearchPath = (path: string) => string;
+type RewriteSearchOptions = (
+  options: FileSearchOptions | undefined,
+) => Result<FileSearchOptions | undefined, KoiError>;
 
 function rewriteOrDeny(
   path: string,
@@ -81,30 +98,110 @@ function rewriteOrDeny(
   return rewritten === undefined ? pathDenied(path, mountPath) : { ok: true, value: rewritten };
 }
 
+function mapResultPath<T extends { readonly path: string }>(
+  raw: Result<T, KoiError> | Promise<Result<T, KoiError>>,
+  mapPath: MapSearchPath,
+): Result<T, KoiError> | Promise<Result<T, KoiError>> {
+  const finish = (result: Result<T, KoiError>): Result<T, KoiError> =>
+    result.ok ? { ok: true, value: { ...result.value, path: mapPath(result.value.path) } } : result;
+  return raw instanceof Promise ? raw.then(finish) : finish(raw);
+}
+
+function mapListResult(
+  raw: Result<FileListResult, KoiError> | Promise<Result<FileListResult, KoiError>>,
+  mapPath: MapSearchPath,
+): Result<FileListResult, KoiError> | Promise<Result<FileListResult, KoiError>> {
+  const finish = (result: Result<FileListResult, KoiError>): Result<FileListResult, KoiError> =>
+    result.ok
+      ? {
+          ok: true,
+          value: {
+            entries: result.value.entries.map((entry) => ({
+              ...entry,
+              path: mapPath(entry.path),
+            })),
+            truncated: result.value.truncated,
+          },
+        }
+      : result;
+  return raw instanceof Promise ? raw.then(finish) : finish(raw);
+}
+
+function mapSearchResults(
+  raw: Result<FileSearchResult, KoiError> | Promise<Result<FileSearchResult, KoiError>>,
+  mapPath: MapSearchPath,
+): Result<FileSearchResult, KoiError> | Promise<Result<FileSearchResult, KoiError>> {
+  const finish = (
+    result: Result<FileSearchResult, KoiError>,
+  ): Result<FileSearchResult, KoiError> =>
+    result.ok
+      ? {
+          ok: true,
+          value: {
+            matches: result.value.matches.map((match) => ({
+              ...match,
+              path: mapPath(match.path),
+            })),
+            truncated: result.value.truncated,
+          },
+        }
+      : result;
+  return raw instanceof Promise ? raw.then(finish) : finish(raw);
+}
+
+function mapRenameResult(
+  raw: Result<FileRenameResult, KoiError> | Promise<Result<FileRenameResult, KoiError>>,
+  mapPath: MapSearchPath,
+): Result<FileRenameResult, KoiError> | Promise<Result<FileRenameResult, KoiError>> {
+  const finish = (
+    result: Result<FileRenameResult, KoiError>,
+  ): Result<FileRenameResult, KoiError> =>
+    result.ok
+      ? {
+          ok: true,
+          value: { from: mapPath(result.value.from), to: mapPath(result.value.to) },
+        }
+      : result;
+  return raw instanceof Promise ? raw.then(finish) : finish(raw);
+}
+
 function createRoutedRequiredMethods(
   backend: FileSystemBackend,
   rewrite: RewritePath,
   mountPath: string,
+  mapSearchPath: MapSearchPath,
+  rewriteSearchOptions: RewriteSearchOptions,
 ): Pick<FileSystemBackend, "read" | "write" | "edit" | "list" | "search"> {
   return {
     read(path, options) {
       const routed = rewriteOrDeny(path, rewrite, mountPath);
-      return routed.ok ? backend.read(routed.value, options) : routed;
+      return routed.ok
+        ? mapResultPath<FileReadResult>(backend.read(routed.value, options), mapSearchPath)
+        : routed;
     },
     write(path, content, options) {
       const routed = rewriteOrDeny(path, rewrite, mountPath);
-      return routed.ok ? backend.write(routed.value, content, options) : routed;
+      return routed.ok
+        ? mapResultPath<FileWriteResult>(
+            backend.write(routed.value, content, options),
+            mapSearchPath,
+          )
+        : routed;
     },
     edit(path, edits, options) {
       const routed = rewriteOrDeny(path, rewrite, mountPath);
-      return routed.ok ? backend.edit(routed.value, edits, options) : routed;
+      return routed.ok
+        ? mapResultPath<FileEditResult>(backend.edit(routed.value, edits, options), mapSearchPath)
+        : routed;
     },
     list(path, options) {
       const routed = rewriteOrDeny(path, rewrite, mountPath);
-      return routed.ok ? backend.list(routed.value, options) : routed;
+      return routed.ok ? mapListResult(backend.list(routed.value, options), mapSearchPath) : routed;
     },
     search(pattern, options) {
-      return backend.search(pattern, options);
+      const nextOptions = rewriteSearchOptions(options);
+      if (!nextOptions.ok) return nextOptions;
+      return mapSearchResults(backend.search(pattern, nextOptions.value), mapSearchPath);
     },
   };
 }
@@ -113,6 +210,7 @@ function createRoutedOptionalMethods(
   backend: FileSystemBackend,
   rewrite: RewritePath,
   mountPath: string,
+  mapPath: MapSearchPath,
 ): Partial<FileSystemBackend> {
   const del = backend.delete;
   const ren = backend.rename;
@@ -124,12 +222,15 @@ function createRoutedOptionalMethods(
       : {
           delete(path: string) {
             const next = rewriteOrDeny(path, rewrite, mountPath);
-            return next.ok ? del(next.value) : next;
+            return next.ok ? mapResultPath<FileDeleteResult>(del(next.value), mapPath) : next;
           },
         }),
     ...(ren === undefined
       ? {}
-      : { rename: (from: string, to: string) => routeRename(ren, rewrite, mountPath, from, to) }),
+      : {
+          rename: (from: string, to: string) =>
+            routeRename(ren, rewrite, mountPath, mapPath, from, to),
+        }),
     ...(resolveFn === undefined
       ? {}
       : {
@@ -146,13 +247,14 @@ function routeRename(
   rename: NonNullable<FileSystemBackend["rename"]>,
   rewrite: RewritePath,
   mountPath: string,
+  mapPath: MapSearchPath,
   from: string,
   to: string,
 ) {
   const nextFrom = rewriteOrDeny(from, rewrite, mountPath);
   if (!nextFrom.ok) return nextFrom;
   const nextTo = rewriteOrDeny(to, rewrite, mountPath);
-  return nextTo.ok ? rename(nextFrom.value, nextTo.value) : nextTo;
+  return nextTo.ok ? mapRenameResult(rename(nextFrom.value, nextTo.value), mapPath) : nextTo;
 }
 
 function createRoutedBackend(
@@ -160,12 +262,25 @@ function createRoutedBackend(
   backend: FileSystemBackend,
   rewrite: RewritePath,
   mountPath: string,
+  mapSearchPath: MapSearchPath,
+  rewriteSearchOptions: RewriteSearchOptions = (options) => ({ ok: true, value: options }),
 ): FileSystemBackend {
   return {
     name,
-    ...createRoutedRequiredMethods(backend, rewrite, mountPath),
-    ...createRoutedOptionalMethods(backend, rewrite, mountPath),
+    ...createRoutedRequiredMethods(
+      backend,
+      rewrite,
+      mountPath,
+      mapSearchPath,
+      rewriteSearchOptions,
+    ),
+    ...createRoutedOptionalMethods(backend, rewrite, mountPath, mapSearchPath),
   };
+}
+
+function toVirtualPath(backendPath: string): string {
+  const normalized = normalizeNamespacePath(backendPath);
+  return normalized === "/" ? VIRTUAL_SCOPE_ROOT : `${VIRTUAL_SCOPE_ROOT}${normalized}`;
 }
 
 function createVirtualRootBackend(backend: FileSystemBackend): FileSystemBackend {
@@ -174,7 +289,24 @@ function createVirtualRootBackend(backend: FileSystemBackend): FileSystemBackend
     backend,
     toBackendPath,
     VIRTUAL_SCOPE_ROOT,
+    toVirtualPath,
   );
+}
+
+function toNamespaceSearchPath(mountPath: string, virtualPath: string): string {
+  const backendPath = toBackendPath(virtualPath) ?? normalizeNamespacePath(virtualPath);
+  return backendPath === "/" ? mountPath : `${mountPath}${backendPath}`;
+}
+
+function rewriteMountSearchOptions(
+  mountPath: string,
+  options: FileSearchOptions | undefined,
+): Result<FileSearchOptions | undefined, KoiError> {
+  if (options?.glob === undefined) return { ok: true, value: options };
+  if (!options.glob.startsWith("/")) return { ok: true, value: options };
+  const glob = toMountRelativePath(mountPath, options.glob);
+  if (glob === undefined) return pathDenied(options.glob, mountPath);
+  return { ok: true, value: { ...options, glob } };
 }
 
 function createResolvedMountBackend(mount: ContextNamespaceMount): FileSystemBackend {
@@ -187,21 +319,20 @@ function createResolvedMountBackend(mount: ContextNamespaceMount): FileSystemBac
     scoped,
     (path) => toMountRelativePath(mount.path, path),
     mount.path,
+    (path) => toNamespaceSearchPath(mount.path, path),
+    (options) => rewriteMountSearchOptions(mount.path, options),
   );
 }
 
 function normalizeMount(mount: ContextNamespaceMount, path: string): ContextNamespaceMount {
-  if (mount.metadata === undefined) {
-    return { path, backend: mount.backend, mode: mount.mode };
-  }
-  return { path, backend: mount.backend, mode: mount.mode, metadata: mount.metadata };
+  const mode = assertAccessMode(mount.mode);
+  const base = { path, backend: mount.backend, mode };
+  return mount.metadata === undefined ? base : { ...base, metadata: mount.metadata };
 }
 
 function toMountedEvent(mount: ContextNamespaceMount): ContextNamespaceChangeEvent {
-  if (mount.metadata === undefined) {
-    return { kind: "mounted", path: mount.path, mode: mount.mode };
-  }
-  return { kind: "mounted", path: mount.path, mode: mount.mode, metadata: mount.metadata };
+  const event = { kind: "mounted" as const, path: mount.path, mode: mount.mode };
+  return mount.metadata === undefined ? event : { ...event, metadata: mount.metadata };
 }
 
 function findMount(
