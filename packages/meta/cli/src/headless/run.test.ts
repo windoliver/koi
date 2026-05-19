@@ -905,6 +905,41 @@ describe("runHeadless", () => {
     expect(exitCode).toBe(2);
   });
 
+  test("done event with stopReason=error using metadata.error key → message still classified (exit 2)", async () => {
+    // Regression: the model/stream error path (query-engine consume-stream)
+    // emits `metadata: { error: <msg> }`, while the KoiRuntimeError guard
+    // path emits `metadata: { errorMessage: <msg> }`. extractEngineErrorMessage
+    // read only `errorMessage`, so every model-stream failure (OpenRouter
+    // 4xx, provider error chunk, stream abort) lost its message entirely and
+    // surfaced as the contentless "engine reported error" — also defeating
+    // permission/timeout classification. Must fall back to `metadata.error`.
+    const { exitCode } = await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "error",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+            metadata: { error: 'Tool "Bash" is denied by policy' },
+          },
+        },
+      ]),
+    });
+    expect(exitCode).toBe(2);
+  });
+
   test("done event with stopReason=error + default-deny marker → exit 2", async () => {
     const { exitCode } = await runAndEmit({
       sessionId: "s",
