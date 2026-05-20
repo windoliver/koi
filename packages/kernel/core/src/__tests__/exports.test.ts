@@ -31,6 +31,10 @@ import type {
   ChildLifecycleEvent,
   ComponentProvider,
   ContentBlock,
+  ContextNamespace,
+  ContextNamespaceAccessMode,
+  ContextNamespaceChangeEvent,
+  ContextNamespaceMount,
   CredentialComponent,
   CustomBlock,
   EngineAdapter,
@@ -258,6 +262,10 @@ type _TypeGuard =
   | AssertDefined<AgentCondition>
   | AssertDefined<AgentStatus>
   | AssertDefined<AgentRegistry>
+  | AssertDefined<ContextNamespace>
+  | AssertDefined<ContextNamespaceAccessMode>
+  | AssertDefined<ContextNamespaceChangeEvent>
+  | AssertDefined<ContextNamespaceMount>
   | AssertDefined<TransitionReason>
   | AssertDefined<RegistryEntry>
   | AssertDefined<RegistryEvent>

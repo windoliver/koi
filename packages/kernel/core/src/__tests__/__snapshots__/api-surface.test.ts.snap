@@ -17,6 +17,7 @@ export { ChannelAdapter, ChannelCapabilities, ChannelInheritMode, ChannelStatus,
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
 export { CONTEXT_ENGINE, ContextEngine, ContextEngineIdentity, ContextEngineSwapEvent, ContextOccupancy } from './chunk-HASH.js';
+export { ContextNamespace, ContextNamespaceAccessMode, ContextNamespaceChangeEvent, ContextNamespaceMount } from './chunk-HASH.js';
 export { AgentCostBreakdown, BudgetTracker, CostBreakdown, CostCalculator, CostEntry, CostTokenBreakdown, ModelCostBreakdown, ProviderCostBreakdown, ToolCostBreakdown, UsageInfo, formatCost, formatTokens } from './chunk-HASH.js';
 export { BackgroundSessionEvent, BackgroundSessionRecord, BackgroundSessionRegistry, BackgroundSessionStatus, BackgroundSessionUpdate, DEFAULT_HEARTBEAT_CONFIG, DEFAULT_WORKER_RESTART_POLICY, HeartbeatConfig, SUPERVISOR_HEALTH_STATUS, Supervisor, SupervisorConfig, SupervisorHealth, SupervisorHealthMetrics, SupervisorHealthStatus, WorkerBackend, WorkerBackendKind, WorkerEvent, WorkerHandle, WorkerHealth, WorkerId, WorkerRestartPolicy, WorkerSpawnRequest, validateBackgroundSessionRecord, validateSupervisorConfig, workerId } from './daemon.js';
 export { Breakpoint, BreakpointId, BreakpointOptions, BreakpointPredicate, ComponentMetadata, ComponentSnapshot, DEFAULT_DEBUG_BUFFER_SIZE, DEFAULT_INSPECT_LIMIT, DebugEvent, DebugObserver, DebugSession, DebugSessionId, DebugSnapshot, DebugState, InspectComponentOptions, StepOptions, breakpointId, debugSessionId } from './debug.js';
@@ -3847,6 +3848,62 @@ interface ContextEngineSwapEvent {
 declare const CONTEXT_ENGINE: SubsystemToken<ContextEngine>;
 
 export { CONTEXT_ENGINE, type ContextEngine, type ContextEngineIdentity, type ContextEngineSwapEvent, type ContextOccupancy };
+"
+`;
+
+exports[`@koi/core API surface ./context-namespace has stable type surface 1`] = `
+"import { FileSystemBackend } from './chunk-HASH.js';
+
+/**
+ * Shared context namespace contract.
+ *
+ * L0 types only: implementations live in L0u/L2 packages and may be
+ * in-memory, local filesystem-backed, or Nexus-backed.
+ */
+
+/** Namespace-level access grant for mounted context backends. */
+type ContextNamespaceAccessMode = "ro" | "rw";
+/** Mounted backend metadata for a shared context namespace path. */
+interface ContextNamespaceMount {
+    /** Stable absolute namespace path, e.g. "/shared". */
+    readonly path: string;
+    /** Backend mounted under the namespace path. */
+    readonly backend: FileSystemBackend;
+    /** Access mode applied to this namespace mount. */
+    readonly mode: ContextNamespaceAccessMode;
+    /** Optional implementation-specific metadata such as ReBAC grant IDs. */
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+/** Change event emitted by a context namespace implementation. */
+type ContextNamespaceChangeEvent = {
+    readonly kind: "mounted";
+    readonly path: string;
+    readonly mode: ContextNamespaceAccessMode;
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+} | {
+    readonly kind: "unmounted";
+    readonly path: string;
+} | {
+    readonly kind: "resolved";
+    readonly path: string;
+    readonly mountPath: string;
+    readonly mode: ContextNamespaceAccessMode;
+};
+/**
+ * Mount table for shared agent context.
+ *
+ * Agents use this as a world service: a parent and child may receive the
+ * same namespace instance, but no direct agent-to-agent channel is implied.
+ */
+interface ContextNamespace {
+    readonly mount: (mount: ContextNamespaceMount) => void | Promise<void>;
+    readonly unmount: (path: string) => boolean | Promise<boolean>;
+    readonly resolve: (path: string) => FileSystemBackend | undefined | Promise<FileSystemBackend | undefined>;
+    readonly list: () => readonly ContextNamespaceMount[] | Promise<readonly ContextNamespaceMount[]>;
+    readonly watch?: (listener: (event: ContextNamespaceChangeEvent) => void) => () => void;
+}
+
+export type { ContextNamespace, ContextNamespaceAccessMode, ContextNamespaceChangeEvent, ContextNamespaceMount };
 "
 `;
 

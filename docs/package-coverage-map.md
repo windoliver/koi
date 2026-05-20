@@ -7,7 +7,7 @@ Current snapshot:
 - 234 workspace packages
 - 11 package families
 - 234 packages with local test files
-- 209 packages with dedicated package docs
+- 210 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 3 | 17 | 3 |
 | kernel | 4 | 126 | 0 |
-| lib | 153 | 795 | 134 |
+| lib | 153 | 796 | 135 |
 | meta | 7 | 122 | 5 |
 | mm | 12 | 55 | 12 |
 | net | 12 | 100 | 12 |
@@ -108,7 +108,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/forge-verifier` (packages/lib/forge-verifier) - Sequential short-circuiting verification pipeline for forge artifacts with pluggable stages and caching.. Tests: 2. Docs: docs/L2/forge-verifier.md.
 - `@koi/fs-local` (packages/lib/fs-local) - Local filesystem FileSystemBackend using Bun.file/node:fs. Tests: 1. Docs: docs/L2/fs-local.md.
 - `@koi/fs-nexus` (packages/lib/fs-nexus) - Nexus-backed FileSystemBackend via JSON-RPC. Tests: 8. Docs: docs/L2/fs-nexus.md.
-- `@koi/fs-scoped` (packages/lib/fs-scoped) - Scoped filesystem wrapper — restricts a FileSystemBackend to a root with configurable ro/rw access. Tests: 1. Docs: -.
+- `@koi/fs-scoped` (packages/lib/fs-scoped) - Scoped filesystem wrapper — restricts a FileSystemBackend to a root with configurable ro/rw access. Tests: 2. Docs: docs/L2/fs-scoped.md.
 - `@koi/gateway-types` (packages/lib/gateway-types) - Shared gateway wire-protocol types (GatewayFrame, Session, RoutingContext). L0u — no logic, no deps beyond @koi/core.. Tests: 1. Docs: -.
 - `@koi/git-utils` (packages/lib/git-utils) - Wrap git CLI commands and resolve worktree paths via Bun.spawn. Tests: 4. Docs: -.
 - `@koi/handoff` (packages/lib/handoff) - Structured context relay between agents — typed envelopes + auto-injecting middleware. Tests: 9. Docs: docs/L2/handoff.md.
