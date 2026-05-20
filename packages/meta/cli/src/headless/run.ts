@@ -397,16 +397,17 @@ function extractEngineErrorMessage(
   metadata: Readonly<Record<string, unknown>> | undefined,
 ): string | undefined {
   if (metadata === undefined) return undefined;
-  // Two conventions exist on the error-terminal done event:
+  // Three conventions exist on the error-terminal done event:
   //   - koi.ts KoiRuntimeError guard → metadata.errorMessage
   //   - query-engine consume-stream (model/stream errors: provider 4xx,
   //     error chunk, stream abort) → metadata.error
-  // The model-stream path is the common one; reading only `errorMessage`
-  // silently dropped its message, surfacing the contentless "engine
-  // reported error" and defeating timeout/permission classification.
-  // Only the message LENGTH and fixed-marker `.includes()` checks are used
-  // downstream — raw content still never reaches CI logs.
-  const em = metadata.errorMessage ?? metadata.error;
+  //   - middleware-rlm buildErrorResponse/buildAbortResponse → metadata.rlmStreamError
+  // Reading only one of these silently dropped messages from the other two
+  // paths, surfacing the contentless "engine reported error" and defeating
+  // timeout/permission classification. Only the message LENGTH and
+  // fixed-marker `.includes()` checks are used downstream — raw content
+  // still never reaches CI logs.
+  const em = metadata.errorMessage ?? metadata.error ?? metadata.rlmStreamError;
   return typeof em === "string" ? em : undefined;
 }
 

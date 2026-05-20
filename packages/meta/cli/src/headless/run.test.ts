@@ -940,6 +940,41 @@ describe("runHeadless", () => {
     expect(exitCode).toBe(2);
   });
 
+  test("done event with stopReason=error using metadata.rlmStreamError key → message classified (exit 2)", async () => {
+    // Regression: middleware-rlm's buildErrorResponse/buildAbortResponse
+    // (rlm.ts:161-191) sets stopReason "error" with metadata.rlmStreamError —
+    // a third convention beyond errorMessage (koi.ts) and error (consume-stream).
+    // Without the fallback, RLM-mediated failures (rate limits, segmented
+    // model errors) surfaced as the contentless "engine reported error",
+    // defeating classification. Observed in clawbench cs-003 where iter1/3/4
+    // errored with empty metadata while iter2 ran clean.
+    const { exitCode } = await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "error",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+            metadata: { rlmStreamError: 'Tool "Bash" is denied by policy' },
+          },
+        },
+      ]),
+    });
+    expect(exitCode).toBe(2);
+  });
+
   test("done event with stopReason=error + default-deny marker → exit 2", async () => {
     const { exitCode } = await runAndEmit({
       sessionId: "s",
