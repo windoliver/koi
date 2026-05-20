@@ -225,8 +225,15 @@ CURRENT_PROMPT="$PROMPT"
 # the first attempt has room instead of burning iters on doomed low caps.
 if echo " $HEAVY_TASKS " | grep -qF " $TASK_ID "; then
   TOKEN_LADDER=(24000 32000 48000 64000)
+  # Per-task turn budget. The engine's DEFAULT_MAX_TURNS is 25, which truncates
+  # large multi-file tasks (e.g. cs-001's rate-limiter impl: 9/9 unit tests
+  # pass mid-run but the agent ran out of turns before writing the results
+  # artifact). Heavy tasks get a higher cap; everything else keeps the engine
+  # default to bound cost on the long tail.
+  MAX_TURNS=60
 else
   TOKEN_LADDER=(8000 16000 32000 64000)
+  MAX_TURNS=25
 fi
 cap_idx=0
 for iter in $(seq 1 $MAX_ITER); do
@@ -247,6 +254,7 @@ for iter in $(seq 1 $MAX_ITER); do
     --allow-tool Grep \
     --allow-tool Bash \
     --max-duration-ms 300000 \
+    --max-turns "$MAX_TURNS" \
     > "$RESULTS_DIR/agent.iter${iter}.ndjson" 2> "$RESULTS_DIR/agent.iter${iter}.stderr" || echo "iter $iter exit=$?" >&2
 
   # Budget-reservation 402: OpenRouter reserves max_tokens*price up front and
