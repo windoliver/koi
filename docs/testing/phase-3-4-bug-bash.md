@@ -34,6 +34,10 @@ Optional external services:
 | Temporal dev server | S7 | Temporal workflow E2E |
 | Chrome or Brave | S8 | `@koi/browser-ext` manual smoke |
 | Docker daemon | S9 | Docker sandbox adapter smoke |
+| Isolated S3 bucket/prefix | S12 | Live S3 artifact backend E2E |
+| Playwright browser binary | S17 | Browser driver/a11y/tool smoke |
+| Cloud sandbox credentials | S18 | Provider-backed sandbox E2E beyond unavailable-path checks |
+| tmux | S19 | Tmux daemon backend and TUI `/bg`/`/supervisor` smoke |
 
 ### 1.2 Per-Tester Isolation
 
@@ -161,9 +165,35 @@ E2E as `SKIPPED` with the reason.
 | S9 | Sandbox / executor family | Phase 3 docker, subprocess executor, edge/wasm adapters | `docs/L3/runtime.md`, `docs/L2/sandbox-executor.md`, `docs/L2/sandbox-docker.md`, `docs/L2/sandbox-wasm.md` | Direct smoke + golden |
 | S10 | Approval zones and permissions hardening | Phase 3 approval-zone evaluator in ask path | `docs/L2/approval-zones.md` | Direct golden + TUI prompt |
 | S11 | Context/session repair Phase 4 surfaces | passthrough context engine, interrupt repair | `docs/L2/session-repair.md`, `packages/lib/context-manager` | Direct package E2E |
+| S12 | Artifact pluggable blob stores | Plan 5/6 blob backend contract and S3 adapter | `docs/L2/artifacts.md`, `docs/L3/runtime.md` | Direct adapter contract + S3-gated E2E |
+| S13 | Proactive tool suite + composition | sleep, cron, monitor, brief, notify, composition planner/executor/checkpoint paths | `docs/L2/proactive.md`, `docs/L3/runtime.md` | Direct provider/composition E2E |
+| S14 | Runtime resilience and governance middleware | circuit breaker, call limits, call dedup, governance defaults, policy cache | `docs/L3/runtime.md` | Direct runtime/middleware E2E |
+| S15 | Nexus adapter matrix | permissions, escalation, delegation, fs, ipc, registry, search, snapshot, scratchpad, workspace, playbook stores | `docs/L2/*-nexus.md`, `docs/L3/runtime.md` | Adapter contract + live Nexus gated E2E |
+| S16 | Gateway HTTP/canvas/webhook | HTTP ingress, canvas state, webhook dispatch, stack lifecycle | `docs/L3/gateway-stack.md` | Scripted gateway-stack E2E |
+| S17 | Browser automation surfaces | browser-ext, Playwright driver, a11y helpers, browser tool wrapper | `docs/L2/browser-ext.md`, `docs/L3/runtime.md` | Browser-gated smoke + direct package E2E |
+| S18 | Sandbox adapter matrix | router/conformance plus docker, os, wasm, ssh, ipc, cloud adapters and unavailable paths | `docs/L2/sandbox-conformance.md`, `docs/L3/runtime.md` | Conformance + provider-gated E2E |
+| S19 | Daemon, background, and supervision | subprocess/tmux/remote backends, `/bg`, `/supervisor`, manifest supervision | `docs/L2/daemon.md`, `docs/L3/runtime.md` | Direct daemon E2E + TUI smoke |
 
 Mark a subsystem `PASS` only when its scenario passes and its listed regression gate in
 §5 is green.
+
+### 2.1 Scope Ledger
+
+Use this ledger before signoff. A row may be `SKIPPED` only when the skip reason
+is environmental or the surface is explicitly marked not shipped.
+
+| Surface | Status for this bug bash | Required evidence |
+|---|---|---|
+| Artifact lifecycle, repair, TUI tools, S3/pluggable stores | Covered by S1-S3 and S12 | Q1-Q25, Q104-Q110, artifact gates |
+| Proactive delivery, sleep, cron, monitors, briefs, notify, composition | Covered by S4 and S13 | Q26-Q38, Q111-Q120, proactive gates |
+| Nexus boot, gateway sessions, adapter matrix | Covered by S5, S6, S15 | Q39-Q56, Q131-Q142, Nexus gates |
+| Scheduler and Temporal workflows | Covered by S7 and cross-subsystem stress | Q57-Q65, X1, X4, X7, scheduler gates |
+| Browser extension, Playwright, a11y, browser tool | Covered by S8 and S17 | Q66-Q78, Q151-Q157, browser gates |
+| Sandbox and executor adapters | Covered by S9 and S18 | Q79-Q87, Q158-Q166, sandbox gates |
+| Approval zones, permissions, governance defaults, runtime resilience | Covered by S10 and S14 | Q88-Q95, Q121-Q130, middleware/security gates |
+| Context/session repair | Covered by S11 | Q96-Q103, context/session gates |
+| Daemon/background/supervision | Covered by S19 | Q167-Q176, daemon/TUI gates |
+| Cairn, federation, cross-vault memory | Explicitly excluded | Confirm no Cairn/federation/cross-vault tests were added |
 
 ---
 
@@ -365,6 +395,180 @@ Use a throw-away Chrome profile.
 | Q102 | Repair transcript containing malformed JSONL line | fixture transcript | Bad line is quarantined or reported; surrounding valid transcript remains recoverable |
 | Q103 | Run two resumes against the same session file | two TUI/CLI starts | One writer owns append; loser fails or waits cleanly; session file remains parseable |
 
+### S12 — Artifact Pluggable Blob Stores + S3 Backend
+
+Run local adapter-contract tests first. Run S3-backed rows only when test
+credentials point to an isolated bucket/prefix.
+
+```bash
+bun test packages/lib/artifacts-s3 packages/lib/artifacts
+```
+
+| Q | Command | Setup | Pass Criteria |
+|---|---|---|---|
+| Q104 | Run the blob-store contract against local, memory, and S3 adapters | adapter contract harness | All adapters agree on `put`/`has`/`get`/`delete`/`list` semantics and error envelopes |
+| Q105 | Save and retrieve an artifact through the S3 backend | isolated S3 bucket/prefix | Bytes, hash, size, content type, and metadata round-trip exactly |
+| Q106 | Interrupt after remote blob `put` but before SQLite commit | S3 fake or fault injector | Reopen repair treats the orphan deterministically and repeated scavenges are idempotent |
+| Q107 | Interrupt after SQLite commit but before remote blob `put` | S3 fake or fault injector | Artifact is never served as ready until remote bytes exist; repair cap produces terminal state |
+| Q108 | S3 returns 403, 404, 409, 429, and 5xx for reads/writes/deletes | fake S3 transport | Errors classify as auth, not-found, conflict, rate-limit, or transient; caller can retry only transient cases |
+| Q109 | Two sessions write the same content hash to S3 concurrently | live or fake S3 | Content-addressed write is idempotent; no duplicate metadata rows or corrupted object body |
+| Q110 | Delete artifact while S3 delete is slow or fails transiently | fake slow S3 | Local row/tombstone state remains consistent; later scavenger drains or reports the pending delete |
+
+### S13 — Proactive Tool Suite + Composition
+
+These rows extend S4 beyond delivery into the tool/provider layer and
+composition engine.
+
+```bash
+bun test packages/lib/proactive/src/__tests__/integration.test.ts
+bun test packages/lib/proactive/src/__tests__/e2e/composition-e2e.test.ts
+```
+
+| Q | Command | Setup | Pass Criteria |
+|---|---|---|---|
+| Q111 | Create, list, update, cancel a sleep task through `createProactiveToolsProvider()` | fake scheduler | Schedule lifecycle is visible; cancel removes local state and stale schedules do not dedupe future creates |
+| Q112 | Create duplicate sleep/cron requests with same idempotency key | fake scheduler | Live schedule dedupes when appropriate; canceled schedule releases the key |
+| Q113 | Create cron with invalid expression, invalid timezone, and unsupported task options | provider harness | Validation rejects before scheduling and reports the rejected field |
+| Q114 | Create/list/update/cancel monitor with schedule rotation | fake scheduler + wake dispatcher | Update swaps the live schedule atomically; old schedule cannot fire stale monitor text |
+| Q115 | Force monitor update rollback when retiring the old schedule fails | fake scheduler returning `removed:false` / throwing | Original monitor record and schedule stay intact; error explains rollback |
+| Q116 | Create/list/update/cancel brief with channel delivery | fake scheduler + fake notify channel | Brief wake text includes topic/window; notify channel is required and cancel prevents future delivery |
+| Q117 | Run notify through channel resolver churn | dynamic `channel:*` provider set | Tool roster snapshots channels per provider turn; mid-turn channel churn cannot misroute notify |
+| Q118 | Composition planner emits spawn, notify, sleep, and schedule steps | composition E2E harness | Execution log records deterministic step keys; replay does not duplicate committed side effects |
+| Q119 | Kill composition execution after a committed step, then replay | persisted execution log fixture | Completed steps short-circuit on replay; uncommitted steps resume once; output is stable |
+| Q120 | Composition hits session cap, unsupported step, and adapter failure | composition E2E harness | Failure is bounded, classified, and does not poison later independent compositions |
+
+### S14 — Runtime Resilience + Governance Middleware
+
+These are runtime-level Phase 3 hardening surfaces that are easy to miss when
+only exercising package-local happy paths.
+
+```bash
+bun test packages/lib/middleware-circuit-breaker packages/lib/middleware-call-limits packages/lib/middleware-call-dedup
+bun test packages/security/governance-defaults packages/lib/middleware-policy-cache
+```
+
+| Q | Command | Setup | Pass Criteria |
+|---|---|---|---|
+| Q121 | Model provider returns repeated 429/timeout errors, then a healthy response | circuit-breaker harness | Circuit opens, rejects without provider call, enters half-open, and closes after successful probe |
+| Q122 | Cancel a half-open streaming probe mid-stream | circuit-breaker stream harness | Probe slot is released; circuit state does not remain stuck half-open |
+| Q123 | Exhaust per-tool, global-tool, and model-call budgets | call-limits harness | Limits block with canonical envelope; counters reset on `onSessionEnd` only |
+| Q124 | Call dedup cache hit followed by caller mutation of returned object | call-dedup harness | Cached value is deep-cloned; mutation cannot corrupt future responses |
+| Q125 | Concurrent identical tool misses plus one request with `signal`/metadata | call-dedup harness | Identical misses coalesce; signal/metadata request bypasses cache and does not populate it |
+| Q126 | End session while a deduped call is still in flight | call-dedup harness | Late result cannot repopulate the ended session generation |
+| Q127 | Governance defaults trip token, turn, duration, cost, and forge counters | runtime harness with fake governance | Each threshold produces the expected alert/block and reset behavior |
+| Q128 | Policy-cache verifier flips from allow to revoke between register and hit | forge policy-cache integration | Hit re-verifies, tombstones stale entry, and emits canonical deny before permissions |
+| Q129 | Policy-cache receives stale generation event after newer entry | forge store integration | Stale event is ignored; newer policy remains authoritative |
+| Q130 | Compose resilience middleware with permissions and sandbox enforcement | runtime golden harness | Priority order is stable; cache blocks do not enter inner permissions; sandbox-required tools stay hidden when unbacked |
+
+### S15 — Nexus Adapter Matrix
+
+Run package-level contracts against mock transports first. Live Nexus rows are
+gated by `KOI_E2E_NEXUS=1`.
+
+```bash
+bun test packages/security/permissions-nexus packages/security/permission-escalation-nexus packages/security/nexus-delegation
+bun test packages/lib/fs-nexus packages/lib/ipc-nexus packages/security/registry-nexus
+bun test packages/lib/search-nexus packages/lib/snapshot-store-nexus packages/lib/scratchpad-nexus packages/lib/workspace-nexus packages/lib/playbook-store-nexus
+```
+
+| Q | Command | Setup | Pass Criteria |
+|---|---|---|---|
+| Q131 | Run each Nexus adapter against its mock transport golden suite | package tests | Adapter maps request/response/error envelopes without leaking transport internals |
+| Q132 | Live Nexus smoke for permissions and permission escalation | `KOI_E2E_NEXUS=1` | Grants, denials, escalation records, and audit metadata persist across reconnect |
+| Q133 | Delegation adapter concurrent grant/revoke | fake or live Nexus | Last-writer/CAS behavior is deterministic; stale revoke cannot erase newer grant |
+| Q134 | FS Nexus read/write/list/delete with malformed paths and large payloads | fake or live Nexus | Paths remain opaque; errors are structured; large payload boundaries are enforced |
+| Q135 | IPC Nexus request/response with duplicate correlation ID | fake transport | Duplicate or late response is ignored or classified; no promise leak remains |
+| Q136 | Registry Nexus dual-generation CAS conflict and tombstone recovery | package harness | Conflict is surfaced; partial failure tombstones instead of silently downgrading phase |
+| Q137 | Search Nexus pagination, `min_score`, and version-skew metadata | package harness | Client-side post-filter preserves score boundary and drops unsafe pagination metadata |
+| Q138 | Snapshot store save/list/load/delete with concurrent writers | package harness | Snapshot IDs remain unique; reads never observe partial snapshot body |
+| Q139 | Scratchpad Nexus append/read/compact under transport failure | package harness | Failed append is not acknowledged; compaction preserves surviving records |
+| Q140 | Workspace Nexus create/attest/verify/invalidate with unhealthy Nexus | package harness | Health gates prevent unsafe fallback; setup attestation cannot be forged |
+| Q141 | Playbook store Nexus promotion gate parity with sqlite store | `middleware-ace` integration | Nexus and sqlite adapters produce equivalent promotion decisions for supported features |
+| Q142 | Kill Nexus during adapter batch, then reconnect | live Nexus proxy | Adapter reports degraded state and recovers without duplicate side effects |
+
+### S16 — Gateway HTTP, Canvas, and Webhook
+
+S6 covers the stack and Nexus session store. These rows cover the optional
+gateway-stack subsystems that ship in the same surface.
+
+```bash
+bun test packages/net/gateway packages/net/gateway-http packages/net/gateway-canvas packages/net/gateway-webhook packages/net/gateway-stack
+```
+
+| Q | Command | Setup | Pass Criteria |
+|---|---|---|---|
+| Q143 | Start gateway-stack with HTTP, canvas, webhook, and Nexus enabled | local ports + fake deps | Unified `start()` reports all components healthy and `stop()` tears all down |
+| Q144 | Start gateway-stack with canvas omitted and webhook enabled | local ports | Optional subsystem absence is reflected in health without failing the gateway |
+| Q145 | Send HTTP ingress request with valid, missing, and malformed auth | gateway-http harness | Valid request dispatches once; invalid auth returns structured 401/403 and no dispatch |
+| Q146 | Send oversized and malformed gateway HTTP payloads | gateway-http harness | Returns bounded 4xx; process stays healthy |
+| Q147 | Create/update/read/delete canvas surface state | gateway-canvas harness | State versioning is deterministic; concurrent update conflict is reported |
+| Q148 | Canvas auth failure during state mutation | gateway-canvas harness | Mutation is rejected before state write; audit/log redacts credentials |
+| Q149 | Webhook valid event, duplicate event, bad signature, and slow dispatcher | gateway-webhook harness | Signature gates dispatch; duplicate is idempotent; slow dispatcher times out cleanly |
+| Q150 | Kill webhook/canvas subserver while gateway remains up | gateway-stack harness | Stack health degrades only affected component and full stop remains idempotent |
+
+### S17 — Browser Automation Surfaces
+
+S8 remains the manual browser-extension smoke. These rows cover the other
+browser packages that appear in shipped runtime/browser surfaces.
+
+```bash
+bun test packages/drivers/browser-playwright packages/lib/browser-a11y packages/lib/tool-browser
+```
+
+| Q | Command | Setup | Pass Criteria |
+|---|---|---|---|
+| Q151 | Launch Playwright driver, navigate to static fixture, capture snapshot | local fixture server | Navigation result includes URL/title/body summary and closes browser context |
+| Q152 | Browser driver navigation timeout and DNS failure | fake bad URL / short timeout | Error is classified as navigation/timeout, not an unhandled browser crash |
+| Q153 | Run browser-a11y audit on accessible and inaccessible fixtures | local fixture pages | Violations are stable and include selectors; accessible fixture stays clean |
+| Q154 | Tool-browser request with private origin and file URL | tool harness | Private/local origin policy blocks or asks according to config; no silent navigation |
+| Q155 | Tool-browser concurrent page sessions | tool harness | Sessions are isolated; cookies/storage from one session do not bleed into another |
+| Q156 | Browser process crash during snapshot | Playwright crash harness | Tool returns structured crash error and cleans temp profile/process handles |
+| Q157 | Browser extension attach plus Playwright driver running simultaneously | throw-away Chrome profile | Debugger ownership is clear; neither path steals the other's tab attachment silently |
+
+### S18 — Sandbox Adapter Matrix + Conformance
+
+S9 covers the core adapters. These rows make every shipped adapter either run a
+contract or prove its unavailable behavior is honest.
+
+```bash
+bun test packages/sandbox/sandbox-conformance packages/sandbox/sandbox-router packages/lib/sandbox-cloud-base
+bun test packages/sandbox/sandbox-ssh packages/sandbox/sandbox-ipc packages/sandbox/sandbox-cloudflare packages/sandbox/sandbox-daytona packages/sandbox/sandbox-e2b packages/sandbox/sandbox-vercel
+```
+
+| Q | Command | Setup | Pass Criteria |
+|---|---|---|---|
+| Q158 | Run shared sandbox conformance suite across all locally runnable adapters | local env | Exec basics, cwd/env, stdout/stderr, timeout, and capability honesty pass |
+| Q159 | Router selects adapter by manifest and rejects ambiguous manifests | sandbox-router harness | Unsupported or ambiguous adapter fails closed before unsandboxed execution |
+| Q160 | SSH adapter with missing binary, auth failure, and pre-aborted signal | no live SSH required | Returns `UNAVAILABLE`/auth/canceled distinctly; no network retry loop |
+| Q161 | IPC adapter child exits before handshake and mid-command | sandbox-ipc harness | Parent classifies startup vs runtime failure and drains child process handles |
+| Q162 | Cloud base adapter maps provider errors to common causes | fake provider | Auth, quota, rate-limit, timeout, and not-implemented causes match the shared contract |
+| Q163 | Cloudflare adapter unavailable/no credentials path | no credentials | Constructor or first run returns documented unavailable/not-implemented status without partial deploy |
+| Q164 | Daytona/E2B/Vercel adapters with no credentials and fake success path | fake providers | Unavailable path is honest; fake success path satisfies conformance-required fields |
+| Q165 | Provider-backed sandbox tool exposed through middleware-sandbox | runtime harness | Tool is visible only when host explicitly marks that exact tool backed by the provider |
+| Q166 | Sandbox command emits huge stdout/stderr and exits after timeout | executor harness | Output is bounded; timeout classification wins; no late output mutates completed result |
+
+### S19 — Daemon, Background, and Supervision
+
+These rows cover Phase 3b runtime/TUI surfaces for background workers and
+supervisor visibility.
+
+```bash
+bun test packages/net/daemon packages/meta/runtime/src/__tests__
+```
+
+| Q | Command | Setup | Pass Criteria |
+|---|---|---|---|
+| Q167 | Spawn subprocess worker through daemon backend and watch events | daemon harness | `spawn`, `status`, `events`, `terminate`, and `kill` lifecycle events are ordered |
+| Q168 | Spawn tmux worker and list through `BackgroundSessionRegistry` | tmux available | `/bg`-equivalent registry shows same worker identity and status as subprocess backend |
+| Q169 | Remote backend over Nexus with heartbeat disabled/enabled | fake Nexus transport | Heartbeat-routed workers require explicit support; unsupported backend fails closed |
+| Q170 | Kill worker externally, then run supervisor reconcile | daemon harness | Health reports drift; reconciler owns restart and daemon does not double-restart |
+| Q171 | Worker terminate ambiguity followed by respawn | daemon harness | Respawn reports conflict until confirmed exit; cached liveness updates only after status poll |
+| Q172 | Duplicate lifecycle events across spawn buffer and poll batch | fake backend | Events are deduped; watchers do not receive duplicate terminal transitions |
+| Q173 | TUI `/bg` view during worker spawn, exit, and stale heartbeat | tmux TUI | Rows update without stale/flickering identity; detached/unmonitored states render correctly |
+| Q174 | TUI `/supervisor` view with healthy, degraded, terminating workers | tmux TUI | Health grouping and worker freshness match daemon snapshots |
+| Q175 | Manifest supervision load, update, and removal | runtime harness | Reconciler starts required children, applies removal, and respects restart ownership |
+| Q176 | Daemon teardown failure quarantine | daemon harness | Failed teardown is surfaced and quarantined; subsequent stop is idempotent |
+
 ## 4. Cross-Subsystem End-to-End Stress
 
 Run these after the per-subsystem scenarios. They intentionally compose shipped
@@ -378,6 +582,13 @@ Phase 3/4 surfaces so integration bugs are not hidden by package-only tests.
 | X4 | Approval zone denies a sandboxed command requested by a proactive workflow | approval zones + scheduler/proactive harness | Denial is classified as approval-required/denied, not as sandbox crash; retry policy does not loop forever |
 | X5 | Gateway session store outage during TUI artifact save and session resume | Nexus/gateway proxy + TUI | Local TUI remains usable; session repair/resume either uses local fallback or reports degraded remote state without corrupting JSONL |
 | X6 | Kill the process during simultaneous artifact repair, proactive timeout, and session append | direct harness with fake slow services | All close barriers settle; reopened stores/session logs are parseable; no unhandled rejection appears in stderr |
+| X7 | Proactive monitor fires a composition that saves an S3 artifact and notifies a channel | scheduler + proactive + S3 fake + channel fake | Schedule fires once; artifact write is atomic; notification references stable artifact metadata |
+| X8 | Runtime call-dedup/call-limits wrap a tool-browser snapshot saved as an artifact | runtime harness + browser fixture | Cache hits do not burn limits; artifact contains the intended snapshot; private-origin gates still apply |
+| X9 | Gateway webhook spawns a daemon-supervised worker that uses a Nexus adapter | gateway-stack + daemon + fake Nexus | Webhook dispatch is idempotent; worker lifecycle appears in registry; Nexus failures classify without duplicate spawn |
+| X10 | Sandbox router executes a provider-backed tool under approval zones and governance limits | runtime harness + sandbox provider fake | Approval and governance decisions happen before execution; backed-tool visibility is exact and audited |
+| X11 | Remote daemon backend loses Nexus during TUI `/supervisor` display | TUI + daemon + Nexus proxy | UI degrades affected backend only; reconnect restores health without duplicate worker rows |
+| X12 | Search Nexus result is used by proactive composition and then policy-cache blocks a follow-up tool | fake Nexus + proactive + runtime middleware | Search pagination/score metadata remains stable; policy-cache block stops inner permissions/executor |
+| X13 | S3 artifact repair runs while gateway-stack stop tears down canvas/webhook | S3 fake + gateway-stack harness | Both close barriers settle; no late gateway dispatch reads a half-repaired artifact |
 
 ## 5. Required Regression Gates
 
@@ -387,10 +598,18 @@ every non-skipped gate is green.
 ```bash
 bun test packages/meta/runtime/src/__tests__/artifacts-integration.test.ts
 bun test packages/lib/artifacts
+bun test packages/lib/artifacts-s3
 bun test packages/lib/proactive
 bun test packages/drivers/browser-ext
+bun test packages/drivers/browser-playwright packages/lib/browser-a11y packages/lib/tool-browser
 bun test packages/exec/temporal
 bun test packages/sandbox/sandbox-executor packages/sandbox/sandbox-docker packages/sandbox/sandbox-os packages/sandbox/sandbox-wasm
+bun test packages/sandbox/sandbox-conformance packages/sandbox/sandbox-router packages/lib/sandbox-cloud-base packages/sandbox/sandbox-ssh packages/sandbox/sandbox-ipc packages/sandbox/sandbox-cloudflare packages/sandbox/sandbox-daytona packages/sandbox/sandbox-e2b packages/sandbox/sandbox-vercel
+bun test packages/net/gateway packages/net/gateway-http packages/net/gateway-canvas packages/net/gateway-webhook packages/net/gateway-stack
+bun test packages/net/daemon
+bun test packages/lib/middleware-circuit-breaker packages/lib/middleware-call-limits packages/lib/middleware-call-dedup packages/lib/middleware-policy-cache
+bun test packages/security/governance-defaults packages/security/permissions-nexus packages/security/permission-escalation-nexus packages/security/nexus-delegation packages/security/registry-nexus
+bun test packages/lib/fs-nexus packages/lib/ipc-nexus packages/lib/search-nexus packages/lib/snapshot-store-nexus packages/lib/scratchpad-nexus packages/lib/workspace-nexus packages/lib/playbook-store-nexus
 bun test packages/lib/context-manager packages/mm/session-repair
 bun run check:layers check:orphans check:golden-queries check:doc-sync check:doc-gate check:doc-wiring
 ```
@@ -403,6 +622,10 @@ External-service skips must be explicit:
 | Nexus/Gateway E2E | Nexus container unavailable | Record missing dependency and run package unit/golden tests |
 | Browser extension manual smoke | Chrome/Brave unavailable | Record browser unavailable; still run build + native-host tests |
 | Docker sandbox | Docker daemon unavailable | Verify unavailable error path |
+| S3 artifact E2E | Isolated S3 bucket/prefix unavailable | Run fake S3/adapter contract and record no live S3 credentials |
+| Browser Playwright/a11y smoke | Browser binary unavailable | Record missing browser; still run package unit tests where no browser launch is needed |
+| Cloud sandbox adapters | Provider credentials unavailable | Run unavailable-path and fake-provider contract rows |
+| Daemon tmux backend | `tmux` unavailable | Run subprocess/remote backend rows and record tmux skip |
 
 ---
 
@@ -415,8 +638,10 @@ Use this checklist before declaring the bug bash complete:
 - [ ] Degraded dependencies covered: Nexus down/slow/malformed, Temporal unavailable/restarted, Docker unavailable, browser host killed.
 - [ ] Permission precedence covered: explicit allow, explicit deny, zone deny, broad session allow, interrupt during approval.
 - [ ] Persistence covered: reopen after crash, duplicate resume, corrupted JSONL/DB/blob, stale manifest/profile files.
+- [ ] Adapter matrices covered: every shipped Nexus, sandbox, browser, gateway, and artifact backend either passed a contract or has an explicit environmental skip.
+- [ ] Runtime middleware order covered: resilience, governance, permissions, sandbox, and policy-cache interactions preserve priority and fail-closed behavior.
 - [ ] Error envelopes captured before model summarization.
-- [ ] Cross-subsystem stress X1-X6 run or skipped with concrete environment reason.
+- [ ] Cross-subsystem stress X1-X13 run or skipped with concrete environment reason.
 - [ ] No Cairn/federation/cross-vault memory tests added.
 
 ## 7. Pass / Fail Signoff
@@ -424,11 +649,12 @@ Use this checklist before declaring the bug bash complete:
 Use this checklist at the end of the run:
 
 - [ ] All TUI scenarios S3 and S10 completed or have filed bugs.
-- [ ] Direct E2E scenarios S1, S2, S4, S7, S8, S9, S11 completed, including corner rows, or have documented skips.
+- [ ] Direct E2E scenarios S1, S2, S4, S7, S8, S9, S11-S19 completed, including corner rows, or have documented skips.
 - [ ] Nexus/gateway scenarios S5 and S6 completed against a live Nexus, or skipped with dependency note.
-- [ ] Cross-subsystem stress scenarios X1-X6 completed or skipped with dependency note.
+- [ ] Cross-subsystem stress scenarios X1-X13 completed or skipped with dependency note.
 - [ ] Regression gates in §5 are green for every available dependency.
 - [ ] `$BUG_LOG` contains one entry per failure with transcript/log pointers.
 - [ ] No P0/P1 remains untriaged.
 - [ ] Phase 3/4 coverage table in §2 has an owner signoff for every row.
+- [ ] Scope ledger in §2.1 has `PASS`, `SKIPPED`, or `EXCLUDED` status for every shipped or deferred surface.
 - [ ] Cairn-related tests remained excluded.
