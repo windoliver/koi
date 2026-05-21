@@ -135,6 +135,35 @@ function preflightManifestRequired(flags: CliFlags): DispatchResult | undefined 
   return undefined;
 }
 
+async function preflightTuiManifest(flags: TuiFlags): Promise<DispatchResult | undefined> {
+  const skipManifestDiscovery =
+    flags.noManifest || (flags.resume !== undefined && flags.manifest === undefined);
+  const manifest = resolveManifestPath(process.cwd(), flags.manifest, skipManifestDiscovery);
+  if (!manifest.ok) {
+    return { kind: "exit", code: 1, stderr: `koi tui: ${manifest.error}\n` };
+  }
+  if (manifest.path === undefined) return undefined;
+
+  const { loadManifestConfig } = await import("./manifest.js");
+  const manifestResult = await loadManifestConfig(manifest.path, {
+    allowOAuthSchemes: true,
+    skipAuditValidation: false,
+    skipAuditValidationFor: {
+      ndjson: process.env.KOI_AUDIT_NDJSON !== undefined,
+      sqlite: process.env.KOI_AUDIT_SQLITE !== undefined,
+      violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
+    },
+  });
+  if (!manifestResult.ok) {
+    return {
+      kind: "exit",
+      code: 1,
+      stderr: `koi tui: invalid manifest — ${manifestResult.error}\n`,
+    };
+  }
+  return undefined;
+}
+
 /**
  * Parse rawArgv, apply the short-circuit checks, and (for known
  * commands) load the command module. Does **not** call
@@ -180,6 +209,9 @@ export async function runDispatch(
   }
 
   if (isTuiFlags(flags)) {
+    const manifestPreflight = await preflightTuiManifest(flags);
+    if (manifestPreflight !== undefined) return manifestPreflight;
+
     // TUI has a re-exec dance for solid-js's export-condition quirk.
     // bin.ts handles the re-exec; bench-entry.ts should not benchmark
     // the TUI path (we measure `koi start`, not `koi tui`). Return a
