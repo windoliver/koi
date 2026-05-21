@@ -312,6 +312,10 @@ const PERMISSION_DENIAL_MARKERS: readonly string[] = [
   // headlessDenyHandler's fail-closed reason; matches the approval-handler
   // path (Bash uncertain-AST elicit, MCP tools requesting approval).
   "headless mode: interactive approval",
+  // middleware-exfiltration-guard fail-closed blocks. Fixed-vocabulary
+  // prefix from middleware.ts ({tool input, tool output, model output,
+  // terminal model response} secret detection + redaction-engine failure).
+  "Exfiltration guard:",
 ];
 
 /**
@@ -397,18 +401,43 @@ function extractEngineErrorMessage(
   metadata: Readonly<Record<string, unknown>> | undefined,
 ): string | undefined {
   if (metadata === undefined) return undefined;
-  // Three conventions exist on the error-terminal done event:
-  //   - koi.ts KoiRuntimeError guard → metadata.errorMessage
-  //   - query-engine consume-stream (model/stream errors: provider 4xx,
-  //     error chunk, stream abort) → metadata.error
-  //   - middleware-rlm buildErrorResponse/buildAbortResponse → metadata.rlmStreamError
-  // Reading only one of these silently dropped messages from the other two
-  // paths, surfacing the contentless "engine reported error" and defeating
-  // timeout/permission classification. Only the message LENGTH and
-  // fixed-marker `.includes()` checks are used downstream — raw content
-  // still never reaches CI logs.
-  const em = metadata.errorMessage ?? metadata.error ?? metadata.rlmStreamError;
-  return typeof em === "string" ? em : undefined;
+  // Multiple metadata conventions exist on the error-terminal done event.
+  // Most importantly, `query-engine/turn-runner.ts` wraps EVERY non-completed
+  // model_stream done into `{ source, originalStopReason, providerDetail }`
+  // where `providerDetail` is the inner metadata (e.g. consume-stream's
+  // `{ error }`, rlm's `{ rlmStreamError }`, or exfil-guard's
+  // `{ error, errorCode, retryable }`). Reading only the top-level keys
+  // therefore never catches model_stream failures in practice — the message
+  // is always nested. `engine-stop-explanation.ts` already knows the right
+  // shape; mirror it here.
+  //
+  //   - koi.ts KoiRuntimeError guard           → metadata.errorMessage
+  //   - persist-engine-state loadState         → metadata.message
+  //   - query-engine consume-stream (raw)      → metadata.error
+  //   - middleware-rlm (raw)                   → metadata.rlmStreamError
+  //   - turn-runner model_stream wrap          → metadata.providerDetail.{error, message, errorMessage, rlmStreamError}
+  //
+  // Only the message LENGTH and fixed-marker `.includes()` checks are used
+  // downstream — raw content still never reaches CI logs.
+  const direct =
+    metadata.errorMessage ?? metadata.message ?? metadata.error ?? metadata.rlmStreamError;
+  if (typeof direct === "string") return direct;
+  // Unpack the turn-runner's providerDetail wrap. Inner shape varies:
+  // exfil-guard sets `error: string`, consume-stream sets `error: string`,
+  // some adapters set `error: { message: string }`.
+  const pd = metadata.providerDetail;
+  if (typeof pd === "object" && pd !== null) {
+    const pdObj = pd as Readonly<Record<string, unknown>>;
+    const pdErr = pdObj.error;
+    if (typeof pdErr === "string") return pdErr;
+    if (typeof pdErr === "object" && pdErr !== null) {
+      const pdErrMsg = (pdErr as { readonly message?: unknown }).message;
+      if (typeof pdErrMsg === "string") return pdErrMsg;
+    }
+    const inner = pdObj.errorMessage ?? pdObj.message ?? pdObj.rlmStreamError;
+    if (typeof inner === "string") return inner;
+  }
+  return undefined;
 }
 
 /**

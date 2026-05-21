@@ -940,6 +940,114 @@ describe("runHeadless", () => {
     expect(exitCode).toBe(2);
   });
 
+  test("done event wrapped by turn-runner (providerDetail.error string) is unpacked and classified", async () => {
+    // Regression captured live from clawbench mem-003: query-engine
+    // turn-runner.ts:222-228 wraps EVERY non-completed model_stream done
+    // into {source, originalStopReason, providerDetail: <inner metadata>}.
+    // Reading only top-level keys (errorMessage/error/rlmStreamError)
+    // therefore never catches model_stream failures in practice — exact
+    // metadata shape observed from a real run is reproduced here.
+    const { exitCode } = await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "error",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+            metadata: {
+              source: "model_stream",
+              originalStopReason: "error",
+              providerDetail: {
+                error: "Exfiltration guard: 2 secret(s) detected in model output — blocked",
+                errorCode: "PERMISSION",
+                retryable: false,
+              },
+            },
+          },
+        },
+      ]),
+    });
+    // Exfiltration guard is a permission-class fail-closed block.
+    expect(exitCode).toBe(2);
+  });
+
+  test("done event wrapped by turn-runner (providerDetail.error object with .message) is unpacked", async () => {
+    // Some adapters set providerDetail.error to an object with .message.
+    const { exitCode } = await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "error",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+            metadata: {
+              source: "model_stream",
+              providerDetail: { error: { message: 'Tool "Bash" is denied by policy' } },
+            },
+          },
+        },
+      ]),
+    });
+    expect(exitCode).toBe(2);
+  });
+
+  test("done event with metadata.message (persist-engine-state path) is surfaced", async () => {
+    // persist-engine-state.ts:247-258 emits stopReason "error" with
+    // metadata.message — fourth convention.
+    const { exitCode } = await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "error",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+            metadata: {
+              source: "persist-engine-state:loadState",
+              message: 'Tool "X" not in allow list (default deny)',
+            },
+          },
+        },
+      ]),
+    });
+    expect(exitCode).toBe(2);
+  });
+
   test("done event with stopReason=error using metadata.rlmStreamError key → message classified (exit 2)", async () => {
     // Regression: middleware-rlm's buildErrorResponse/buildAbortResponse
     // (rlm.ts:161-191) sets stopReason "error" with metadata.rlmStreamError —
