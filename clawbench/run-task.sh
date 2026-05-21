@@ -73,6 +73,24 @@ else
   EXFIL_DOWNGRADE_KV="KOI_EXFIL_ALLOW_DOWNGRADE=0"
 fi
 
+# Exfiltration guard exemption for *workspace file-write tools*. Several
+# ClawBench tasks REQUIRE writing credentials/tokens to a local workspace
+# file (e.g. tool-003 generates a `.env`; file-007 converts JSON-with-API-keys
+# to YAML). With "block" mode, the guard treats those legitimate writes as
+# exfiltration and the agent cannot complete the task no matter how many
+# iterations it retries. Exempting fs_write/fs_edit lets the *args destined
+# for those tools* skip secret scanning; tool *output* scanning still runs,
+# and the rich allowlist of network/shell tools is untouched — so reading
+# secrets from disk and POSTing them via web_fetch is still blocked.
+# Gated by KOI_EXFIL_ALLOW_DOWNGRADE on the koi side, so this only takes
+# effect when the operator explicitly opts in (above). Disabled on the
+# strict path so default benchmarking remains fail-closed.
+if [ "${CLAWBENCH_EXFIL_DOWNGRADE:-0}" = "1" ]; then
+  EXFIL_EXEMPT_KV="KOI_EXFIL_EXEMPT_TOOLS=fs_write,fs_edit"
+else
+  EXFIL_EXEMPT_KV="KOI_EXFIL_EXEMPT_TOOLS="
+fi
+
 # Minimal allowlisted environment for every untrusted child (setup.sh + koi).
 # `env -i` wipes the inherited environment; we re-add only non-sensitive
 # runtime essentials. No secrets here — the model key is added to the koi
@@ -233,14 +251,19 @@ if echo " $HEAVY_TASKS " | grep -qF " $TASK_ID "; then
   MAX_TURNS=60
 else
   TOKEN_LADDER=(8000 16000 32000 64000)
-  MAX_TURNS=25
+  # Bumped from engine DEFAULT_MAX_TURNS=25 to 40 after observing 6 non-heavy
+  # tasks (cs-004, doc-004, doc-008, web-010, wfl-011, wfl-012) hitting the
+  # 25-turn cap mid-task. These are batch-mutation flows (rename N files,
+  # restructure document, diff two HTML trees) that legitimately need more
+  # than 25 tool calls. 40 is still well below HEAVY's 60 and bounds cost.
+  MAX_TURNS=40
 fi
 cap_idx=0
 for iter in $(seq 1 $MAX_ITER); do
   iter_cap="${TOKEN_LADDER[$cap_idx]}"
   echo "--- iter $iter (max_tokens=$iter_cap) ---" >&2
   _with_timeout "$KOI_TIMEOUT" env -i "${SAFE_ENV[@]}" \
-    "$EXFIL_ACTION_KV" "$EXFIL_DOWNGRADE_KV" \
+    "$EXFIL_ACTION_KV" "$EXFIL_DOWNGRADE_KV" "$EXFIL_EXEMPT_KV" \
     "KOI_MAX_TOKENS=$iter_cap" \
     "$MODEL_KEY_KV" \
     bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" start \

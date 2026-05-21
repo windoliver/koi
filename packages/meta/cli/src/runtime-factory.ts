@@ -3052,9 +3052,30 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     }
     resolvedExfilAction = undefined; // middleware default (block)
   }
-  const exfiltrationGuardMw = createExfiltrationGuardMiddleware(
-    resolvedExfilAction !== undefined ? { action: resolvedExfilAction } : undefined,
-  );
+  // KOI_EXFIL_EXEMPT_TOOLS=fs_write,fs_edit lets the guard skip secret scanning
+  // on tool_call args for the named tools (their tool-output scan still runs).
+  // Gated behind KOI_EXFIL_ALLOW_DOWNGRADE for the same reason as KOI_EXFIL_ACTION:
+  // weakening the guard must be a deliberate opt-in, not an inherited env value.
+  let resolvedExfilExemptTools: ReadonlySet<string> | undefined;
+  const exfilExemptRaw = process.env.KOI_EXFIL_EXEMPT_TOOLS;
+  if (exfilExemptRaw !== undefined && exfilExemptRaw.length > 0) {
+    if (exfilDowngradeAllowed) {
+      resolvedExfilExemptTools = new Set(
+        exfilExemptRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0),
+      );
+    } else {
+      console.warn(
+        `[koi] ignoring KOI_EXFIL_EXEMPT_TOOLS=${exfilExemptRaw}: set KOI_EXFIL_ALLOW_DOWNGRADE=1 to permit exempting tools from the exfiltration guard`,
+      );
+    }
+  }
+  const exfiltrationGuardMw = createExfiltrationGuardMiddleware({
+    ...(resolvedExfilAction !== undefined ? { action: resolvedExfilAction } : {}),
+    ...(resolvedExfilExemptTools !== undefined ? { exemptToolIds: resolvedExfilExemptTools } : {}),
+  });
 
   // --- @koi/middleware-tool-error-formatter: convert tool throws to model-readable responses ---
   // Catches throws via wrapToolCall (priority 170, resolve phase) and returns a
