@@ -5,8 +5,12 @@ set -uo pipefail
 
 DOMAIN="${1:?domain required (e.g. file-operations)}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TASKS_DOMAIN_DIR="/tmp/claw-bench-src/tasks/$DOMAIN"
+CLAWBENCH_SRC="${CLAWBENCH_SRC:-/tmp/claw-bench-src}"
+TASKS_DOMAIN_DIR="$CLAWBENCH_SRC/tasks/$DOMAIN"
 SUMMARY="$REPO_ROOT/clawbench/results/SUMMARY-$DOMAIN.txt"
+
+# Ensure the task source tree exists (clones the koi-maintained fork on first run).
+[ -d "$CLAWBENCH_SRC/tasks" ] || CLAWBENCH_SRC="$CLAWBENCH_SRC" "$REPO_ROOT/clawbench/setup-tasks.sh" >/dev/null
 # Write progress to a temp file and only promote it to the canonical
 # SUMMARY-<domain>.txt atomically once every task in the domain has been
 # processed. This prevents an interrupted/aborted run from leaving a partial

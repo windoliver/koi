@@ -3,8 +3,12 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TASKS_ROOT="/tmp/claw-bench-src/tasks"
+CLAWBENCH_SRC="${CLAWBENCH_SRC:-/tmp/claw-bench-src}"
+TASKS_ROOT="$CLAWBENCH_SRC/tasks"
 SUMMARY="$REPO_ROOT/clawbench/results/SUMMARY.txt"
+
+# Ensure the task source tree exists (clones the koi-maintained fork on first run).
+[ -d "$TASKS_ROOT" ] || CLAWBENCH_SRC="$CLAWBENCH_SRC" "$REPO_ROOT/clawbench/setup-tasks.sh" >/dev/null
 
 QUICK_IDS=(
   file-002 code-002 eml-001 data-002 debug-001
