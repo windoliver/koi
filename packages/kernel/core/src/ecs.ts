@@ -37,19 +37,22 @@ import type { ZoneRegistry } from "./zone.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __brand: unique symbol;
-
+// Brands use a private string-literal-keyed property rather than a
+// `unique symbol`. Symbol-keyed brands lose identity when tsup splits these
+// declarations into a hashed shared .d.ts chunk (the `declare const … unique
+// symbol` gets duplicated across chunks, producing two distinct symbols and
+// therefore incompatible branded types — see cli typecheck breakage). A
+// string-literal key is compared structurally, so it is stable across chunks
+// and build hosts while preserving the same nominal distinctness.
 export type SubsystemToken<T> = string & {
-  readonly [__brand]: T;
+  readonly __koiBrand: T;
 };
-
-declare const __groupBrand: unique symbol;
 
 /**
  * Branded string type for agent group identifiers.
  * Groups are runtime constructs — assigned at spawn time, not in the manifest.
  */
-export type AgentGroupId = string & { readonly [__groupBrand]: "AgentGroupId" };
+export type AgentGroupId = string & { readonly __groupBrand: "AgentGroupId" };
 
 /** Create a branded AgentGroupId from a plain string. */
 export function agentGroupId(id: string): AgentGroupId {
@@ -81,38 +84,26 @@ export const AGENT_SIGNALS = {
 /** Union of the well-known signal strings. */
 export type AgentSignal = (typeof AGENT_SIGNALS)[keyof typeof AGENT_SIGNALS];
 
-declare const __agentBrand: unique symbol;
-
 /**
  * Branded string type for agent identifiers.
  * Prevents accidental mixing with session IDs, delegation IDs, etc.
  */
-export type AgentId = string & { readonly [__agentBrand]: "AgentId" };
-
-declare const __sessionBrand: unique symbol;
+export type AgentId = string & { readonly __agentBrand: "AgentId" };
 
 /** Branded string type for session identifiers. */
-export type SessionId = string & { readonly [__sessionBrand]: "SessionId" };
-
-declare const __artifactBrand: unique symbol;
+export type SessionId = string & { readonly __sessionBrand: "SessionId" };
 
 /** Branded string type for artifact identifiers. */
-export type ArtifactId = string & { readonly [__artifactBrand]: "ArtifactId" };
-
-declare const __runBrand: unique symbol;
+export type ArtifactId = string & { readonly __artifactBrand: "ArtifactId" };
 
 /** Branded string type for run identifiers (one per run() invocation). */
-export type RunId = string & { readonly [__runBrand]: "RunId" };
-
-declare const __turnBrand: unique symbol;
+export type RunId = string & { readonly __runBrand: "RunId" };
 
 /** Branded string type for turn identifiers. Hierarchical: `${runId}:t${turnIndex}`. */
-export type TurnId = string & { readonly [__turnBrand]: "TurnId" };
-
-declare const __toolCallBrand: unique symbol;
+export type TurnId = string & { readonly __turnBrand: "TurnId" };
 
 /** Branded string type for tool call identifiers. */
-export type ToolCallId = string & { readonly [__toolCallBrand]: "ToolCallId" };
+export type ToolCallId = string & { readonly __toolCallBrand: "ToolCallId" };
 
 // ---------------------------------------------------------------------------
 // Token & ID factories (branded casts — sole runtime code in L0)
