@@ -116,8 +116,7 @@ export interface Violation {
  * generate globally-unique askIds (e.g., via crypto.randomUUID) — this is a
  * documented invariant; consumers rely on it for inflight coalescing.
  */
-declare const __askIdBrand: unique symbol;
-export type AskId = string & { readonly [__askIdBrand]: "AskId" };
+export type AskId = string & { readonly __askIdBrand: "AskId" };
 
 /** Create a branded AskId from a plain string. */
 export function askId(id: string): AskId {

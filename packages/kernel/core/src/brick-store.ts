@@ -560,9 +560,7 @@ export interface StoreChangeNotifier extends ChangeNotifier<StoreChangeEvent> {}
 // Advisory lock — orthogonal to ForgeStore, for backends that support it
 // ---------------------------------------------------------------------------
 
-declare const __lockBrand: unique symbol;
-
-export type LockHandle = string & { readonly [__lockBrand]: "LockHandle" };
+export type LockHandle = string & { readonly __lockBrand: "LockHandle" };
 
 export type LockMode = "shared" | "exclusive";
 

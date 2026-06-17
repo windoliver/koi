@@ -12,10 +12,8 @@
 // Branded type
 // ---------------------------------------------------------------------------
 
-declare const __zoneBrand: unique symbol;
-
 /** Branded string type for zone identifiers. */
-export type ZoneId = string & { readonly [__zoneBrand]: "ZoneId" };
+export type ZoneId = string & { readonly __zoneBrand: "ZoneId" };
 
 /** Create a branded ZoneId from a plain string. */
 export function zoneId(id: string): ZoneId {

@@ -13,13 +13,11 @@ import type { AgentId, ToolCallId } from "./ecs.js";
 // Branded handoff ID
 // ---------------------------------------------------------------------------
 
-declare const __handoffBrand: unique symbol;
-
 /**
  * Branded string type for handoff envelope identifiers.
  * Prevents accidental mixing with other string IDs at compile time.
  */
-export type HandoffId = string & { readonly [__handoffBrand]: "HandoffId" };
+export type HandoffId = string & { readonly __handoffBrand: "HandoffId" };
 
 /** Create a branded HandoffId from a plain string. */
 export function handoffId(raw: string): HandoffId {

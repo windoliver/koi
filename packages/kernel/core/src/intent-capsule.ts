@@ -22,13 +22,11 @@ import type { AgentId, SessionId } from "./ecs.js";
 // Branded capsule ID
 // ---------------------------------------------------------------------------
 
-declare const __capsuleBrand: unique symbol;
-
 /**
  * Branded string type for intent capsule identifiers.
  * Prevents accidental mixing with other ID types at compile time.
  */
-export type CapsuleId = string & { readonly [__capsuleBrand]: "CapsuleId" };
+export type CapsuleId = string & { readonly __capsuleBrand: "CapsuleId" };
 
 /** Create a branded CapsuleId from a plain string. */
 export function capsuleId(raw: string): CapsuleId {

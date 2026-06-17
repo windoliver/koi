@@ -25,13 +25,11 @@ import type { AgentId, SessionId } from "./ecs.js";
 // Branded capability ID
 // ---------------------------------------------------------------------------
 
-declare const __capabilityBrand: unique symbol;
-
 /**
  * Branded string type for capability token identifiers.
  * Prevents accidental mixing with DelegationId or other string IDs at compile time.
  */
-export type CapabilityId = string & { readonly [__capabilityBrand]: "CapabilityId" };
+export type CapabilityId = string & { readonly __capabilityBrand: "CapabilityId" };
 
 /** Create a branded CapabilityId from a plain string. */
 export function capabilityId(raw: string): CapabilityId {

@@ -13,13 +13,11 @@
  * as zero-logic operations for type safety.
  */
 
-declare const __nexusPathBrand: unique symbol;
-
 /**
  * Branded string type for Nexus namespace paths.
  * Must not contain `..`, must not start with `/`, max 512 characters.
  */
-export type NexusPath = string & { readonly [__nexusPathBrand]: "NexusPath" };
+export type NexusPath = string & { readonly __nexusPathBrand: "NexusPath" };
 
 /** Create a branded NexusPath from a plain string. */
 export function nexusPath(raw: string): NexusPath {

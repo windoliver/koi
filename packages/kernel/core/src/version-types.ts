@@ -16,13 +16,11 @@ import type { BrickKind } from "./forge-types.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __publisherIdBrand: unique symbol;
-
 /**
  * Branded string for publisher identity.
  * Prevents mixing publisher IDs with other string-typed IDs at compile time.
  */
-export type PublisherId = string & { readonly [__publisherIdBrand]: "PublisherId" };
+export type PublisherId = string & { readonly __publisherIdBrand: "PublisherId" };
 
 /** Create a PublisherId from a raw string. */
 export function publisherId(raw: string): PublisherId {

@@ -20,15 +20,11 @@ import type { KoiError } from "./errors.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __taskBrand: unique symbol;
-
 /** Branded string type for scheduled task identifiers. */
-export type TaskId = string & { readonly [__taskBrand]: "TaskId" };
-
-declare const __scheduleBrand: unique symbol;
+export type TaskId = string & { readonly __taskBrand: "TaskId" };
 
 /** Branded string type for cron schedule identifiers. */
-export type ScheduleId = string & { readonly [__scheduleBrand]: "ScheduleId" };
+export type ScheduleId = string & { readonly __scheduleBrand: "ScheduleId" };
 
 // ---------------------------------------------------------------------------
 // Branded type constructors (zero-logic casts)

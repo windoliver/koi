@@ -112,13 +112,11 @@ export type CapabilityProof =
 // Branded delegation ID
 // ---------------------------------------------------------------------------
 
-declare const __delegationBrand: unique symbol;
-
 /**
  * Branded string type for delegation grant identifiers.
  * Prevents accidental mixing with other string IDs at compile time.
  */
-export type DelegationId = string & { readonly [__delegationBrand]: "DelegationId" };
+export type DelegationId = string & { readonly __delegationBrand: "DelegationId" };
 
 /** Create a branded DelegationId from a plain string. */
 export function delegationId(raw: string): DelegationId {

@@ -23,10 +23,8 @@ import type { ArtifactRef, DecisionRecord } from "./handoff.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __taskItemBrand: unique symbol;
-
 /** Branded string type for task board item identifiers. */
-export type TaskItemId = string & { readonly [__taskItemBrand]: "TaskItemId" };
+export type TaskItemId = string & { readonly __taskItemBrand: "TaskItemId" };
 
 // ---------------------------------------------------------------------------
 // Branded type constructors (zero-logic casts)

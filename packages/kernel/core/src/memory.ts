@@ -24,11 +24,9 @@
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __memoryRecordBrand: unique symbol;
-
 /** Branded string type for memory record identifiers. */
 export type MemoryRecordId = string & {
-  readonly [__memoryRecordBrand]: "MemoryRecordId";
+  readonly __memoryRecordBrand: "MemoryRecordId";
 };
 
 // ---------------------------------------------------------------------------

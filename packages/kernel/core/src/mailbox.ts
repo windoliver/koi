@@ -17,10 +17,8 @@ import type { KoiError, Result } from "./errors.js";
 // Branded MessageId
 // ---------------------------------------------------------------------------
 
-declare const __messageBrand: unique symbol;
-
 /** Branded string type for message identifiers. */
-export type MessageId = string & { readonly [__messageBrand]: "MessageId" };
+export type MessageId = string & { readonly __messageBrand: "MessageId" };
 
 /** Create a branded MessageId from a plain string. */
 export function messageId(raw: string): MessageId {

@@ -16,11 +16,9 @@ import type { KoiError, Result } from "./errors.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __transcriptEntryIdBrand: unique symbol;
-
 /** Branded string type for transcript entry identifiers. */
 export type TranscriptEntryId = string & {
-  readonly [__transcriptEntryIdBrand]: "TranscriptEntryId";
+  readonly __transcriptEntryIdBrand: "TranscriptEntryId";
 };
 
 /** Create a branded TranscriptEntryId from a plain string. */

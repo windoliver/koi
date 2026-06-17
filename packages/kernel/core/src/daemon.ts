@@ -22,8 +22,7 @@ import type { RestartType } from "./supervision.js";
 // WorkerId — branded identity
 // ---------------------------------------------------------------------------
 
-declare const __workerIdBrand: unique symbol;
-export type WorkerId = string & { readonly [__workerIdBrand]: "WorkerId" };
+export type WorkerId = string & { readonly __workerIdBrand: "WorkerId" };
 export const workerId = (s: string): WorkerId => s as WorkerId;
 
 // ---------------------------------------------------------------------------

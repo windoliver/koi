@@ -166,17 +166,15 @@ type AnomalySignal = AnomalyBase & AnomalyDetail;
  * walking, and pruning. Reusable for agents (via AgentSnapshot) and bricks.
  */
 
-declare const __chainIdBrand: unique symbol;
 /** Branded string for chain identity. Each chain is an independent snapshot sequence. */
 type ChainId = string & {
-    readonly [__chainIdBrand]: "ChainId";
+    readonly __chainIdBrand: "ChainId";
 };
 /** Create a ChainId from a raw string. */
 declare function chainId(raw: string): ChainId;
-declare const __nodeIdBrand: unique symbol;
 /** Branded string for node identity. Each node is a unique snapshot in the DAG. */
 type NodeId = string & {
-    readonly [__nodeIdBrand]: "NodeId";
+    readonly __nodeIdBrand: "NodeId";
 };
 /** Create a NodeId from a raw string. */
 declare function nodeId(raw: string): NodeId;
@@ -463,13 +461,12 @@ interface BrickComponentMap {
  * for branded identity.
  */
 
-declare const __bundleIdBrand: unique symbol;
 /**
  * Branded string for bundle identity.
  * Prevents mixing bundle IDs with other string-typed IDs at compile time.
  */
 type BundleId = string & {
-    readonly [__bundleIdBrand]: "BundleId";
+    readonly __bundleIdBrand: "BundleId";
 };
 /** Create a BundleId from a raw string. */
 declare function bundleId(raw: string): BundleId;
@@ -512,13 +509,12 @@ interface AgentBundle {
  * - type guard isCapabilityToken
  */
 
-declare const __capabilityBrand: unique symbol;
 /**
  * Branded string type for capability token identifiers.
  * Prevents accidental mixing with DelegationId or other string IDs at compile time.
  */
 type CapabilityId = string & {
-    readonly [__capabilityBrand]: "CapabilityId";
+    readonly __capabilityBrand: "CapabilityId";
 };
 /** Create a branded CapabilityId from a plain string. */
 declare function capabilityId(raw: string): CapabilityId;
@@ -1372,10 +1368,9 @@ interface UsagePurposeObservation {
  * as a zero-logic identity cast for type safety.
  */
 
-declare const __harnessIdBrand: unique symbol;
 /** Branded string type for harness identifiers. */
 type HarnessId = string & {
-    readonly [__harnessIdBrand]: "HarnessId";
+    readonly __harnessIdBrand: "HarnessId";
 };
 /** Create a branded HarnessId from a plain string. */
 declare function harnessId(raw: string): HarnessId;
@@ -1543,13 +1538,12 @@ interface KernelExtension {
  * Exception: branded type constructors (identity casts) are permitted in L0
  * as zero-logic operations for type safety.
  */
-declare const __nexusPathBrand: unique symbol;
 /**
  * Branded string type for Nexus namespace paths.
  * Must not contain \`..\`, must not start with \`/\`, max 512 characters.
  */
 type NexusPath = string & {
-    readonly [__nexusPathBrand]: "NexusPath";
+    readonly __nexusPathBrand: "NexusPath";
 };
 /** Create a branded NexusPath from a plain string. */
 declare function nexusPath(raw: string): NexusPath;
@@ -1671,13 +1665,12 @@ interface CriterionResult {
  * Format-agnostic: no ATIF concepts. ATIF document linkage is handled in runtime.
  */
 
-declare const __decisionCorrelationBrand: unique symbol;
 /**
  * Branded string type for decision correlation identifiers.
  * Used to link agent decisions to downstream business outcomes.
  */
 type DecisionCorrelationId = string & {
-    readonly [__decisionCorrelationBrand]: "DecisionCorrelationId";
+    readonly __decisionCorrelationBrand: "DecisionCorrelationId";
 };
 /** Create a branded DecisionCorrelationId from a plain string. */
 declare function decisionCorrelationId(id: string): DecisionCorrelationId;
@@ -1843,13 +1836,12 @@ interface PermissionEscalation {
  * invariants with zero logic.
  */
 
-declare const __proposalBrand: unique symbol;
 /**
  * Branded string type for proposal identifiers.
  * Prevents accidental mixing with other string IDs at compile time.
  */
 type ProposalId = string & {
-    readonly [__proposalBrand]: "ProposalId";
+    readonly __proposalBrand: "ProposalId";
 };
 /** Create a branded ProposalId from a plain string. */
 declare function proposalId(raw: string): ProposalId;
@@ -2759,17 +2751,15 @@ interface SystemSignalSource {
  * only on L0 types.
  */
 
-declare const __threadIdBrand: unique symbol;
 /** Branded string type for thread identifiers. */
 type ThreadId = string & {
-    readonly [__threadIdBrand]: "ThreadId";
+    readonly __threadIdBrand: "ThreadId";
 };
 /** Create a branded ThreadId from a plain string. */
 declare function threadId(raw: string): ThreadId;
-declare const __threadMessageIdBrand: unique symbol;
 /** Branded string type for thread message identifiers. Used as idempotency key (Decision 6A). */
 type ThreadMessageId = string & {
-    readonly [__threadMessageIdBrand]: "ThreadMessageId";
+    readonly __threadMessageIdBrand: "ThreadMessageId";
 };
 /** Create a branded ThreadMessageId from a plain string. */
 declare function threadMessageId(raw: string): ThreadMessageId;
@@ -2981,10 +2971,9 @@ type ToolsetResolution = {
  * in L0 as a zero-logic identity cast for type safety.
  */
 
-declare const __transcriptEntryIdBrand: unique symbol;
 /** Branded string type for transcript entry identifiers. */
 type TranscriptEntryId = string & {
-    readonly [__transcriptEntryIdBrand]: "TranscriptEntryId";
+    readonly __transcriptEntryIdBrand: "TranscriptEntryId";
 };
 /** Create a branded TranscriptEntryId from a plain string. */
 declare function transcriptEntryId(raw: string): TranscriptEntryId;
@@ -3908,26 +3897,250 @@ export type { ContextNamespace, ContextNamespaceAccessMode, ContextNamespaceChan
 `;
 
 exports[`@koi/core API surface ./delegation has stable type surface 1`] = `
-"export { ALIAS as CapabilityProof, ALIAS as CircuitBreakerConfig, ALIAS as DEFAULT_CIRCUIT_BREAKER_CONFIG, ALIAS as DelegationBackend, ALIAS as DelegationComponent, ALIAS as DelegationConfig, ALIAS as DelegationDenyReason, ALIAS as DelegationEvent, ALIAS as DelegationGrant, ALIAS as DelegationId, ALIAS as DelegationManagerConfig, ALIAS as DelegationScope, ALIAS as DelegationVerifyResult, ALIAS as NamespaceMode, ALIAS as RevocationRegistry, ALIAS as ScopeChecker, ALIAS as delegationId, ALIAS as intersectPermissions, ALIAS as isPermissionSubset, ALIAS as unionDenyLists } from './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-"
+"/**
+ * Delegation types — monotonic attenuation tokens for agent-to-agent
+ * permission delegation with chain tracking and cascading revocation.
+ *
+ * All types are immutable (readonly). No runtime code except the branded
+ * type constructor for DelegationId.
+ */
+import type { PermissionConfig } from "./assembly.js";
+import type { AgentId } from "./ecs.js";
+/**
+ * Checks that child permissions are a subset of parent permissions
+ * (monotonic attenuation).
+ *
+ * Rules:
+ * - If parent.allow contains "*", any child allow list is valid
+ * - Otherwise, every entry in child.allow must appear in parent.allow
+ * - Every entry in parent.deny must appear in child.deny (deny only grows)
+ *
+ * Pure function — permitted in L0.
+ */
+export declare function isPermissionSubset(child: PermissionConfig, parent: PermissionConfig): boolean;
+/**
+ * Computes the intersection of parent and child allow lists.
+ *
+ * If parent has wildcard "*", the child's allow list is used as-is.
+ * If child has wildcard "*", the parent's allow list is used as-is.
+ * Otherwise, returns only entries present in both lists.
+ *
+ * Pure function — permitted in L0.
+ */
+export declare function intersectPermissions(parent: PermissionConfig, child: PermissionConfig): readonly string[];
+/**
+ * Computes the union of parent and child deny lists.
+ * Deny rules only grow through delegation chains (monotonic).
+ *
+ * Pure function — permitted in L0.
+ */
+export declare function unionDenyLists(parent: PermissionConfig, child: PermissionConfig): readonly string[];
+/**
+ * Cryptographic proof backing a delegation grant or capability token.
+ *
+ * - \`hmac-sha256\`: HMAC-SHA256 digest for root→engine internal auth.
+ *   The secret is known only to the issuing engine instance.
+ * - \`ed25519\`: Ed25519 signature for agent-to-agent delegation chains.
+ *   Provides cryptographic unforgeability without a shared secret.
+ * - \`nexus\`: Nexus-issued opaque token for external authorization services.
+ *   Interface defined here; L2 backend implementation deferred to v2.
+ */
+export type CapabilityProof = {
+    readonly kind: "hmac-sha256";
+    readonly digest: string;
+} | {
+    readonly kind: "ed25519";
+    readonly publicKey: string;
+    readonly signature: string;
+} | {
+    readonly kind: "nexus";
+    readonly token: string;
+};
+/**
+ * Branded string type for delegation grant identifiers.
+ * Prevents accidental mixing with other string IDs at compile time.
+ */
+export type DelegationId = string & {
+    readonly __delegationBrand: "DelegationId";
+};
+/** Create a branded DelegationId from a plain string. */
+export declare function delegationId(raw: string): DelegationId;
+/**
+ * What is being delegated. Wraps the existing PermissionConfig to stay DRY
+ * and adds optional resource patterns.
+ */
+export interface DelegationScope {
+    readonly permissions: PermissionConfig;
+    /** Optional glob-style resource patterns (e.g., "read_file:/workspace/src/**"). */
+    readonly resources?: readonly string[];
+    /** Session that owns this grant — enables session-scoped revocation. */
+    readonly sessionId?: string;
+}
+/**
+ * An immutable delegation token linking an issuer to a delegatee with
+ * scoped permissions, chain tracking, and HMAC signature.
+ */
+export interface DelegationGrant {
+    readonly id: DelegationId;
+    /** Agent ID of the delegator. */
+    readonly issuerId: AgentId;
+    /** Agent ID of the receiver. */
+    readonly delegateeId: AgentId;
+    /** What is being delegated. */
+    readonly scope: DelegationScope;
+    /** Chain link to parent delegation (undefined = root grant). */
+    readonly parentId?: DelegationId;
+    /** Depth in the delegation chain (0 = root). */
+    readonly chainDepth: number;
+    /** Maximum allowed re-delegation depth. */
+    readonly maxChainDepth: number;
+    /** Unix timestamp ms — when the grant was created. */
+    readonly createdAt: number;
+    /** Unix timestamp ms — when the grant expires. */
+    readonly expiresAt: number;
+    /**
+     * Cryptographic proof binding this grant to its issuer.
+     * Replaces the previous opaque \`signature: string\` field.
+     * Use \`kind: "hmac-sha256"\` for root→engine internal grants;
+     * use \`kind: "ed25519"\` for agent-to-agent delegation chains.
+     */
+    readonly proof: CapabilityProof;
+}
+/** Why a delegation was denied. */
+export type DelegationDenyReason = "expired" | "revoked" | "scope_exceeded" | "chain_depth_exceeded" | "invalid_signature" | "unknown_grant" | "session_expired" | "escalation_denied";
+/** Result of verifying a delegation grant against a tool call. */
+export type DelegationVerifyResult = {
+    readonly ok: true;
+    readonly grant: DelegationGrant;
+} | {
+    readonly ok: false;
+    readonly reason: DelegationDenyReason;
+};
+/**
+ * Pluggable scope resolution. Default implementation uses glob-style matching (L2).
+ * Swap in ReBAC, policy engines, or external services (e.g., Nexus) as needed.
+ *
+ * Returns boolean for sync checkers (local glob matching) or Promise<boolean>
+ * for async checkers (HTTP-based services like Nexus ReBAC).
+ */
+export interface ScopeChecker {
+    readonly isAllowed: (toolId: string, scope: DelegationScope) => boolean | Promise<boolean>;
+}
+/** Pluggable revocation store. Default implementation is in-memory (L2). */
+export interface RevocationRegistry {
+    readonly isRevoked: (id: DelegationId) => boolean | Promise<boolean>;
+    /**
+     * Batch revocation check. Optional — when present, used by chain-verifier
+     * to avoid N+1 async lookups when traversing delegation chains.
+     *
+     * Returns a map from DelegationId → revoked (true = revoked).
+     * IDs not present in the map are assumed not revoked.
+     */
+    readonly isRevokedBatch?: (ids: readonly DelegationId[]) => ReadonlyMap<DelegationId, boolean> | Promise<ReadonlyMap<DelegationId, boolean>>;
+    readonly revoke: (id: DelegationId, cascade: boolean) => void | Promise<void>;
+}
+/**
+ * Namespace isolation mode for delegated agents.
+ *
+ * - \`copy\`:   Parent access minus explicit denials (default, safest).
+ * - \`clean\`:  Only explicitly granted permissions — minimal surface.
+ * - \`shared\`: Full proxy — same agent identity, no attenuation.
+ */
+export type NamespaceMode = "copy" | "clean" | "shared";
+/**
+ * Backend identifier for delegation routing.
+ *
+ * - \`memory\`: In-process capability verifier (HMAC/Ed25519 signed grants, no network).
+ * - \`nexus\`:  Nexus REST API (per-child API key issuance + cascading revocation).
+ *
+ * Consumers (CLI, runtime) read this field to decide which \`ComponentProvider\`
+ * to wire at assembly time. Defaults to \`"memory"\` when omitted.
+ */
+export type DelegationBackend = "memory" | "nexus";
+/** Configuration for the delegation subsystem, embedded in AgentManifest. */
+export interface DelegationConfig {
+    readonly enabled: boolean;
+    /** Maximum chain depth for re-delegation (default: 3). */
+    readonly maxChainDepth: number;
+    /** Default grant TTL in milliseconds (default: 3600000 = 1 hour). */
+    readonly defaultTtlMs: number;
+    /**
+     * When true, delegation failure during spawn aborts the child.
+     * When false (default), child operates without delegation (graceful degradation).
+     * Use true for security-critical spawns (e.g., forge_agent with untrusted manifests).
+     */
+    readonly required?: boolean;
+    /**
+     * Namespace isolation mode for Nexus-backed delegation.
+     * Defaults to "copy" (parent access minus denials).
+     */
+    readonly namespaceMode?: NamespaceMode;
+    /**
+     * Which backend provides the DelegationComponent. Defaults to \`"memory"\`.
+     * Consumers (CLI, runtime) wire the matching \`ComponentProvider\` at assembly time.
+     */
+    readonly backend?: DelegationBackend;
+}
+/** ECS component interface for delegation operations on an agent. */
+export interface DelegationComponent {
+    readonly grant: (scope: DelegationScope, delegateeId: AgentId, ttlMs?: number) => Promise<DelegationGrant>;
+    readonly revoke: (id: DelegationId, cascade?: boolean) => Promise<void>;
+    readonly verify: (id: DelegationId, toolId: string) => Promise<DelegationVerifyResult>;
+    readonly list: () => Promise<readonly DelegationGrant[]>;
+}
+/**
+ * Events emitted by DelegationManager during grant lifecycle operations.
+ * Follows the RegistryEvent / SchedulerEvent discriminated union pattern.
+ */
+export type DelegationEvent = {
+    readonly kind: "delegation:granted";
+    readonly grant: DelegationGrant;
+} | {
+    readonly kind: "delegation:revoked";
+    readonly grantId: DelegationId;
+    readonly cascade: boolean;
+    readonly revokedIds: readonly DelegationId[];
+} | {
+    readonly kind: "delegation:expired";
+    readonly grantId: DelegationId;
+} | {
+    readonly kind: "delegation:denied";
+    readonly grantId: DelegationId;
+    readonly toolId: string;
+    readonly reason: DelegationDenyReason;
+} | {
+    readonly kind: "delegation:circuit_opened";
+    readonly delegateeId: AgentId;
+    readonly failureCount: number;
+} | {
+    readonly kind: "delegation:circuit_closed";
+    readonly delegateeId: AgentId;
+} | {
+    readonly kind: "delegation:exhausted";
+    readonly delegateeIds: readonly AgentId[];
+    readonly issuerId: AgentId;
+    readonly detectedAt: number;
+};
+/** Configuration for per-delegatee circuit breaker in DelegationManager. */
+export interface CircuitBreakerConfig {
+    readonly failureThreshold: number;
+    readonly resetTimeoutMs: number;
+    readonly halfOpenMaxProbes: number;
+}
+/** Default circuit breaker settings. */
+export declare const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig;
+/** Full configuration for the DelegationManager coordinator. */
+export interface DelegationManagerConfig {
+    readonly secret: string;
+    readonly maxChainDepth: number;
+    readonly defaultTtlMs: number;
+    readonly circuitBreaker: CircuitBreakerConfig;
+}
+//# sourceMappingURL=delegation.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./daemon has stable type surface 1`] = `
-"import { JsonObject } from './common.js';
-import { ALIAS as AgentId, ALIAS as RestartType, ALIAS as ProcessDescriptor, ALIAS as ProcessState } from './chunk-HASH.js';
-import { Result, KoiError } from './errors.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-
-/**
+"/**
  * Daemon contracts — WorkerBackend + Supervisor for the OS-process substrate
  * that hosts long-running agent workers.
  *
@@ -3940,14 +4153,17 @@ import './chunk-HASH.js';
  * L0 status: types/interfaces + one validator. The validator is side-effect-free
  * data validation, permitted in L0 per architecture-doc exceptions.
  */
-
-declare const __workerIdBrand: unique symbol;
-type WorkerId = string & {
-    readonly [__workerIdBrand]: "WorkerId";
+import type { JsonObject } from "./common.js";
+import type { AgentId, ProcessState } from "./ecs.js";
+import type { KoiError, Result } from "./errors.js";
+import type { ProcessDescriptor } from "./process-HASH.js";
+import type { RestartType } from "./supervision.js";
+export type WorkerId = string & {
+    readonly __workerIdBrand: "WorkerId";
 };
-declare const workerId: (s: string) => WorkerId;
-type WorkerBackendKind = "in-process" | "subprocess" | "tmux" | "remote";
-interface WorkerBackend {
+export declare const workerId: (s: string) => WorkerId;
+export type WorkerBackendKind = "in-process" | "subprocess" | "tmux" | "remote";
+export interface WorkerBackend {
     readonly kind: WorkerBackendKind;
     readonly displayName: string;
     readonly isAvailable: () => boolean | Promise<boolean>;
@@ -3975,7 +4191,7 @@ interface WorkerBackend {
      */
     readonly supportsHeartbeat?: boolean;
 }
-interface WorkerSpawnRequest {
+export interface WorkerSpawnRequest {
     readonly workerId: WorkerId;
     readonly agentId: AgentId;
     readonly command: readonly string[];
@@ -3983,7 +4199,7 @@ interface WorkerSpawnRequest {
     readonly env?: Readonly<Record<string, string | null>> | undefined;
     readonly backendHints?: JsonObject | undefined;
 }
-interface WorkerHandle {
+export interface WorkerHandle {
     readonly workerId: WorkerId;
     readonly agentId: AgentId;
     readonly backendKind: WorkerBackendKind;
@@ -3996,7 +4212,7 @@ interface WorkerHandle {
     readonly startedAt: number;
     readonly signal: AbortSignal;
 }
-type WorkerEvent = {
+export type WorkerEvent = {
     readonly kind: "started";
     readonly workerId: WorkerId;
     readonly at: number;
@@ -4025,7 +4241,7 @@ type WorkerEvent = {
     readonly at: number;
     readonly error: KoiError;
 };
-interface SupervisorConfig {
+export interface SupervisorConfig {
     readonly maxWorkers: number;
     readonly shutdownDeadlineMs: number;
     readonly backends: Readonly<Partial<Record<WorkerBackendKind, WorkerBackend>>>;
@@ -4048,44 +4264,44 @@ interface SupervisorConfig {
      */
     readonly heartbeat?: HeartbeatConfig | undefined;
 }
-interface WorkerRestartPolicy {
+export interface WorkerRestartPolicy {
     readonly restart: RestartType;
     readonly maxRestarts: number;
     readonly maxRestartWindowMs: number;
     readonly backoffBaseMs: number;
     readonly backoffCeilingMs: number;
 }
-declare const DEFAULT_WORKER_RESTART_POLICY: WorkerRestartPolicy;
+export declare const DEFAULT_WORKER_RESTART_POLICY: WorkerRestartPolicy;
 /**
  * Worker heartbeat configuration. \`intervalMs\` is advisory cadence for the
  * sender; the supervisor does not enforce it. \`timeoutMs\` is the deadline:
  * if no heartbeat event arrives within this window, the supervisor declares
  * the worker hung and tears it down.
  */
-interface HeartbeatConfig {
+export interface HeartbeatConfig {
     readonly intervalMs: number;
     readonly timeoutMs: number;
 }
-declare const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig;
-declare const SUPERVISOR_HEALTH_STATUS: {
+export declare const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig;
+export declare const SUPERVISOR_HEALTH_STATUS: {
     readonly OK: "ok";
     readonly DEGRADED: "degraded";
     readonly UNHEALTHY: "unhealthy";
 };
-type SupervisorHealthStatus = (typeof SUPERVISOR_HEALTH_STATUS)[keyof typeof SUPERVISOR_HEALTH_STATUS];
+export type SupervisorHealthStatus = (typeof SUPERVISOR_HEALTH_STATUS)[keyof typeof SUPERVISOR_HEALTH_STATUS];
 /**
  * Per-worker health snapshot. \`lastHeartbeatAt\` / \`heartbeatDeadlineAt\` are
  * \`undefined\` for workers that did not opt into heartbeat monitoring via
  * \`WorkerSpawnRequest.backendHints.heartbeat = true\`.
  */
-interface WorkerHealth {
+export interface WorkerHealth {
     readonly workerId: WorkerId;
     readonly agentId: AgentId;
     readonly state: "running" | "restarting" | "quarantined" | "stopping";
     readonly lastHeartbeatAt: number | undefined;
     readonly heartbeatDeadlineAt: number | undefined;
 }
-interface SupervisorHealthMetrics {
+export interface SupervisorHealthMetrics {
     readonly poolSize: number;
     readonly maxWorkers: number;
     readonly quarantinedCount: number;
@@ -4099,13 +4315,13 @@ interface SupervisorHealthMetrics {
  * reasons + raw counters + per-worker detail. Consumers (TUI, CLI, future
  * HTTP wrapper) render whichever slice they need.
  */
-interface SupervisorHealth {
+export interface SupervisorHealth {
     readonly status: SupervisorHealthStatus;
     readonly reasons: readonly string[];
     readonly metrics: SupervisorHealthMetrics;
     readonly workers: readonly WorkerHealth[];
 }
-interface Supervisor {
+export interface Supervisor {
     readonly start: (request: WorkerSpawnRequest, overrides?: {
         readonly restart?: WorkerRestartPolicy;
         readonly backend?: WorkerBackendKind;
@@ -4139,7 +4355,7 @@ interface Supervisor {
  *   orphaned \`terminating\` means the killer crashed between claim and
  *   signal — operators can resume by re-running \`bg kill\`.
  */
-type BackgroundSessionStatus = "starting" | "running" | "exited" | "crashed" | "detached" | "terminating";
+export type BackgroundSessionStatus = "starting" | "running" | "exited" | "crashed" | "detached" | "terminating";
 /**
  * Persisted per-session record. The registry stores one of these per worker.
  * Nullable lifecycle fields (\`endedAt\`, \`exitCode\`) are populated when the
@@ -4150,7 +4366,7 @@ type BackgroundSessionStatus = "starting" | "running" | "exited" | "crashed" | "
  * \`@koi/core/session\` — that module models chat sessions for crash recovery;
  * this module models OS-process lifecycle for the daemon.
  */
-interface BackgroundSessionRecord {
+export interface BackgroundSessionRecord {
     readonly workerId: WorkerId;
     readonly agentId: AgentId;
     /** Optional logical session id (chat-session, job-id, etc.). */
@@ -4201,7 +4417,7 @@ interface BackgroundSessionRecord {
  * bridge only observes lifecycle events, not the spawn path, and so
  * cannot learn the new PID on its own).
  */
-interface BackgroundSessionUpdate {
+export interface BackgroundSessionUpdate {
     readonly status?: BackgroundSessionStatus;
     readonly endedAt?: number;
     readonly exitCode?: number;
@@ -4265,7 +4481,7 @@ interface BackgroundSessionUpdate {
  * Discriminated union of registry change events. Emitted by \`watch()\`.
  * Consumers use these to react to session lifecycle without polling.
  */
-type BackgroundSessionEvent = {
+export type BackgroundSessionEvent = {
     readonly kind: "registered";
     readonly record: BackgroundSessionRecord;
 } | {
@@ -4284,7 +4500,7 @@ type BackgroundSessionEvent = {
  * produce undefined behavior. Integrations should share one registry
  * instance per process.
  */
-interface BackgroundSessionRegistry {
+export interface BackgroundSessionRegistry {
     readonly register: (record: BackgroundSessionRecord) => Promise<Result<void, KoiError>>;
     readonly update: (id: WorkerId, patch: BackgroundSessionUpdate) => Promise<Result<BackgroundSessionRecord, KoiError>>;
     readonly unregister: (id: WorkerId) => Promise<Result<void, KoiError>>;
@@ -4300,11 +4516,9 @@ interface BackgroundSessionRegistry {
  * Side-effect-free data validation, permitted in L0 per the architecture-doc
  * exceptions for pure helpers that operate only on L0 types.
  */
-declare function validateBackgroundSessionRecord(record: BackgroundSessionRecord): Result<BackgroundSessionRecord, KoiError>;
-declare function validateSupervisorConfig(config: SupervisorConfig): Result<SupervisorConfig, KoiError>;
-
-export { type BackgroundSessionEvent, type BackgroundSessionRecord, type BackgroundSessionRegistry, type BackgroundSessionStatus, type BackgroundSessionUpdate, DEFAULT_HEARTBEAT_CONFIG, DEFAULT_WORKER_RESTART_POLICY, type HeartbeatConfig, SUPERVISOR_HEALTH_STATUS, type Supervisor, type SupervisorConfig, type SupervisorHealth, type SupervisorHealthMetrics, type SupervisorHealthStatus, type WorkerBackend, type WorkerBackendKind, type WorkerEvent, type WorkerHandle, type WorkerHealth, type WorkerId, type WorkerRestartPolicy, type WorkerSpawnRequest, validateBackgroundSessionRecord, validateSupervisorConfig, workerId };
-"
+export declare function validateBackgroundSessionRecord(record: BackgroundSessionRecord): Result<BackgroundSessionRecord, KoiError>;
+export declare function validateSupervisorConfig(config: SupervisorConfig): Result<SupervisorConfig, KoiError>;
+//# sourceMappingURL=daemon.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
@@ -4318,13 +4532,111 @@ import './chunk-HASH.js';
 `;
 
 exports[`@koi/core API surface ./handoff has stable type surface 1`] = `
-"export { ALIAS as ArtifactRef, ALIAS as DecisionRecord, ALIAS as HandoffAcceptError, ALIAS as HandoffAcceptResult, ALIAS as HandoffComponent, ALIAS as HandoffEnvelope, ALIAS as HandoffEvent, ALIAS as HandoffId, ALIAS as HandoffStatus, ALIAS as handoffId } from './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-"
+"/**
+ * Handoff types — structured context relay for agent-to-agent baton passing.
+ *
+ * All types are immutable (readonly). No runtime code except the branded
+ * type constructor for HandoffId.
+ */
+import type { JsonObject } from "./common.js";
+import type { DelegationGrant } from "./delegation.js";
+import type { AgentId, ToolCallId } from "./ecs.js";
+/**
+ * Branded string type for handoff envelope identifiers.
+ * Prevents accidental mixing with other string IDs at compile time.
+ */
+export type HandoffId = string & {
+    readonly __handoffBrand: "HandoffId";
+};
+/** Create a branded HandoffId from a plain string. */
+export declare function handoffId(raw: string): HandoffId;
+/** A single decision record capturing agent reasoning during a phase. */
+export interface DecisionRecord {
+    readonly agentId: AgentId;
+    readonly action: string;
+    readonly reasoning: string;
+    readonly timestamp: number;
+    readonly toolCallId?: ToolCallId | undefined;
+}
+/** URI-based reference to an artifact produced during a phase. */
+export interface ArtifactRef {
+    readonly id: string;
+    /** Artifact kind: "file" | "data" | "analysis" | custom. */
+    readonly kind: string;
+    /** URI pointing to the artifact (e.g., "file:///workspace/output.json"). */
+    readonly uri: string;
+    readonly mimeType?: string | undefined;
+    readonly metadata?: JsonObject | undefined;
+}
+/** Lifecycle status of a handoff envelope. */
+export type HandoffStatus = "pending" | "injected" | "accepted" | "expired";
+/** Typed envelope for agent-to-agent context relay. */
+export interface HandoffEnvelope {
+    readonly id: HandoffId;
+    readonly from: AgentId;
+    readonly to: AgentId;
+    readonly status: HandoffStatus;
+    readonly createdAt: number;
+    readonly phase: {
+        readonly completed: string;
+        readonly next: string;
+    };
+    readonly context: {
+        readonly results: JsonObject;
+        readonly artifacts: readonly ArtifactRef[];
+        readonly decisions: readonly DecisionRecord[];
+        readonly warnings: readonly string[];
+    };
+    readonly delegation?: DelegationGrant | undefined;
+    readonly metadata: JsonObject;
+}
+/** Events emitted during handoff lifecycle operations. */
+export type HandoffEvent = {
+    readonly kind: "handoff:prepared";
+    readonly envelope: HandoffEnvelope;
+} | {
+    readonly kind: "handoff:injected";
+    readonly handoffId: HandoffId;
+} | {
+    readonly kind: "handoff:accepted";
+    readonly handoffId: HandoffId;
+    readonly warnings: readonly string[];
+} | {
+    readonly kind: "handoff:expired";
+    readonly handoffId: HandoffId;
+};
+/** Error codes for handoff acceptance failures. */
+export type HandoffAcceptError = {
+    readonly code: "NOT_FOUND";
+    readonly handoffId: string;
+} | {
+    readonly code: "ALREADY_ACCEPTED";
+    readonly handoffId: string;
+} | {
+    readonly code: "TARGET_MISMATCH";
+    readonly expected: string;
+    readonly actual: string;
+} | {
+    readonly code: "EXPIRED";
+    readonly handoffId: string;
+};
+/** Result of accepting a handoff envelope. */
+export type HandoffAcceptResult = {
+    readonly ok: true;
+    readonly envelope: HandoffEnvelope;
+    readonly warnings: readonly string[];
+} | {
+    readonly ok: false;
+    readonly error: HandoffAcceptError;
+};
+/** ECS component interface for handoff operations on an agent. */
+export interface HandoffComponent {
+    readonly prepare: (envelope: Omit<HandoffEnvelope, "id" | "status" | "createdAt">) => Promise<HandoffEnvelope>;
+    readonly accept: (handoffId: HandoffId) => Promise<HandoffAcceptResult>;
+    readonly get: (handoffId: HandoffId) => HandoffEnvelope | undefined;
+    readonly list: () => readonly HandoffEnvelope[];
+}
+//# sourceMappingURL=handoff.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
@@ -4497,13 +4809,292 @@ import './chunk-HASH.js';
 `;
 
 exports[`@koi/core API surface ./governance-backend has stable type surface 1`] = `
-"export { ALIAS as AskId, ALIAS as ComplianceRecord, ALIAS as ComplianceRecorder, ALIAS as ConstraintChecker, ALIAS as ConstraintQuery, ALIAS as DEFAULT_VIOLATION_QUERY_LIMIT, ALIAS as GOVERNANCE_ALLOW, ALIAS as GovernanceBackend, ALIAS as GovernanceVerdict, ALIAS as PersistentGrant, ALIAS as PersistentGrantCallback, ALIAS as PolicyEvaluator, ALIAS as PolicyRequest, ALIAS as PolicyRequestKind, ALIAS as RuleDescriptor, ALIAS as VIOLATION_SEVERITY_ORDER, ALIAS as Violation, ALIAS as ViolationFilter, ALIAS as ViolationPage, ALIAS as ViolationSeverity, ALIAS as ViolationStore, ALIAS as askId, ALIAS as isAskVerdict } from './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-"
+"/**
+ * Governance backend — pluggable rule-based policy evaluation contract (Layer 0).
+ *
+ * Defines the shapes for evaluating policy requests, checking constraints,
+ * recording compliance, and querying violation history. L2 packages implement
+ * GovernanceBackend for specific backends (OPA, Cedar, in-memory rule engine, etc.).
+ *
+ * Complementary to GovernanceController (governance.ts) which handles numeric
+ * sensor/setpoint governance (turns, tokens, spawn depth). GovernanceBackend
+ * handles rule-based policy evaluation, constraint checking, compliance recording,
+ * and violation tracking. Both are composed by the unified governance controller (#261).
+ *
+ * Relationship to ScopeEnforcer (scope-enforcement.ts): ScopeEnforcer handles
+ * subsystem access checks (filesystem, browser, credentials, memory) with a
+ * boolean allow/deny result. GovernanceBackend handles broader policy evaluation
+ * with rich verdicts, violation details, and compliance recording. They are
+ * independent contracts — ScopeEnforcer is not subsumed.
+ *
+ * Fail-closed contract: callers MUST deny access when evaluate() throws or
+ * returns an error. A missing or errored backend means "deny all".
+ *
+ * Exception: constants (VIOLATION_SEVERITY_ORDER, GOVERNANCE_ALLOW,
+ * DEFAULT_VIOLATION_QUERY_LIMIT) are pure readonly data derived from L0 type
+ * definitions, permitted in L0 per architecture rules.
+ */
+import type { JsonObject } from "./common.js";
+import type { AgentId, SessionId } from "./ecs.js";
+/**
+ * Categorical kind for policy evaluation requests.
+ * Covers the core agent lifecycle actions. Use \`custom:\${string}\` for
+ * domain-specific extensions without modifying the core union.
+ */
+export type PolicyRequestKind = "tool_call" | "model_call" | "spawn" | "delegation" | "forge" | "handoff" | \`custom:\${string}\`;
+/**
+ * A request to evaluate against governance policy.
+ * Follows the PEP-PDP (Policy Enforcement Point / Policy Decision Point) pattern:
+ * the caller (PEP) constructs a PolicyRequest, the backend (PDP) returns a verdict.
+ */
+export interface PolicyRequest {
+    /** The kind of action being evaluated. */
+    readonly kind: PolicyRequestKind;
+    /** The agent requesting the action. */
+    readonly agentId: AgentId;
+    /** Action-specific payload for policy evaluation. */
+    readonly payload: JsonObject;
+    /** Unix timestamp (ms) when the request was created. */
+    readonly timestamp: number;
+}
+/**
+ * Severity level for policy violations.
+ * Ordered from least to most severe — see VIOLATION_SEVERITY_ORDER for
+ * the canonical sequence.
+ */
+export type ViolationSeverity = "info" | "warning" | "critical";
+/**
+ * Canonical ordering of ViolationSeverity values from least to most severe.
+ * Use this to avoid hardcoding the sequence in consumers:
+ *
+ * \`\`\`typescript
+ * const idx = VIOLATION_SEVERITY_ORDER.indexOf(violation.severity);
+ * if (idx >= VIOLATION_SEVERITY_ORDER.indexOf("warning")) { ... }
+ * \`\`\`
+ */
+export declare const VIOLATION_SEVERITY_ORDER: readonly ViolationSeverity[];
+/** A single policy rule violation found during evaluation. */
+export interface Violation {
+    /** The rule identifier that was violated (e.g., "max-spawn-depth", "no-external-api"). */
+    readonly rule: string;
+    /** How severe this violation is. */
+    readonly severity: ViolationSeverity;
+    /** Human-readable description of the violation. */
+    readonly message: string;
+    /** Optional structured context for diagnostics. */
+    readonly context?: JsonObject | undefined;
+}
+/**
+ * Branded identifier for pending governance approvals. Backends MUST
+ * generate globally-unique askIds (e.g., via crypto.randomUUID) — this is a
+ * documented invariant; consumers rely on it for inflight coalescing.
+ */
+export type AskId = string & {
+    readonly __askIdBrand: "AskId";
+};
+/** Create a branded AskId from a plain string. */
+export declare function askId(id: string): AskId;
+/**
+ * Result of evaluating a PolicyRequest against governance rules.
+ * Discriminated union on \`ok\`:
+ * - \`ok: true\` — request is allowed, with optional diagnostics (info-level observations)
+ * - \`ok: false\` — request is denied, with one or more violations
+ * - \`ok: "ask"\` — request requires async human approval; the middleware forwards
+ *   \`prompt\` to \`ctx.requestApproval\` and maps the returned ApprovalDecision to
+ *   proceed / deny / timeout. \`askId\` MUST be globally unique per ask for
+ *   inflight coalescing.
+ */
+export type GovernanceVerdict = {
+    readonly ok: true;
+    /** Optional info-level observations (e.g., "approaching rate limit"). */
+    readonly diagnostics?: readonly Violation[] | undefined;
+} | {
+    readonly ok: false;
+    /** One or more violations that caused denial. Never empty when ok is false. */
+    readonly violations: readonly Violation[];
+} | {
+    readonly ok: "ask";
+    /** Human-readable prompt shown to the approver (forwarded to \`ctx.requestApproval\`). */
+    readonly prompt: string;
+    /** Globally-unique identifier for this ask — required for inflight coalescing. */
+    readonly askId: AskId;
+    /** Optional structured context (e.g., rule id, requested scope) for UI display. */
+    readonly metadata?: JsonObject | undefined;
+};
+/**
+ * Singleton allow verdict for the common case.
+ * Avoids allocating a new object on every allow decision.
+ * Frozen to prevent accidental mutation.
+ */
+export declare const GOVERNANCE_ALLOW: GovernanceVerdict;
+/** Type guard for the ask variant. */
+export declare function isAskVerdict(v: GovernanceVerdict): v is Extract<GovernanceVerdict, {
+    ok: "ask";
+}>;
+/**
+ * An always-scoped approval grant recorded by governance middleware.
+ *
+ * Emitted by governance-core when a user chooses scope "always" on an
+ * ok:"ask" verdict, and consumed by gov-12 persistence layers to replay
+ * the grant on future sessions. \`grantKey\` is a stable SHA-256 hex digest
+ * of (kind, payload) — see \`@koi/hash\`.\`computeGrantKey\`.
+ */
+export interface PersistentGrant {
+    readonly kind: PolicyRequestKind;
+    readonly agentId: AgentId;
+    readonly sessionId: SessionId;
+    readonly payload: JsonObject;
+    readonly grantKey: string;
+    readonly grantedAt: number;
+}
+/**
+ * Callback invoked exactly once per always-scoped approval.
+ *
+ * The governance middleware calls this fire-and-forget — it does NOT await
+ * the returned Promise. Async sinks MUST handle their own errors; unhandled
+ * rejections surface as process-level \`unhandledRejection\` events rather
+ * than reaching the caller.
+ */
+export type PersistentGrantCallback = (grant: PersistentGrant) => void | Promise<void>;
+/**
+ * Minimal query for checking a single constraint.
+ * Used by ConstraintChecker to evaluate numeric or boolean constraints
+ * (e.g., "can this agent spawn at depth 4?").
+ */
+export interface ConstraintQuery {
+    /** The constraint kind to check (e.g., "spawn_depth", "token_budget"). */
+    readonly kind: string;
+    /** The agent the constraint applies to. */
+    readonly agentId: AgentId;
+    /** Optional numeric or string value to check against the constraint limit. */
+    readonly value?: number | string | undefined;
+    /** Optional structured context for the check. */
+    readonly context?: JsonObject | undefined;
+}
+/** A recorded compliance event linking a request to its verdict. */
+export interface ComplianceRecord {
+    /** Unique identifier for this compliance record. */
+    readonly requestId: string;
+    /** The original policy request that was evaluated. */
+    readonly request: PolicyRequest;
+    /** The verdict returned by the evaluator. */
+    readonly verdict: GovernanceVerdict;
+    /** Unix timestamp (ms) when the evaluation occurred. */
+    readonly evaluatedAt: number;
+    /** Fingerprint of the policy version used for evaluation (for reproducibility). */
+    readonly policyFingerprint: string;
+}
+/**
+ * Default maximum number of violation entries returned by a single getViolations() call.
+ * Implementations SHOULD apply this when the caller omits \`limit\`.
+ */
+export declare const DEFAULT_VIOLATION_QUERY_LIMIT: 100;
+/**
+ * Filter for querying recorded violations.
+ * All fields are optional — omitting a field means "no constraint on that dimension".
+ */
+export interface ViolationFilter {
+    /** Filter to violations for this agent. */
+    readonly agentId?: AgentId | undefined;
+    /** Filter to violations within this session. */
+    readonly sessionId?: SessionId | undefined;
+    /** Filter to violations at or above this severity. */
+    readonly severity?: ViolationSeverity | undefined;
+    /** Filter to violations matching this rule identifier. */
+    readonly rule?: string | undefined;
+    /** Include only violations at or after this Unix timestamp (ms). */
+    readonly since?: number | undefined;
+    /** Include only violations before this Unix timestamp (ms). */
+    readonly until?: number | undefined;
+    /** Maximum number of entries to return. Defaults to DEFAULT_VIOLATION_QUERY_LIMIT. */
+    readonly limit?: number | undefined;
+    /** Opaque cursor for pagination (from a previous ViolationPage.cursor). */
+    readonly offset?: string | undefined;
+}
+/** Paginated result of a violation query. */
+export interface ViolationPage {
+    /** Violation entries matching the filter. */
+    readonly items: readonly Violation[];
+    /** Opaque cursor for fetching the next page. Absent when no more pages. */
+    readonly cursor?: string | undefined;
+    /** Total count of matching violations (if the backend supports it). */
+    readonly total?: number | undefined;
+}
+/**
+ * Evaluates policy requests and returns verdicts.
+ *
+ * The \`scope\` field is a hot-path optimization: when present, the engine
+ * can skip invoking this evaluator for request kinds not in the scope set.
+ * When absent, the evaluator is invoked for all request kinds.
+ */
+export interface PolicyEvaluator {
+    /** Evaluate a policy request. Returns a verdict (allow/deny with details). */
+    readonly evaluate: (request: PolicyRequest) => GovernanceVerdict | Promise<GovernanceVerdict>;
+    /**
+     * Optional declarative scope filter. When present, this evaluator is only
+     * invoked for request kinds matching one of these values. When absent,
+     * the evaluator handles all request kinds.
+     */
+    readonly scope?: readonly PolicyRequestKind[] | undefined;
+}
+/** Checks individual constraints (numeric/boolean limit checks). */
+export interface ConstraintChecker {
+    /** Check whether a constraint is satisfied. Returns true if the constraint passes. */
+    readonly checkConstraint: (query: ConstraintQuery) => boolean | Promise<boolean>;
+}
+/** Records compliance events for audit trails. */
+export interface ComplianceRecorder {
+    /** Record a compliance event. Returns the recorded entry. */
+    readonly recordCompliance: (record: ComplianceRecord) => ComplianceRecord | Promise<ComplianceRecord>;
+}
+/** Queries recorded violation history. */
+export interface ViolationStore {
+    /** Query recorded violations matching the filter. */
+    readonly getViolations: (filter: ViolationFilter) => ViolationPage | Promise<ViolationPage>;
+}
+/**
+ * Human-readable summary of a single backend rule. Used by \`/governance\`
+ * to render the active rule set; backends that don't expose rules omit the
+ * section. Pattern is optional because not all backends use glob/regex rules.
+ */
+export interface RuleDescriptor {
+    readonly id: string;
+    readonly description: string;
+    readonly effect: "allow" | "deny" | "advise";
+    readonly pattern?: string | undefined;
+}
+/**
+ * Pluggable governance backend for rule-based policy evaluation.
+ *
+ * Composed of ISP-split sub-interfaces:
+ * - \`evaluator\` (required) — the core policy evaluation engine
+ * - \`constraints\` (optional) — individual constraint checks
+ * - \`compliance\` (optional) — compliance recording for audit
+ * - \`violations\` (optional) — violation history queries
+ *
+ * Fail-closed: if \`evaluator.evaluate()\` throws, callers MUST deny.
+ * Optional sub-interfaces degrade gracefully — constraint checks return
+ * true (allow) when no ConstraintChecker is configured, etc.
+ */
+export interface GovernanceBackend {
+    /** The policy evaluator (required). */
+    readonly evaluator: PolicyEvaluator;
+    /** Optional constraint checker for individual limit checks. */
+    readonly constraints?: ConstraintChecker | undefined;
+    /** Optional compliance recorder for audit trails. */
+    readonly compliance?: ComplianceRecorder | undefined;
+    /** Optional violation store for querying violation history. */
+    readonly violations?: ViolationStore | undefined;
+    /** Optional cleanup for stateful backends (connection pools, timers). */
+    readonly dispose?: () => void | Promise<void>;
+    /**
+     * Optional rule introspection for read-only UIs (e.g., \`/governance\` view).
+     * Backends that don't expose rules can omit this. Errors should propagate;
+     * callers must wrap in try/catch and degrade gracefully.
+     */
+    readonly describeRules?: () => readonly RuleDescriptor[] | Promise<readonly RuleDescriptor[]>;
+}
+//# sourceMappingURL=governance-HASH.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./errors has stable type surface 1`] = `
@@ -4643,14 +5234,7 @@ export { type BackendErrorMapper, type KoiError, type KoiErrorCode, RETRYABLE_DE
 `;
 
 exports[`@koi/core API surface ./intent-capsule has stable type surface 1`] = `
-"import { ALIAS as AgentId, ALIAS as SessionId } from './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-
-/**
+"/**
  * Intent Capsule types — cryptographic mandate binding for ASI01 defense.
  *
  * An IntentCapsule is an unforgeable, signed record of an agent's mandate
@@ -4667,23 +5251,22 @@ import './chunk-HASH.js';
  *
  * Layer: L0 — types only. No implementations, no imports from other packages.
  */
-
-declare const __capsuleBrand: unique symbol;
+import type { AgentId, SessionId } from "./ecs.js";
 /**
  * Branded string type for intent capsule identifiers.
  * Prevents accidental mixing with other ID types at compile time.
  */
-type CapsuleId = string & {
-    readonly [__capsuleBrand]: "CapsuleId";
+export type CapsuleId = string & {
+    readonly __capsuleBrand: "CapsuleId";
 };
 /** Create a branded CapsuleId from a plain string. */
-declare function capsuleId(raw: string): CapsuleId;
+export declare function capsuleId(raw: string): CapsuleId;
 /**
  * Schema version for the canonical mandate payload.
  * Increment when the serialization format changes.
  * Old capsules with a lower version are rejected as incompatible.
  */
-type CapsulePayloadVersion = 1;
+export type CapsulePayloadVersion = 1;
 /**
  * An immutable, cryptographically signed record of an agent's mandate.
  *
@@ -4697,7 +5280,7 @@ type CapsulePayloadVersion = 1;
  * - signature === Ed25519.sign(mandateHash, privateKey)
  * - publicKey is the SPKI DER base64 counterpart of the signing private key
  */
-interface IntentCapsule {
+export interface IntentCapsule {
     /** Unique identifier for this capsule. */
     readonly id: CapsuleId;
     /** Agent that created this capsule. */
@@ -4716,9 +5299,9 @@ interface IntentCapsule {
     readonly version: CapsulePayloadVersion;
 }
 /** Why an intent capsule check failed. */
-type CapsuleViolationReason = "mandate_hash_mismatch" | "capsule_not_found" | "invalid_signature";
+export type CapsuleViolationReason = "mandate_hash_mismatch" | "capsule_not_found" | "invalid_signature";
 /** Result of checking the intent capsule for a session. */
-type CapsuleVerifyResult = {
+export type CapsuleVerifyResult = {
     readonly ok: true;
     readonly capsule: IntentCapsule;
 } | {
@@ -4737,7 +5320,7 @@ type CapsuleVerifyResult = {
  *
  * Callers must always await — sync implementations return directly.
  */
-interface CapsuleVerifier {
+export interface CapsuleVerifier {
     /**
      * Verify the intent capsule for the given session.
      *
@@ -4751,10 +5334,8 @@ interface CapsuleVerifier {
  * Type guard for IntentCapsule.
  * Pure function — permitted in L0 as a side-effect-free data inspector.
  */
-declare function isIntentCapsule(value: unknown): value is IntentCapsule;
-
-export { type CapsuleId, type CapsulePayloadVersion, type CapsuleVerifier, type CapsuleVerifyResult, type CapsuleViolationReason, type IntentCapsule, capsuleId, isIntentCapsule };
-"
+export declare function isIntentCapsule(value: unknown): value is IntentCapsule;
+//# sourceMappingURL=intent-HASH.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./message has stable type surface 1`] = `
@@ -5669,23 +6250,516 @@ export type { RetrySignal, RetrySignalBroker, RetrySignalReader, RetrySignalWrit
 `;
 
 exports[`@koi/core API surface ./brick-snapshot has stable type surface 1`] = `
-"export { ALIAS as BrickId, ALIAS as BrickRef, ALIAS as BrickSnapshot, ALIAS as BrickSource, ALIAS as SnapshotEvent, ALIAS as SnapshotId, ALIAS as SnapshotQuery, ALIAS as SnapshotStore, ALIAS as brickId, ALIAS as snapshotId } from './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-"
+"/**
+ * Brick snapshot types — version history, provenance tracking, and diff.
+ *
+ * Orthogonal to ForgeStore (like AdvisoryLock). Enables versioning,
+ * rollback, and audit trails for all forged/bundled/extension bricks.
+ */
+import type { KoiError, Result } from "./errors.js";
+import type { BrickKind } from "./forge-types.js";
+/**
+ * Branded string for brick identity.
+ * Prevents mixing brick IDs with other string-typed IDs at compile time.
+ */
+export type BrickId = string & {
+    readonly __brickIdBrand: "BrickId";
+};
+/** Create a BrickId from a raw string. */
+export declare function brickId(raw: string): BrickId;
+/**
+ * Branded string for snapshot identity.
+ * Each snapshot is a unique immutable version record.
+ */
+export type SnapshotId = string & {
+    readonly __snapshotIdBrand: "SnapshotId";
+};
+/** Create a SnapshotId from a raw string. */
+export declare function snapshotId(raw: string): SnapshotId;
+export interface BrickRef {
+    readonly id: BrickId;
+    readonly version: string;
+    readonly kind: BrickKind;
+}
+export type BrickSource = {
+    readonly origin: "forged";
+    readonly forgedBy: string;
+    readonly sessionId?: string;
+} | {
+    readonly origin: "bundled";
+    readonly bundleName: string;
+    readonly bundleVersion: string;
+} | {
+    readonly origin: "external";
+    readonly registry: string;
+    readonly packageRef: string;
+};
+export type SnapshotEvent = {
+    readonly kind: "created";
+    readonly actor: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "updated";
+    readonly actor: string;
+    readonly timestamp: number;
+    readonly fieldsChanged: readonly string[];
+} | {
+    readonly kind: "promoted";
+    readonly actor: string;
+    readonly timestamp: number;
+    readonly fromTier: string;
+    readonly toTier: string;
+} | {
+    readonly kind: "deprecated";
+    readonly actor: string;
+    readonly timestamp: number;
+    readonly reason: string;
+} | {
+    readonly kind: "quarantined";
+    readonly actor: string;
+    readonly timestamp: number;
+    readonly reason: string;
+    readonly errorRate: number;
+    readonly failureCount: number;
+} | {
+    readonly kind: "demoted";
+    readonly actor: string;
+    readonly timestamp: number;
+    readonly fromTier: string;
+    readonly toTier: string;
+    readonly reason: string;
+    readonly errorRate: number;
+};
+export interface BrickSnapshot {
+    readonly snapshotId: SnapshotId;
+    readonly brickId: BrickId;
+    readonly version: string;
+    readonly parentSnapshotId?: SnapshotId;
+    readonly source: BrickSource;
+    readonly event: SnapshotEvent;
+    /** Opaque artifact data — like EngineState.data, zero assumptions about structure. */
+    readonly artifact: Readonly<Record<string, unknown>>;
+    readonly createdAt: number;
+}
+export interface SnapshotQuery {
+    readonly brickId?: BrickId;
+    readonly version?: string;
+    readonly afterTimestamp?: number;
+    readonly beforeTimestamp?: number;
+    readonly limit?: number;
+}
+/**
+ * @deprecated Use \`SnapshotChainStore<BrickSnapshot>\` from \`snapshot-chain.ts\` instead.
+ * This interface lacks DAG/fork/history semantics. Retained for backward compatibility.
+ */
+export interface SnapshotStore {
+    readonly record: (snapshot: BrickSnapshot) => Promise<Result<void, KoiError>>;
+    readonly get: (id: SnapshotId) => Promise<Result<BrickSnapshot, KoiError>>;
+    readonly list: (query: SnapshotQuery) => Promise<Result<readonly BrickSnapshot[], KoiError>>;
+    readonly history: (brickId: BrickId) => Promise<Result<readonly BrickSnapshot[], KoiError>>;
+    readonly latest: (brickId: BrickId) => Promise<Result<BrickSnapshot, KoiError>>;
+}
+//# sourceMappingURL=brick-HASH.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
-"export { ALIAS as AdvisoryLock, ALIAS as AgentArtifact, ALIAS as BrickArtifact, ALIAS as BrickArtifactBase, ALIAS as BrickDisclosureLevel, ALIAS as BrickDriftContext, ALIAS as BrickFitnessMetrics, ALIAS as BrickPort, ALIAS as BrickRequires, ALIAS as BrickSummary, ALIAS as BrickUpdate, ALIAS as COLLECTIVE_MEMORY_DEFAULTS, ALIAS as CollectiveMemory, ALIAS as CollectiveMemoryCategory, ALIAS as CollectiveMemoryDefaults, ALIAS as CollectiveMemoryEntry, ALIAS as CollectiveMemorySource, ALIAS as CompositeArtifact, ALIAS as CounterExample, ALIAS as CredentialKind, ALIAS as CredentialRequirement, ALIAS as DEFAULT_BRICK_FITNESS, ALIAS as DEFAULT_COLLECTIVE_MEMORY, ALIAS as DEFAULT_TRAIL_CONFIG, ALIAS as DEFAULT_TRAIL_STRENGTH, ALIAS as ForgeQuery, ALIAS as ForgeStore, ALIAS as ImplementationArtifact, ALIAS as LatencySampler, ALIAS as LockHandle, ALIAS as LockMode, ALIAS as LockRequest, ALIAS as PipelineStep, ALIAS as SkillArtifact, ALIAS as StoreChangeEvent, ALIAS as StoreChangeKind, ALIAS as StoreChangeNotifier, ALIAS as TestCase, ALIAS as ToolArtifact, ALIAS as TrailConfig, ALIAS as searchSummariesWithFallback } from './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-"
+"/**
+ * Brick store — persistence contracts for forged artifacts.
+ *
+ * Backend-agnostic interfaces. Any L2 package can provide a concrete
+ * implementation (in-memory, SQLite, Nexus, etc.) by importing only from
+ * \`@koi/core\`.
+ */
+import type { BrickComposition } from "./brick-HASH.js";
+import type { BrickId } from "./brick-HASH.js";
+import type { ChangeNotifier } from "./change-HASH.js";
+import type { ToolOrigin, ToolPolicy } from "./ecs.js";
+import type { KoiError, Result } from "./errors.js";
+import type { BrickKind, BrickLifecycle, BrickSignature, ForgeScope, TrustTier } from "./forge-types.js";
+import type { ContentMarker, DataClassification, ForgeProvenance } from "./provenance.js";
+export interface TestCase {
+    readonly name: string;
+    readonly input: unknown;
+    readonly expectedOutput?: unknown;
+    readonly shouldThrow?: boolean;
+}
+/** Runtime failure recorded as a future test input for regression testing. */
+export interface CounterExample {
+    readonly input: unknown;
+    readonly expectedBehavior: string;
+    readonly actualBehavior: string;
+    readonly recordedAt: number;
+}
+/** Known credential kinds + extensible via \`(string & {})\`. */
+export type CredentialKind = "connection_string" | "api_key" | "oauth2" | "bearer_token" | "mcp_transport" | (string & {});
+/** A single credential requirement — declares what kind of secret is needed and where to find it. */
+export interface CredentialRequirement {
+    readonly kind: CredentialKind;
+    /** Reference key used to resolve the credential at runtime (e.g., env var name, secret manager path). */
+    readonly ref: string;
+    /** OAuth2/OIDC scopes required, if applicable. */
+    readonly scopes?: readonly string[] | undefined;
+}
+export interface BrickRequires {
+    /** CLI binaries that must exist on PATH (ALL required). */
+    readonly bins?: readonly string[];
+    /** Environment variables that must be set (ALL required). */
+    readonly env?: readonly string[];
+    /** Koi tool brick names that must be resolvable. */
+    readonly tools?: readonly string[];
+    /** Koi agent brick names that must be resolvable as peer dependencies. */
+    readonly agents?: readonly string[];
+    /** npm packages required at runtime: package name → exact semver version. */
+    readonly packages?: Readonly<Record<string, string>>;
+    /** Whether this brick requires network access at runtime. Default: false (no network). */
+    readonly network?: boolean;
+    /** OS platforms where this brick can run (e.g., "darwin", "linux", "win32"). Empty = all. */
+    readonly platform?: readonly string[];
+    /** Named credentials required at runtime. Key = logical name, value = credential spec. */
+    readonly credentials?: Readonly<Record<string, CredentialRequirement>> | undefined;
+}
+/** Bounded sorted-sample buffer for percentile estimation (e.g., P99 latency). */
+export interface LatencySampler {
+    readonly samples: readonly number[];
+    readonly count: number;
+    readonly cap: number;
+}
+/** Runtime fitness metrics tracked per brick for discovery ranking. */
+export interface BrickFitnessMetrics {
+    readonly successCount: number;
+    readonly errorCount: number;
+    readonly latency: LatencySampler;
+    /** Epoch ms of the most recent usage (success or failure). */
+    readonly lastUsedAt: number;
+}
+/** Tracks which codebase files a brick describes, enabling drift detection. */
+export interface BrickDriftContext {
+    /** Glob patterns of codebase files this brick describes. */
+    readonly sourceFiles: readonly string[];
+    /** Git commit hash when drift was last checked. Undefined = never checked. */
+    readonly lastCheckedCommit?: string;
+    /** Drift score (0–1). 0 = no drift, 1 = all source files changed. */
+    readonly driftScore?: number;
+}
+/** Zero-usage default — immutable singleton for newly forged bricks. */
+export declare const DEFAULT_BRICK_FITNESS: BrickFitnessMetrics;
+/** Default trail strength for newly forged bricks. */
+export declare const DEFAULT_TRAIL_STRENGTH: 0.5;
+/** MMAS-bounded evaporation/reinforcement config for trail strength decay. */
+export interface TrailConfig {
+    /** Evaporation rate ρ ∈ (0, 1). Default: 0.05. */
+    readonly evaporationRate: number;
+    /** Additive reinforcement per usage. Default: 0.1. */
+    readonly reinforcement: number;
+    /** MMAS floor — trail strength never decays below this. Default: 0.01. */
+    readonly tauMin: number;
+    /** MMAS cap — trail strength never exceeds this. Default: 0.95. */
+    readonly tauMax: number;
+    /** Half-life for exponential decay (days). Default: 7. */
+    readonly halfLifeDays: number;
+}
+/** Frozen default trail config — MMAS bounds [0.01, 0.95]. */
+export declare const DEFAULT_TRAIL_CONFIG: TrailConfig;
+/** Category taxonomy for collective memory entries. */
+export type CollectiveMemoryCategory = "gotcha" | "heuristic" | "preference" | "correction" | "pattern" | "context";
+/** Provenance for a collective memory entry. */
+export interface CollectiveMemorySource {
+    readonly agentId: string;
+    readonly runId: string;
+    readonly timestamp: number;
+}
+/** A single learning entry in collective memory. */
+export interface CollectiveMemoryEntry {
+    readonly id: string;
+    readonly content: string;
+    readonly category: CollectiveMemoryCategory;
+    readonly source: CollectiveMemorySource;
+    readonly createdAt: number;
+    readonly accessCount: number;
+    readonly lastAccessedAt: number;
+}
+/** Collective memory state attached to a brick artifact. */
+export interface CollectiveMemory {
+    readonly entries: readonly CollectiveMemoryEntry[];
+    readonly totalTokens: number;
+    readonly generation: number;
+    readonly lastCompactedAt?: number | undefined;
+}
+/** Config defaults for collective memory thresholds. */
+export interface CollectiveMemoryDefaults {
+    readonly maxEntries: number;
+    readonly maxTokens: number;
+    readonly coldAgeDays: number;
+    readonly injectionBudget: number;
+    readonly dedupThreshold: number;
+}
+/** Empty collective memory — immutable singleton for newly created bricks. */
+export declare const DEFAULT_COLLECTIVE_MEMORY: CollectiveMemory;
+/** Frozen default thresholds for collective memory operations. */
+export declare const COLLECTIVE_MEMORY_DEFAULTS: CollectiveMemoryDefaults;
+export interface BrickArtifactBase {
+    /** Content-addressed ID: \`sha256:<64-hex-chars>\`. Identity IS integrity. */
+    readonly id: BrickId;
+    readonly kind: BrickKind;
+    readonly name: string;
+    readonly description: string;
+    readonly scope: ForgeScope;
+    readonly origin: ToolOrigin;
+    readonly policy: ToolPolicy;
+    readonly lifecycle: BrickLifecycle;
+    readonly provenance: ForgeProvenance;
+    readonly version: string;
+    readonly tags: readonly string[];
+    readonly usageCount: number;
+    /** Optional companion files: relative path → content. */
+    readonly files?: Readonly<Record<string, string>>;
+    /** Runtime requirements for this brick to be usable. */
+    readonly requires?: BrickRequires;
+    /** Optional JSON Schema describing brick instantiation config parameters. */
+    readonly configSchema?: Readonly<Record<string, unknown>>;
+    /** Epoch millis of last successful re-verification. Undefined = never re-verified. */
+    readonly lastVerifiedAt?: number;
+    /** Runtime fitness metrics for discovery ranking. Undefined = never used. */
+    readonly fitness?: BrickFitnessMetrics | undefined;
+    /** Stigmergic trail strength — decaying signal of collective agent interest. */
+    readonly trailStrength?: number | undefined;
+    /** Source-file mapping for drift detection. Undefined = no source tracking. */
+    readonly driftContext?: BrickDriftContext | undefined;
+    /** Composition metadata — how this brick was assembled. Undefined = not composed. */
+    readonly composition?: BrickComposition | undefined;
+    /** Cross-run learnings accumulated by workers of this brick type. */
+    readonly collectiveMemory?: CollectiveMemory | undefined;
+    /** Activation trigger patterns — natural language phrases declaring when this brick is relevant. */
+    readonly trigger?: readonly string[] | undefined;
+    /** Scoped namespace for community marketplace distribution (e.g., "@author/name"). */
+    readonly namespace?: string | undefined;
+    /**
+     * Trust tier based on signature verification.
+     * - "local": unverified, user's own brick
+     * - "community": signed by the brick author
+     * - "verified": signed by the registry / Koi team
+     */
+    readonly trustTier?: TrustTier | undefined;
+    /** Ed25519 signature metadata. Undefined = unsigned brick. */
+    readonly signature?: BrickSignature | undefined;
+    /**
+     * Monotonically increasing store-level version for optimistic locking.
+     * Incremented on every \`update()\`. Absent on legacy bricks or bricks
+     * that have never been updated through a version-aware store.
+     */
+    readonly storeVersion?: number | undefined;
+}
+export interface ToolArtifact extends BrickArtifactBase {
+    readonly kind: "tool";
+    readonly implementation: string;
+    readonly inputSchema: Readonly<Record<string, unknown>>;
+    readonly outputSchema?: Readonly<Record<string, unknown>> | undefined;
+    readonly testCases?: readonly TestCase[];
+    readonly counterexamples?: readonly CounterExample[];
+}
+export interface SkillArtifact extends BrickArtifactBase {
+    readonly kind: "skill";
+    readonly content: string;
+}
+export interface AgentArtifact extends BrickArtifactBase {
+    readonly kind: "agent";
+    readonly manifestYaml: string;
+}
+export interface ImplementationArtifact extends BrickArtifactBase {
+    readonly kind: "middleware" | "channel";
+    readonly implementation: string;
+    readonly testCases?: readonly TestCase[];
+    readonly counterexamples?: readonly CounterExample[];
+}
+/** Typed I/O port for pipeline composition — structural JSON Schema descriptor. */
+export interface BrickPort {
+    readonly name: string;
+    readonly schema: Readonly<Record<string, unknown>>;
+}
+/** A single step in a composite pipeline, linking brick to its I/O ports. */
+export interface PipelineStep {
+    readonly brickId: BrickId;
+    readonly inputPort: BrickPort;
+    readonly outputPort: BrickPort;
+}
+/** A composite brick: ordered pipeline of steps with typed I/O ports. */
+export interface CompositeArtifact extends BrickArtifactBase {
+    readonly kind: "composite";
+    readonly steps: readonly PipelineStep[];
+    readonly exposedInput: BrickPort;
+    readonly exposedOutput: BrickPort;
+    /** Kind of the last step — used for ECS component resolution. */
+    readonly outputKind: BrickKind;
+}
+export type BrickArtifact = ToolArtifact | SkillArtifact | AgentArtifact | ImplementationArtifact | CompositeArtifact;
+/** Disclosure level for progressive tool/brick loading. */
+export type BrickDisclosureLevel = "summary" | "descriptor" | "full";
+/**
+ * Lightweight summary for brick discovery (~20 tokens).
+ * Contains only what's needed to decide relevance — no implementation,
+ * content, schema, or other heavy fields.
+ */
+export interface BrickSummary {
+    readonly id: BrickId;
+    readonly kind: BrickKind;
+    readonly name: string;
+    readonly description: string;
+    readonly tags: readonly string[];
+    readonly trigger?: readonly string[] | undefined;
+}
+export interface ForgeQuery {
+    readonly kind?: BrickKind;
+    readonly scope?: ForgeScope;
+    /** Filter by sandbox status. Omit to match both sandboxed and unsandboxed bricks. */
+    readonly sandbox?: boolean;
+    readonly lifecycle?: BrickLifecycle;
+    readonly tags?: readonly string[];
+    /** Matches against \`provenance.metadata.agentId\`. */
+    readonly createdBy?: string;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+    /** Exact case-insensitive match against brick name. Used for name-based dedup. */
+    readonly name?: string;
+    /** Case-insensitive substring match against brick name and description. */
+    readonly text?: string;
+    readonly limit?: number;
+    /** Sort order for results. Default: "fitness". */
+    readonly orderBy?: "fitness" | "recency" | "usage" | "trailStrength";
+    /** Minimum fitness score threshold (0–1). Bricks scoring below are excluded. */
+    readonly minFitnessScore?: number;
+    /** Minimum trail strength threshold (0–1). Bricks below are excluded. */
+    readonly minTrailStrength?: number;
+    /** Case-insensitive substring match against brick trigger patterns. */
+    readonly triggerText?: string;
+    /** Filter by community namespace (e.g., "@author"). */
+    readonly namespace?: string;
+    /** Filter by parent brick ID for lineage queries. */
+    readonly parentBrickId?: BrickId;
+}
+export interface BrickUpdate {
+    readonly lifecycle?: BrickLifecycle;
+    readonly policy?: ToolPolicy;
+    readonly scope?: ForgeScope;
+    readonly usageCount?: number;
+    readonly tags?: readonly string[] | undefined;
+    /** Epoch millis of last successful re-verification. */
+    readonly lastVerifiedAt?: number;
+    /** Updated fitness metrics (replaces entire fitness object). */
+    readonly fitness?: BrickFitnessMetrics | undefined;
+    /** Updated trail strength. */
+    readonly trailStrength?: number | undefined;
+    /** Updated drift context (replaces entire drift context object). */
+    readonly driftContext?: BrickDriftContext | undefined;
+    /** Updated collective memory (replaces entire collective memory object). */
+    readonly collectiveMemory?: CollectiveMemory | undefined;
+    /** Updated trigger patterns. */
+    readonly trigger?: readonly string[] | undefined;
+    /** Updated community namespace. */
+    readonly namespace?: string | undefined;
+    /** Updated trust tier (e.g., after health-based demotion). */
+    readonly trustTier?: TrustTier | undefined;
+    /**
+     * Optimistic locking: expected current \`storeVersion\` of the brick.
+     * If provided, the update is rejected with CONFLICT when the stored
+     * version differs from this value (another writer modified it first).
+     * Omit to skip the version check (unconditional update).
+     */
+    readonly expectedVersion?: number | undefined;
+}
+export interface ForgeStore {
+    readonly save: (brick: BrickArtifact) => Promise<Result<void, KoiError>>;
+    readonly load: (id: BrickId) => Promise<Result<BrickArtifact, KoiError>>;
+    readonly search: (query: ForgeQuery) => Promise<Result<readonly BrickArtifact[], KoiError>>;
+    /**
+     * Lightweight search returning only summary-level data (~20 tokens per brick).
+     * Omits implementation, content, schemas, and other heavy fields.
+     * Optional — callers should use \`searchSummariesWithFallback()\` which falls
+     * back to search() + projection when this method is not implemented.
+     */
+    readonly searchSummaries?: (query: ForgeQuery) => Promise<Result<readonly BrickSummary[], KoiError>>;
+    readonly remove: (id: BrickId) => Promise<Result<void, KoiError>>;
+    readonly update: (id: BrickId, updates: BrickUpdate) => Promise<Result<void, KoiError>>;
+    readonly exists: (id: BrickId) => Promise<Result<boolean, KoiError>>;
+    /**
+     * Optional scope-aware promotion — moves a brick between storage tiers.
+     * Not all backends support tiered storage; filesystem overlay stores do.
+     * When available, promote_forge wires scope metadata changes to physical tier moves.
+     */
+    readonly promote?: (id: BrickId, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
+    /**
+     * Atomic scope promotion with metadata update.
+     * Moves brick to target scope's tier AND applies metadata changes in a single operation.
+     * Prevents partial state where brick is moved but metadata is stale.
+     *
+     * Optional: not all store backends support tiered storage with atomic promotion.
+     */
+    readonly promoteAndUpdate?: (id: BrickId, targetScope: ForgeScope, updates: BrickUpdate) => Promise<Result<void, KoiError>>;
+    /**
+     * Walk the parentBrickId chain to return the full ancestor lineage.
+     * Returns bricks ordered from the given brick to the oldest ancestor.
+     * Optional — not all backends support efficient lineage queries.
+     */
+    readonly lineage?: (id: BrickId) => Promise<Result<readonly BrickArtifact[], KoiError>>;
+    /** Optional typed watch for store mutations. Returns unsubscribe. */
+    readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
+    /** Clean up resources (filesystem watchers, timers). Not all backends hold resources. */
+    readonly dispose?: () => void;
+}
+/**
+ * Search for brick summaries with automatic fallback.
+ * Uses \`store.searchSummaries()\` when available, otherwise falls back
+ * to \`store.search()\` + field projection.
+ */
+export declare function searchSummariesWithFallback(store: ForgeStore, query: ForgeQuery): Promise<Result<readonly BrickSummary[], KoiError>>;
+/** Describes what changed in the store. */
+export type StoreChangeKind = "saved" | "updated" | "removed" | "promoted" | "quarantined";
+/** Notification payload for store mutations. */
+export interface StoreChangeEvent {
+    readonly kind: StoreChangeKind;
+    readonly brickId: BrickId;
+    /** The scope after the change (if applicable). */
+    readonly scope?: ForgeScope;
+    /** Policy change details (for "promoted" and "quarantined" kinds). */
+    readonly policyChange?: {
+        readonly from: ToolPolicy;
+        readonly to: ToolPolicy;
+    };
+    /** Human-readable reason for the change (e.g., quarantine cause). */
+    readonly reason?: string;
+    /**
+     * Monotonically increasing generation/version of this brick. When set,
+     * downstream consumers (e.g. policy caches) MUST ignore any event whose
+     * generation is strictly less than the most recently observed generation
+     * for the same brickId — a stale event from a prior generation otherwise
+     * looks identical to a current-generation event and can silently evict
+     * a freshly registered entry, downgrading authorization. Stores that
+     * cannot supply a generation may omit the field; consumers then fall
+     * back to best-effort eviction with no stale-event protection.
+     */
+    readonly generation?: number;
+}
+/**
+ * Brick-store-specific change notifier.
+ *
+ * Extends the generic \`ChangeNotifier<StoreChangeEvent>\` while preserving
+ * the exported interface symbol for declaration-merging compatibility.
+ */
+export interface StoreChangeNotifier extends ChangeNotifier<StoreChangeEvent> {
+}
+export type LockHandle = string & {
+    readonly __lockBrand: "LockHandle";
+};
+export type LockMode = "shared" | "exclusive";
+export interface LockRequest {
+    readonly resource: string;
+    readonly mode: LockMode;
+    readonly ttlMs: number;
+}
+export interface AdvisoryLock {
+    readonly acquire: (request: LockRequest) => Promise<Result<LockHandle, KoiError>>;
+    readonly release: (handle: LockHandle) => Promise<Result<void, KoiError>>;
+}
+//# sourceMappingURL=brick-store.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./adapter-capabilities has stable type surface 1`] = `
@@ -6196,13 +7270,125 @@ export type { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, S
 `;
 
 exports[`@koi/core API surface ./skill-registry has stable type surface 1`] = `
-"export { ALIAS as DEFAULT_SKILL_SEARCH_LIMIT, ALIAS as SkillId, ALIAS as SkillPage, ALIAS as SkillPublishRequest, ALIAS as SkillRegistryBackend, ALIAS as SkillRegistryChangeEvent, ALIAS as SkillRegistryChangeKind, ALIAS as SkillRegistryEntry, ALIAS as SkillRegistryReader, ALIAS as SkillRegistryWriter, ALIAS as SkillSearchQuery, ALIAS as SkillVersion, ALIAS as skillId } from './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-"
+"/**
+ * Skill registry — pluggable skill discovery, publishing, versioning, and installation.
+ *
+ * Separate from ForgeStore (local brick persistence) and Resolver (generic read-only
+ * discovery). The registry models a remote or local package catalog — think npm for skills.
+ *
+ * Split into SkillRegistryReader (all backends) and SkillRegistryWriter (writable backends).
+ * Combined as SkillRegistryBackend for backends that support both.
+ *
+ * Exception: \`skillId()\` branded cast is permitted in L0 as a zero-logic identity cast.
+ * Exception: \`DEFAULT_SKILL_SEARCH_LIMIT\` is a pure readonly data constant.
+ */
+import type { BrickRequires, SkillArtifact } from "./brick-store.js";
+import type { KoiError, Result } from "./errors.js";
+/**
+ * Branded string type for skill identifiers.
+ * Prevents accidental mixing with agent IDs, session IDs, etc.
+ */
+export type SkillId = string & {
+    readonly __skillIdBrand: "SkillId";
+};
+/** Create a branded SkillId from a plain string. */
+export declare function skillId(raw: string): SkillId;
+/** Version metadata for a published skill. */
+export interface SkillVersion {
+    readonly version: string;
+    /** Subresource Integrity hash (e.g., "sha256-..."). */
+    readonly integrity?: string;
+    /** Unix milliseconds when this version was published. */
+    readonly publishedAt: number;
+    /** Whether this version has been deprecated. */
+    readonly deprecated?: boolean;
+}
+/**
+ * Catalog-level skill entry. Richer than SkillMetadata (includes version, author)
+ * but lighter than SkillArtifact (no content/implementation).
+ */
+export interface SkillRegistryEntry {
+    readonly id: SkillId;
+    readonly name: string;
+    readonly description: string;
+    readonly tags: readonly string[];
+    /** Latest published version string. */
+    readonly version: string;
+    /** Unix ms when the latest version was published. */
+    readonly publishedAt: number;
+    readonly author?: string;
+    /** Runtime requirements (bins, env vars, tools). Surfaced at catalog level for filtering. */
+    readonly requires?: BrickRequires;
+    /** Total install/download count. Optional — not all backends track this. */
+    readonly downloads?: number;
+}
+export interface SkillSearchQuery {
+    /** Case-insensitive text match against name and description. */
+    readonly text?: string;
+    /** Filter by tags (AND — all specified tags must match). */
+    readonly tags?: readonly string[];
+    readonly author?: string;
+    /** Max items per page. Defaults to DEFAULT_SKILL_SEARCH_LIMIT. */
+    readonly limit?: number;
+    /** Opaque cursor for the next page. undefined = first page. */
+    readonly cursor?: string;
+}
+/** Default page size for skill search. */
+export declare const DEFAULT_SKILL_SEARCH_LIMIT: 50;
+export interface SkillPage {
+    readonly items: readonly SkillRegistryEntry[];
+    /** Opaque cursor for the next page. undefined = no more pages. */
+    readonly cursor?: string;
+    /** Total matching skills. Optional — some backends can't count cheaply. */
+    readonly total?: number;
+}
+/** Describes what changed in the registry. */
+export type SkillRegistryChangeKind = "published" | "unpublished" | "deprecated";
+/** Notification payload for registry mutations. */
+export interface SkillRegistryChangeEvent {
+    readonly kind: SkillRegistryChangeKind;
+    readonly skillId: SkillId;
+    /** Version affected (for published/deprecated events). */
+    readonly version?: string;
+}
+export interface SkillRegistryReader {
+    /** Search the registry with optional filters and pagination. */
+    readonly search: (query: SkillSearchQuery) => SkillPage | Promise<SkillPage>;
+    /** Get a single skill entry by ID. */
+    readonly get: (id: SkillId) => Result<SkillRegistryEntry, KoiError> | Promise<Result<SkillRegistryEntry, KoiError>>;
+    /** List all versions of a skill, newest first. */
+    readonly versions: (id: SkillId) => Result<readonly SkillVersion[], KoiError> | Promise<Result<readonly SkillVersion[], KoiError>>;
+    /** Download and return a SkillArtifact. Always async (I/O). */
+    readonly install: (id: SkillId, version?: string) => Promise<Result<SkillArtifact, KoiError>>;
+    /** Optional typed change notification. Returns unsubscribe function. */
+    readonly onChange?: (listener: (event: SkillRegistryChangeEvent) => void) => () => void;
+}
+export interface SkillPublishRequest {
+    readonly id: SkillId;
+    readonly name: string;
+    readonly description: string;
+    readonly tags: readonly string[];
+    readonly version: string;
+    /** Markdown source content. */
+    readonly content: string;
+    readonly author?: string;
+    /** Subresource Integrity hash for verification. */
+    readonly integrity?: string;
+    /** Runtime requirements (bins, env vars, tools) for catalog-level filtering. */
+    readonly requires?: BrickRequires;
+}
+export interface SkillRegistryWriter {
+    /** Publish a new skill version to the registry. */
+    readonly publish: (request: SkillPublishRequest) => Result<SkillRegistryEntry, KoiError> | Promise<Result<SkillRegistryEntry, KoiError>>;
+    /** Remove a skill entirely from the registry. */
+    readonly unpublish: (id: SkillId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /** Mark a specific version as deprecated. */
+    readonly deprecate: (id: SkillId, version: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+}
+/** Full registry backend that supports both reading and writing. */
+export interface SkillRegistryBackend extends SkillRegistryReader, SkillRegistryWriter {
+}
+//# sourceMappingURL=skill-HASH.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./search-backend has stable type surface 1`] = `
@@ -6388,13 +7574,69 @@ import './chunk-HASH.js';
 `;
 
 exports[`@koi/core API surface ./version-types has stable type surface 1`] = `
-"export { ALIAS as PublisherId, ALIAS as ShadowWarning, ALIAS as VersionChangeEvent, ALIAS as VersionChangeKind, ALIAS as VersionEntry, ALIAS as VersionedBrickRef, ALIAS as publisherId } from './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-"
+"/**
+ * Version types — version labels + publisher identity.
+ *
+ * Shared types used by VersionIndex and assembly configs for
+ * versioned brick resolution. Enables human-readable version labels
+ * over content-addressed BrickIds and publisher attribution.
+ *
+ * Exception: \`publisherId()\` is a branded type constructor (zero-logic
+ * identity cast), permitted in L0 per architecture doc.
+ */
+import type { BrickId } from "./brick-HASH.js";
+import type { BrickKind } from "./forge-types.js";
+/**
+ * Branded string for publisher identity.
+ * Prevents mixing publisher IDs with other string-typed IDs at compile time.
+ */
+export type PublisherId = string & {
+    readonly __publisherIdBrand: "PublisherId";
+};
+/** Create a PublisherId from a raw string. */
+export declare function publisherId(raw: string): PublisherId;
+/** A version label bound to a content-addressed BrickId. */
+export interface VersionEntry {
+    /** Human-readable version label (e.g., "1.0.0", "beta"). */
+    readonly version: string;
+    /** Content-addressed brick identity this label resolves to. */
+    readonly brickId: BrickId;
+    /** Who published this version. */
+    readonly publisher: PublisherId;
+    /** Unix epoch ms when this version was published. */
+    readonly publishedAt: number;
+    /** Soft-deprecated — still resolvable but flagged for consumers. */
+    readonly deprecated?: boolean;
+}
+/** What manifests use to request a versioned brick. */
+export interface VersionedBrickRef {
+    readonly name: string;
+    readonly kind: BrickKind;
+    /** Exact version label. If omitted, resolve latest. */
+    readonly version?: string;
+    /** Optional publisher filter — only resolve versions from this publisher. */
+    readonly publisher?: PublisherId;
+}
+/** Kind of version change event. */
+export type VersionChangeKind = "published" | "deprecated" | "yanked";
+/** Emitted when a version binding changes. */
+export interface VersionChangeEvent {
+    readonly kind: VersionChangeKind;
+    readonly brickKind: BrickKind;
+    readonly name: string;
+    readonly version: string;
+    readonly brickId: BrickId;
+    readonly publisher: PublisherId;
+}
+/** Emitted when a version label would re-bind to different content. */
+export interface ShadowWarning {
+    readonly name: string;
+    readonly kind: BrickKind;
+    readonly version: string;
+    readonly existingBrickId: BrickId;
+    readonly newBrickId: BrickId;
+}
+//# sourceMappingURL=version-types.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./run-report has stable type surface 1`] = `
@@ -6522,13 +7764,70 @@ export type { ElicitationOption, ElicitationQuestion, ElicitationResult };
 `;
 
 exports[`@koi/core API surface ./mailbox has stable type surface 1`] = `
-"export { ALIAS as AgentMessage, ALIAS as AgentMessageInput, ALIAS as MailboxComponent, ALIAS as MessageFilter, ALIAS as MessageId, ALIAS as MessageKind, ALIAS as messageId } from './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-import './chunk-HASH.js';
-"
+"/**
+ * Mailbox types — agent-to-agent messaging envelope and ECS component.
+ *
+ * Provides the L0 contract for inter-agent communication:
+ * - \`AgentMessage\` — the Koi-native message envelope
+ * - \`MailboxComponent\` — the ECS singleton for send/receive/list
+ * - \`MessageFilter\` — declarative inbox filtering
+ *
+ * L2 adapters (e.g., @koi/ipc-nexus) provide concrete implementations.
+ */
+import type { JsonObject } from "./common.js";
+import type { AgentId } from "./ecs.js";
+import type { KoiError, Result } from "./errors.js";
+/** Branded string type for message identifiers. */
+export type MessageId = string & {
+    readonly __messageBrand: "MessageId";
+};
+/** Create a branded MessageId from a plain string. */
+export declare function messageId(raw: string): MessageId;
+/** Protocol-level message kind for dispatch and correlation. */
+export type MessageKind = "request" | "response" | "event" | "cancel";
+/** The Koi-native agent-to-agent message envelope. */
+export interface AgentMessage {
+    readonly id: MessageId;
+    readonly from: AgentId;
+    readonly to: AgentId;
+    readonly kind: MessageKind;
+    /** Correlates responses/cancels to the originating request. */
+    readonly correlationId?: MessageId | undefined;
+    /** ISO-8601 creation timestamp. */
+    readonly createdAt: string;
+    /** Time-to-live in seconds. Backend may discard expired messages. */
+    readonly ttlSeconds?: number | undefined;
+    /** Application-level message type (e.g., "code-review", "deploy"). */
+    readonly type: string;
+    /** Arbitrary structured payload. */
+    readonly payload: JsonObject;
+    /** Optional metadata (tracing, routing hints, etc.). */
+    readonly metadata?: JsonObject | undefined;
+}
+/** Input for send() — \`id\` and \`createdAt\` are generated by the backend. */
+export type AgentMessageInput = Omit<AgentMessage, "id" | "createdAt">;
+/** Declarative filter for listing inbox messages. */
+export interface MessageFilter {
+    readonly kind?: MessageKind | undefined;
+    readonly type?: string | undefined;
+    readonly from?: AgentId | undefined;
+    readonly limit?: number | undefined;
+}
+/**
+ * ECS singleton component for agent-to-agent messaging.
+ *
+ * - \`send\` — dispatch a message to another agent's mailbox
+ * - \`onMessage\` — subscribe to incoming messages (returns unsubscribe fn)
+ * - \`list\` — query inbox with optional filter
+ * - \`drain\` — discard all buffered messages (frees capacity for new sends)
+ */
+export interface MailboxComponent {
+    readonly send: (message: AgentMessageInput) => Promise<Result<AgentMessage, KoiError>>;
+    readonly onMessage: (handler: (message: AgentMessage) => void | Promise<void>) => () => void;
+    readonly list: (filter?: MessageFilter) => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
+    readonly drain: () => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
+}
+//# sourceMappingURL=mailbox.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./security-analyzer has stable type surface 1`] = `
@@ -6672,17 +7971,16 @@ exports[`@koi/core API surface ./zone has stable type surface 1`] = `
  * Exception: zoneId() branded type constructor is permitted in L0 as a
  * zero-logic identity cast for type safety.
  */
-declare const __zoneBrand: unique symbol;
 /** Branded string type for zone identifiers. */
-type ZoneId = string & {
-    readonly [__zoneBrand]: "ZoneId";
+export type ZoneId = string & {
+    readonly __zoneBrand: "ZoneId";
 };
 /** Create a branded ZoneId from a plain string. */
-declare function zoneId(id: string): ZoneId;
+export declare function zoneId(id: string): ZoneId;
 /** Zone lifecycle states. */
-type ZoneStatus = "active" | "draining" | "offline";
+export type ZoneStatus = "active" | "draining" | "offline";
 /** A registered zone's identity and metadata. */
-interface ZoneDescriptor {
+export interface ZoneDescriptor {
     readonly zoneId: ZoneId;
     readonly displayName: string;
     readonly status: ZoneStatus;
@@ -6692,7 +7990,7 @@ interface ZoneDescriptor {
     readonly registeredAt: number;
 }
 /** Events emitted by the ZoneRegistry on zone state changes. */
-type ZoneEvent = {
+export type ZoneEvent = {
     readonly kind: "zone_registered";
     readonly descriptor: ZoneDescriptor;
 } | {
@@ -6708,7 +8006,7 @@ type ZoneEvent = {
     readonly to: ZoneStatus;
 };
 /** Filter criteria for listing registered zones. */
-interface ZoneFilter {
+export interface ZoneFilter {
     readonly status?: ZoneStatus | undefined;
     readonly zoneId?: ZoneId | undefined;
 }
@@ -6719,7 +8017,7 @@ interface ZoneFilter {
  * All methods return \`T | Promise<T>\` — in-memory implementations are sync,
  * network-backed implementations (e.g., Nexus) are async.
  */
-interface ZoneRegistry extends AsyncDisposable {
+export interface ZoneRegistry extends AsyncDisposable {
     /** Register a new zone. Returns the stored descriptor. */
     readonly register: (descriptor: ZoneDescriptor) => ZoneDescriptor | Promise<ZoneDescriptor>;
     /** Remove a zone from the registry. Returns true if found. */
@@ -6731,9 +8029,7 @@ interface ZoneRegistry extends AsyncDisposable {
     /** Subscribe to zone change events. Returns unsubscribe function. */
     readonly watch: (listener: (event: ZoneEvent) => void) => () => void;
 }
-
-export { type ZoneDescriptor, type ZoneEvent, type ZoneFilter, type ZoneId, type ZoneRegistry, type ZoneStatus, zoneId };
-"
+//# sourceMappingURL=zone.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./cost-tracker has stable type surface 1`] = `
@@ -6928,18 +8224,17 @@ exports[`@koi/core API surface ./replacement has stable type surface 1`] = `
  * Exception: branded type constructor (replacementRef) is permitted in L0
  * as it is a zero-logic identity cast for type safety.
  */
-declare const __replacementRefBrand: unique symbol;
 /**
  * Branded string for content replacement references.
  *
  * Typically a content hash (SHA-256 hex), but the format is
  * store-implementation-defined. Consumer code must not parse it.
  */
-type ReplacementRef = string & {
-    readonly [__replacementRefBrand]: "ReplacementRef";
+export type ReplacementRef = string & {
+    readonly __replacementRefBrand: "ReplacementRef";
 };
 /** Create a branded ReplacementRef from a plain string. */
-declare function replacementRef(ref: string): ReplacementRef;
+export declare function replacementRef(ref: string): ReplacementRef;
 /**
  * Content-addressed store for replaced tool result content.
  *
@@ -6950,7 +8245,7 @@ declare function replacementRef(ref: string): ReplacementRef;
  *
  * Supports sync (in-memory) and async (filesystem, cloud) via \`T | Promise<T>\`.
  */
-interface ReplacementStore {
+export interface ReplacementStore {
     /** Store content and return a reference for later retrieval. */
     readonly put: (content: string) => ReplacementRef | Promise<ReplacementRef>;
     /** Retrieve content by reference. Returns undefined if not found. */
@@ -6963,9 +8258,7 @@ interface ReplacementStore {
      */
     readonly cleanup: (activeRefs: ReadonlySet<ReplacementRef>) => void | Promise<void>;
 }
-
-export { type ReplacementRef, type ReplacementStore, replacementRef };
-"
+//# sourceMappingURL=replacement.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./memory has stable type surface 1`] = `
@@ -6990,13 +8283,12 @@ exports[`@koi/core API surface ./memory has stable type surface 1`] = `
  * Exception: ALL_MEMORY_TYPES and MEMORY_INDEX_MAX_LINES are pure readonly
  * data constants derived from L0 type definitions.
  */
-declare const __memoryRecordBrand: unique symbol;
 /** Branded string type for memory record identifiers. */
-type MemoryRecordId = string & {
-    readonly [__memoryRecordBrand]: "MemoryRecordId";
+export type MemoryRecordId = string & {
+    readonly __memoryRecordBrand: "MemoryRecordId";
 };
 /** Create a branded MemoryRecordId from a plain string. */
-declare function memoryRecordId(raw: string): MemoryRecordId;
+export declare function memoryRecordId(raw: string): MemoryRecordId;
 /**
  * Memory category type.
  *
@@ -7005,13 +8297,13 @@ declare function memoryRecordId(raw: string): MemoryRecordId;
  * - \`project\` — ongoing work context, deadlines, decisions
  * - \`reference\` — pointers to external systems and resources
  */
-type MemoryType = "user" | "feedback" | "project" | "reference";
+export type MemoryType = "user" | "feedback" | "project" | "reference";
 /** All valid memory types as a readonly tuple. */
-declare const ALL_MEMORY_TYPES: readonly MemoryType[];
+export declare const ALL_MEMORY_TYPES: readonly MemoryType[];
 /** Type guard — returns true if the value is a valid MemoryType. */
-declare function isMemoryType(value: unknown): value is MemoryType;
+export declare function isMemoryType(value: unknown): value is MemoryType;
 /** Frontmatter fields for a memory file (bespoke key: value format, not YAML). */
-interface MemoryFrontmatter {
+export interface MemoryFrontmatter {
     readonly name: string;
     readonly description: string;
     readonly type: MemoryType;
@@ -7019,7 +8311,7 @@ interface MemoryFrontmatter {
     readonly confidence?: number | undefined;
 }
 /** A complete memory record with frontmatter + content. */
-interface MemoryRecord {
+export interface MemoryRecord {
     readonly id: MemoryRecordId;
     readonly name: string;
     readonly description: string;
@@ -7032,7 +8324,7 @@ interface MemoryRecord {
     readonly confidence?: number | undefined;
 }
 /** Input shape for creating a new memory record. */
-interface MemoryRecordInput {
+export interface MemoryRecordInput {
     readonly name: string;
     readonly description: string;
     readonly type: MemoryType;
@@ -7041,7 +8333,7 @@ interface MemoryRecordInput {
     readonly confidence?: number | undefined;
 }
 /** Sparse update shape for modifying a memory record. */
-interface MemoryRecordPatch {
+export interface MemoryRecordPatch {
     readonly name?: string | undefined;
     readonly description?: string | undefined;
     readonly type?: MemoryType | undefined;
@@ -7049,15 +8341,15 @@ interface MemoryRecordPatch {
     readonly confidence?: number | undefined;
 }
 /** Maximum number of lines in MEMORY.md before truncation. */
-declare const MEMORY_INDEX_MAX_LINES = 200;
+export declare const MEMORY_INDEX_MAX_LINES = 200;
 /** A single entry in the MEMORY.md index. */
-interface MemoryIndexEntry {
+export interface MemoryIndexEntry {
     readonly title: string;
     readonly filePath: string;
     readonly hook: string;
 }
 /** The MEMORY.md index — always loaded into conversation context. */
-interface MemoryIndex {
+export interface MemoryIndex {
     readonly entries: readonly MemoryIndexEntry[];
 }
 /**
@@ -7073,12 +8365,12 @@ interface MemoryIndex {
  * input to its persisted form before comparing against scanned records.
  * Keep this in sync with \`serializeMemoryFrontmatter\`.
  */
-declare function sanitizeFrontmatterValue(value: string): string;
+export declare function sanitizeFrontmatterValue(value: string): string;
 /**
  * Returns true if the value contains characters unsafe for frontmatter fields:
  * newlines or control characters.
  */
-declare function hasFrontmatterUnsafeChars(value: string): boolean;
+export declare function hasFrontmatterUnsafeChars(value: string): boolean;
 /**
  * Parses frontmatter from a memory Markdown file.
  *
@@ -7096,7 +8388,7 @@ declare function hasFrontmatterUnsafeChars(value: string): boolean;
  * Rejects empty/whitespace-only bodies (truncated writes).
  * Preserves leading blank lines in content during roundtrips.
  */
-declare function parseMemoryFrontmatter(raw: string): {
+export declare function parseMemoryFrontmatter(raw: string): {
     readonly frontmatter: MemoryFrontmatter;
     readonly content: string;
 } | undefined;
@@ -7111,9 +8403,9 @@ declare function parseMemoryFrontmatter(raw: string): {
  * Returns undefined if \`type\` is not a valid MemoryType at runtime,
  * or if content is empty/whitespace-only (aligned with parser invariant).
  */
-declare function serializeMemoryFrontmatter(frontmatter: MemoryFrontmatter, content: string): string | undefined;
+export declare function serializeMemoryFrontmatter(frontmatter: MemoryFrontmatter, content: string): string | undefined;
 /** Validation error for memory records. */
-interface MemoryValidationError {
+export interface MemoryValidationError {
     readonly field: string;
     readonly message: string;
 }
@@ -7124,7 +8416,7 @@ interface MemoryValidationError {
  * Name and description are validated after sanitization (control char
  * stripping) to match the serializer's acceptance criteria.
  */
-declare function validateMemoryRecordInput(input: Readonly<Record<string, unknown>>): readonly MemoryValidationError[];
+export declare function validateMemoryRecordInput(input: Readonly<Record<string, unknown>>): readonly MemoryValidationError[];
 /**
  * Validates that a file path is safe for use in MEMORY.md index entries.
  *
@@ -7140,7 +8432,7 @@ declare function validateMemoryRecordInput(input: Readonly<Record<string, unknow
  *
  * Returns undefined if valid, or an error message string if invalid.
  */
-declare function validateMemoryFilePath(filePath: string): string | undefined;
+export declare function validateMemoryFilePath(filePath: string): string | undefined;
 /**
  * Formats a MemoryIndexEntry as a single Markdown line for MEMORY.md.
  *
@@ -7153,7 +8445,7 @@ declare function validateMemoryFilePath(filePath: string): string | undefined;
  * File paths are validated: must be relative, no \`..\` traversal, \`.md\` extension.
  * Returns undefined if any field is empty after sanitization or the path is invalid.
  */
-declare function formatMemoryIndexEntry(entry: MemoryIndexEntry): string | undefined;
+export declare function formatMemoryIndexEntry(entry: MemoryIndexEntry): string | undefined;
 /**
  * Parses a single MEMORY.md index line into a MemoryIndexEntry.
  *
@@ -7162,10 +8454,8 @@ declare function formatMemoryIndexEntry(entry: MemoryIndexEntry): string | undef
  * Validates that the parsed file path is safe (relative, no traversal, .md).
  * Returns undefined if the line doesn't match or the path is invalid.
  */
-declare function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefined;
-
-export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, type MemoryFrontmatter, type MemoryIndex, type MemoryIndexEntry, type MemoryRecord, type MemoryRecordId, type MemoryRecordInput, type MemoryRecordPatch, type MemoryType, type MemoryValidationError, formatMemoryIndexEntry, hasFrontmatterUnsafeChars, isMemoryType, memoryRecordId, parseMemoryFrontmatter, parseMemoryIndexEntry, sanitizeFrontmatterValue, serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput };
-"
+export declare function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefined;
+//# sourceMappingURL=memory.d.ts.map"
 `;
 
 exports[`@koi/core API surface ./worker-protocol has stable type surface 1`] = `

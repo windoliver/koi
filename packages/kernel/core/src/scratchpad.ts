@@ -27,13 +27,11 @@ import type { AgentGroupId } from "./ecs.js";
 
 export type { AgentGroupId } from "./ecs.js";
 
-declare const __scratchpadPathBrand: unique symbol;
-
 /**
  * Branded string type for scratchpad file paths.
  * Must not contain `..`, must not start with `/`, max length enforced by constants.
  */
-export type ScratchpadPath = string & { readonly [__scratchpadPathBrand]: "ScratchpadPath" };
+export type ScratchpadPath = string & { readonly __scratchpadPathBrand: "ScratchpadPath" };
 
 /** Create a branded ScratchpadPath from a plain string. */
 export function scratchpadPath(raw: string): ScratchpadPath {

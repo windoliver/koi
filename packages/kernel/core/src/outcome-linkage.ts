@@ -13,14 +13,12 @@ import type { JsonObject } from "./common.js";
 // Branded correlation ID
 // ---------------------------------------------------------------------------
 
-declare const __decisionCorrelationBrand: unique symbol;
-
 /**
  * Branded string type for decision correlation identifiers.
  * Used to link agent decisions to downstream business outcomes.
  */
 export type DecisionCorrelationId = string & {
-  readonly [__decisionCorrelationBrand]: "DecisionCorrelationId";
+  readonly __decisionCorrelationBrand: "DecisionCorrelationId";
 };
 
 /** Create a branded DecisionCorrelationId from a plain string. */

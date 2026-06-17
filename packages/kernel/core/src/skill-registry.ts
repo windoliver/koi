@@ -18,13 +18,11 @@ import type { KoiError, Result } from "./errors.js";
 // Branded type — SkillId
 // ---------------------------------------------------------------------------
 
-declare const __skillIdBrand: unique symbol;
-
 /**
  * Branded string type for skill identifiers.
  * Prevents accidental mixing with agent IDs, session IDs, etc.
  */
-export type SkillId = string & { readonly [__skillIdBrand]: "SkillId" };
+export type SkillId = string & { readonly __skillIdBrand: "SkillId" };
 
 /** Create a branded SkillId from a plain string. */
 export function skillId(raw: string): SkillId {

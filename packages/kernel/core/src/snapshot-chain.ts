@@ -12,20 +12,16 @@ import type { KoiError, Result } from "./errors.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __chainIdBrand: unique symbol;
-
 /** Branded string for chain identity. Each chain is an independent snapshot sequence. */
-export type ChainId = string & { readonly [__chainIdBrand]: "ChainId" };
+export type ChainId = string & { readonly __chainIdBrand: "ChainId" };
 
 /** Create a ChainId from a raw string. */
 export function chainId(raw: string): ChainId {
   return raw as ChainId;
 }
 
-declare const __nodeIdBrand: unique symbol;
-
 /** Branded string for node identity. Each node is a unique snapshot in the DAG. */
-export type NodeId = string & { readonly [__nodeIdBrand]: "NodeId" };
+export type NodeId = string & { readonly __nodeIdBrand: "NodeId" };
 
 /** Create a NodeId from a raw string. */
 export function nodeId(raw: string): NodeId {

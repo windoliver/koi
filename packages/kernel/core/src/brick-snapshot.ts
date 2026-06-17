@@ -12,26 +12,22 @@ import type { BrickKind } from "./forge-types.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __brickIdBrand: unique symbol;
-
 /**
  * Branded string for brick identity.
  * Prevents mixing brick IDs with other string-typed IDs at compile time.
  */
-export type BrickId = string & { readonly [__brickIdBrand]: "BrickId" };
+export type BrickId = string & { readonly __brickIdBrand: "BrickId" };
 
 /** Create a BrickId from a raw string. */
 export function brickId(raw: string): BrickId {
   return raw as BrickId;
 }
 
-declare const __snapshotIdBrand: unique symbol;
-
 /**
  * Branded string for snapshot identity.
  * Each snapshot is a unique immutable version record.
  */
-export type SnapshotId = string & { readonly [__snapshotIdBrand]: "SnapshotId" };
+export type SnapshotId = string & { readonly __snapshotIdBrand: "SnapshotId" };
 
 /** Create a SnapshotId from a raw string. */
 export function snapshotId(raw: string): SnapshotId {
