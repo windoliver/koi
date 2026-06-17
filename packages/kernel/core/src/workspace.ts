@@ -15,10 +15,8 @@ import type { KoiError, Result } from "./errors.js";
 // Branded type
 // ---------------------------------------------------------------------------
 
-declare const __workspaceBrand: unique symbol;
-
 /** Branded string type for workspace identifiers. */
-export type WorkspaceId = string & { readonly [__workspaceBrand]: "WorkspaceId" };
+export type WorkspaceId = string & { readonly __workspaceBrand: "WorkspaceId" };
 
 /** Create a branded WorkspaceId from a plain string. */
 export function workspaceId(id: string): WorkspaceId {

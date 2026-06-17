@@ -7,6 +7,7 @@ set -euo pipefail
 TASK_DIR="${1:?task dir required}"
 TASK_ID=$(basename "$TASK_DIR")
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CLAWBENCH_SRC="${CLAWBENCH_SRC:-/tmp/claw-bench-src}"
 RESULTS_DIR="$REPO_ROOT/clawbench/results/$TASK_ID"
 WORKSPACE="$RESULTS_DIR/workspace"
 MANIFEST="$REPO_ROOT/clawbench/koi.yaml"
@@ -277,7 +278,7 @@ for iter in $(seq 1 $MAX_ITER); do
   set +e
   fails=$(_with_timeout "$VERIFY_TIMEOUT" env -i "${VERIFY_ENV[@]}" \
     "$REPO_ROOT/.venv-clawbench/bin/python" -m pytest \
-    --rootdir=/tmp/claw-bench-src/tasks \
+    --rootdir="$CLAWBENCH_SRC/tasks" \
     --workspace="$WORKSPACE" \
     "$TASK_DIR/verifier/test_output.py" \
     --tb=line --no-header -q 2>&1)
@@ -325,7 +326,7 @@ cd "$REPO_ROOT"
 set +e
 _with_timeout "$VERIFY_TIMEOUT" env -i "${VERIFY_ENV[@]}" \
   "$REPO_ROOT/.venv-clawbench/bin/python" -m pytest \
-  --rootdir=/tmp/claw-bench-src/tasks \
+  --rootdir="$CLAWBENCH_SRC/tasks" \
   --workspace="$WORKSPACE" \
   "$TASK_DIR/verifier/test_output.py" \
   -v --tb=short \

@@ -166,17 +166,15 @@ type AnomalySignal = AnomalyBase & AnomalyDetail;
  * walking, and pruning. Reusable for agents (via AgentSnapshot) and bricks.
  */
 
-declare const __chainIdBrand: unique symbol;
 /** Branded string for chain identity. Each chain is an independent snapshot sequence. */
 type ChainId = string & {
-    readonly [__chainIdBrand]: "ChainId";
+    readonly __chainIdBrand: "ChainId";
 };
 /** Create a ChainId from a raw string. */
 declare function chainId(raw: string): ChainId;
-declare const __nodeIdBrand: unique symbol;
 /** Branded string for node identity. Each node is a unique snapshot in the DAG. */
 type NodeId = string & {
-    readonly [__nodeIdBrand]: "NodeId";
+    readonly __nodeIdBrand: "NodeId";
 };
 /** Create a NodeId from a raw string. */
 declare function nodeId(raw: string): NodeId;
@@ -463,13 +461,12 @@ interface BrickComponentMap {
  * for branded identity.
  */
 
-declare const __bundleIdBrand: unique symbol;
 /**
  * Branded string for bundle identity.
  * Prevents mixing bundle IDs with other string-typed IDs at compile time.
  */
 type BundleId = string & {
-    readonly [__bundleIdBrand]: "BundleId";
+    readonly __bundleIdBrand: "BundleId";
 };
 /** Create a BundleId from a raw string. */
 declare function bundleId(raw: string): BundleId;
@@ -512,13 +509,12 @@ interface AgentBundle {
  * - type guard isCapabilityToken
  */
 
-declare const __capabilityBrand: unique symbol;
 /**
  * Branded string type for capability token identifiers.
  * Prevents accidental mixing with DelegationId or other string IDs at compile time.
  */
 type CapabilityId = string & {
-    readonly [__capabilityBrand]: "CapabilityId";
+    readonly __capabilityBrand: "CapabilityId";
 };
 /** Create a branded CapabilityId from a plain string. */
 declare function capabilityId(raw: string): CapabilityId;
@@ -1372,10 +1368,9 @@ interface UsagePurposeObservation {
  * as a zero-logic identity cast for type safety.
  */
 
-declare const __harnessIdBrand: unique symbol;
 /** Branded string type for harness identifiers. */
 type HarnessId = string & {
-    readonly [__harnessIdBrand]: "HarnessId";
+    readonly __harnessIdBrand: "HarnessId";
 };
 /** Create a branded HarnessId from a plain string. */
 declare function harnessId(raw: string): HarnessId;
@@ -1543,13 +1538,12 @@ interface KernelExtension {
  * Exception: branded type constructors (identity casts) are permitted in L0
  * as zero-logic operations for type safety.
  */
-declare const __nexusPathBrand: unique symbol;
 /**
  * Branded string type for Nexus namespace paths.
  * Must not contain \`..\`, must not start with \`/\`, max 512 characters.
  */
 type NexusPath = string & {
-    readonly [__nexusPathBrand]: "NexusPath";
+    readonly __nexusPathBrand: "NexusPath";
 };
 /** Create a branded NexusPath from a plain string. */
 declare function nexusPath(raw: string): NexusPath;
@@ -1671,13 +1665,12 @@ interface CriterionResult {
  * Format-agnostic: no ATIF concepts. ATIF document linkage is handled in runtime.
  */
 
-declare const __decisionCorrelationBrand: unique symbol;
 /**
  * Branded string type for decision correlation identifiers.
  * Used to link agent decisions to downstream business outcomes.
  */
 type DecisionCorrelationId = string & {
-    readonly [__decisionCorrelationBrand]: "DecisionCorrelationId";
+    readonly __decisionCorrelationBrand: "DecisionCorrelationId";
 };
 /** Create a branded DecisionCorrelationId from a plain string. */
 declare function decisionCorrelationId(id: string): DecisionCorrelationId;
@@ -1843,13 +1836,12 @@ interface PermissionEscalation {
  * invariants with zero logic.
  */
 
-declare const __proposalBrand: unique symbol;
 /**
  * Branded string type for proposal identifiers.
  * Prevents accidental mixing with other string IDs at compile time.
  */
 type ProposalId = string & {
-    readonly [__proposalBrand]: "ProposalId";
+    readonly __proposalBrand: "ProposalId";
 };
 /** Create a branded ProposalId from a plain string. */
 declare function proposalId(raw: string): ProposalId;
@@ -2759,17 +2751,15 @@ interface SystemSignalSource {
  * only on L0 types.
  */
 
-declare const __threadIdBrand: unique symbol;
 /** Branded string type for thread identifiers. */
 type ThreadId = string & {
-    readonly [__threadIdBrand]: "ThreadId";
+    readonly __threadIdBrand: "ThreadId";
 };
 /** Create a branded ThreadId from a plain string. */
 declare function threadId(raw: string): ThreadId;
-declare const __threadMessageIdBrand: unique symbol;
 /** Branded string type for thread message identifiers. Used as idempotency key (Decision 6A). */
 type ThreadMessageId = string & {
-    readonly [__threadMessageIdBrand]: "ThreadMessageId";
+    readonly __threadMessageIdBrand: "ThreadMessageId";
 };
 /** Create a branded ThreadMessageId from a plain string. */
 declare function threadMessageId(raw: string): ThreadMessageId;
@@ -2981,10 +2971,9 @@ type ToolsetResolution = {
  * in L0 as a zero-logic identity cast for type safety.
  */
 
-declare const __transcriptEntryIdBrand: unique symbol;
 /** Branded string type for transcript entry identifiers. */
 type TranscriptEntryId = string & {
-    readonly [__transcriptEntryIdBrand]: "TranscriptEntryId";
+    readonly __transcriptEntryIdBrand: "TranscriptEntryId";
 };
 /** Create a branded TranscriptEntryId from a plain string. */
 declare function transcriptEntryId(raw: string): TranscriptEntryId;
@@ -3941,9 +3930,8 @@ import './chunk-HASH.js';
  * data validation, permitted in L0 per architecture-doc exceptions.
  */
 
-declare const __workerIdBrand: unique symbol;
 type WorkerId = string & {
-    readonly [__workerIdBrand]: "WorkerId";
+    readonly __workerIdBrand: "WorkerId";
 };
 declare const workerId: (s: string) => WorkerId;
 type WorkerBackendKind = "in-process" | "subprocess" | "tmux" | "remote";
@@ -4668,13 +4656,12 @@ import './chunk-HASH.js';
  * Layer: L0 — types only. No implementations, no imports from other packages.
  */
 
-declare const __capsuleBrand: unique symbol;
 /**
  * Branded string type for intent capsule identifiers.
  * Prevents accidental mixing with other ID types at compile time.
  */
 type CapsuleId = string & {
-    readonly [__capsuleBrand]: "CapsuleId";
+    readonly __capsuleBrand: "CapsuleId";
 };
 /** Create a branded CapsuleId from a plain string. */
 declare function capsuleId(raw: string): CapsuleId;
@@ -6672,10 +6659,9 @@ exports[`@koi/core API surface ./zone has stable type surface 1`] = `
  * Exception: zoneId() branded type constructor is permitted in L0 as a
  * zero-logic identity cast for type safety.
  */
-declare const __zoneBrand: unique symbol;
 /** Branded string type for zone identifiers. */
 type ZoneId = string & {
-    readonly [__zoneBrand]: "ZoneId";
+    readonly __zoneBrand: "ZoneId";
 };
 /** Create a branded ZoneId from a plain string. */
 declare function zoneId(id: string): ZoneId;
@@ -6928,7 +6914,6 @@ exports[`@koi/core API surface ./replacement has stable type surface 1`] = `
  * Exception: branded type constructor (replacementRef) is permitted in L0
  * as it is a zero-logic identity cast for type safety.
  */
-declare const __replacementRefBrand: unique symbol;
 /**
  * Branded string for content replacement references.
  *
@@ -6936,7 +6921,7 @@ declare const __replacementRefBrand: unique symbol;
  * store-implementation-defined. Consumer code must not parse it.
  */
 type ReplacementRef = string & {
-    readonly [__replacementRefBrand]: "ReplacementRef";
+    readonly __replacementRefBrand: "ReplacementRef";
 };
 /** Create a branded ReplacementRef from a plain string. */
 declare function replacementRef(ref: string): ReplacementRef;
@@ -6990,10 +6975,9 @@ exports[`@koi/core API surface ./memory has stable type surface 1`] = `
  * Exception: ALL_MEMORY_TYPES and MEMORY_INDEX_MAX_LINES are pure readonly
  * data constants derived from L0 type definitions.
  */
-declare const __memoryRecordBrand: unique symbol;
 /** Branded string type for memory record identifiers. */
 type MemoryRecordId = string & {
-    readonly [__memoryRecordBrand]: "MemoryRecordId";
+    readonly __memoryRecordBrand: "MemoryRecordId";
 };
 /** Create a branded MemoryRecordId from a plain string. */
 declare function memoryRecordId(raw: string): MemoryRecordId;

@@ -22,21 +22,17 @@ import type { TaskBoardSnapshot } from "./task-board.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __threadIdBrand: unique symbol;
-
 /** Branded string type for thread identifiers. */
-export type ThreadId = string & { readonly [__threadIdBrand]: "ThreadId" };
+export type ThreadId = string & { readonly __threadIdBrand: "ThreadId" };
 
 /** Create a branded ThreadId from a plain string. */
 export function threadId(raw: string): ThreadId {
   return raw as ThreadId;
 }
 
-declare const __threadMessageIdBrand: unique symbol;
-
 /** Branded string type for thread message identifiers. Used as idempotency key (Decision 6A). */
 export type ThreadMessageId = string & {
-  readonly [__threadMessageIdBrand]: "ThreadMessageId";
+  readonly __threadMessageIdBrand: "ThreadMessageId";
 };
 
 /** Create a branded ThreadMessageId from a plain string. */

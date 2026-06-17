@@ -16,10 +16,8 @@ import type { TaskBoardSnapshot } from "./task-board.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __harnessIdBrand: unique symbol;
-
 /** Branded string type for harness identifiers. */
-export type HarnessId = string & { readonly [__harnessIdBrand]: "HarnessId" };
+export type HarnessId = string & { readonly __harnessIdBrand: "HarnessId" };
 
 /** Create a branded HarnessId from a plain string. */
 export function harnessId(raw: string): HarnessId {

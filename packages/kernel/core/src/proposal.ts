@@ -29,13 +29,11 @@ import type { KoiError, Result } from "./errors.js";
 // Branded ProposalId
 // ---------------------------------------------------------------------------
 
-declare const __proposalBrand: unique symbol;
-
 /**
  * Branded string type for proposal identifiers.
  * Prevents accidental mixing with other string IDs at compile time.
  */
-export type ProposalId = string & { readonly [__proposalBrand]: "ProposalId" };
+export type ProposalId = string & { readonly __proposalBrand: "ProposalId" };
 
 /** Create a branded ProposalId from a plain string. */
 export function proposalId(raw: string): ProposalId {

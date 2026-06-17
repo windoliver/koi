@@ -10,7 +10,15 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
+
+// tsup builds only the configured entry points, so this test is never emitted
+// into dist/. But a compiled copy can be restored from turbo's build cache
+// (poisoned by a historical build that globbed src/**), and `bun test` scans
+// dist/ too. That copy has no colocated snapshot file, so it would fail in CI
+// (which refuses to write snapshots). The src/ test is the source of truth —
+// skip any dist/ copy.
+const isDistCopy = __dirname.includes(`${sep}dist${sep}`);
 
 interface ExportConfig {
   readonly types: string;
@@ -77,7 +85,7 @@ describe("normalizeDtsSurface", () => {
   });
 });
 
-describe("@koi/core API surface", () => {
+describe.skipIf(isDistCopy)("@koi/core API surface", () => {
   test("package.json has at least one export entry", () => {
     expect(exportEntries.length).toBeGreaterThan(0);
   });

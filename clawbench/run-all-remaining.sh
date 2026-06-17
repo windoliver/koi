@@ -4,13 +4,17 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TASKS_ROOT="/tmp/claw-bench-src/tasks"
+CLAWBENCH_SRC="${CLAWBENCH_SRC:-/tmp/claw-bench-src}"
+TASKS_ROOT="$CLAWBENCH_SRC/tasks"
 PROGRESS="$REPO_ROOT/clawbench/results/ALL-PROGRESS.txt"
 
 mkdir -p "$REPO_ROOT/clawbench/results"
 : > "$PROGRESS"
 
-# Treat a missing/empty task source as a hard error — otherwise this script
+# Ensure the task source tree exists (clones the koi-maintained fork on first run).
+[ -d "$TASKS_ROOT" ] || CLAWBENCH_SRC="$CLAWBENCH_SRC" "$REPO_ROOT/clawbench/setup-tasks.sh" >/dev/null
+
+# Treat a still-missing/empty task source as a hard error — otherwise this script
 # would loop zero times and still report "COMPLETE", masking a checkout/infra
 # regression with a false green.
 if [ ! -d "$TASKS_ROOT" ]; then

@@ -20,20 +20,16 @@ import type { KoiError, Result } from "./errors.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __debugSessionBrand: unique symbol;
-
 /** Branded string type for debug session identifiers. */
-export type DebugSessionId = string & { readonly [__debugSessionBrand]: "DebugSessionId" };
+export type DebugSessionId = string & { readonly __debugSessionBrand: "DebugSessionId" };
 
 /** Create a branded DebugSessionId from a plain string. */
 export function debugSessionId(raw: string): DebugSessionId {
   return raw as DebugSessionId;
 }
 
-declare const __breakpointBrand: unique symbol;
-
 /** Branded string type for breakpoint identifiers. */
-export type BreakpointId = string & { readonly [__breakpointBrand]: "BreakpointId" };
+export type BreakpointId = string & { readonly __breakpointBrand: "BreakpointId" };
 
 /** Create a branded BreakpointId from a plain string. */
 export function breakpointId(raw: string): BreakpointId {

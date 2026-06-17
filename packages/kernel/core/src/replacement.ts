@@ -12,15 +12,13 @@
 // Branded reference type
 // ---------------------------------------------------------------------------
 
-declare const __replacementRefBrand: unique symbol;
-
 /**
  * Branded string for content replacement references.
  *
  * Typically a content hash (SHA-256 hex), but the format is
  * store-implementation-defined. Consumer code must not parse it.
  */
-export type ReplacementRef = string & { readonly [__replacementRefBrand]: "ReplacementRef" };
+export type ReplacementRef = string & { readonly __replacementRefBrand: "ReplacementRef" };
 
 /** Create a branded ReplacementRef from a plain string. */
 export function replacementRef(ref: string): ReplacementRef {
