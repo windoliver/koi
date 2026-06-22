@@ -74,6 +74,24 @@ else
   EXFIL_DOWNGRADE_KV="KOI_EXFIL_ALLOW_DOWNGRADE=0"
 fi
 
+# Exfiltration guard exemption for *workspace file-write tools*. Several
+# ClawBench tasks REQUIRE writing credentials/tokens to a local workspace
+# file (e.g. tool-003 generates a `.env`; file-007 converts JSON-with-API-keys
+# to YAML). With "block" mode, the guard treats those legitimate writes as
+# exfiltration and the agent cannot complete the task no matter how many
+# iterations it retries. Exempting fs_write/fs_edit lets the *args destined
+# for those tools* skip secret scanning; tool *output* scanning still runs,
+# and the rich allowlist of network/shell tools is untouched — so reading
+# secrets from disk and POSTing them via web_fetch is still blocked.
+# Gated by KOI_EXFIL_ALLOW_DOWNGRADE on the koi side, so this only takes
+# effect when the operator explicitly opts in (above). Disabled on the
+# strict path so default benchmarking remains fail-closed.
+if [ "${CLAWBENCH_EXFIL_DOWNGRADE:-0}" = "1" ]; then
+  EXFIL_EXEMPT_KV="KOI_EXFIL_EXEMPT_TOOLS=fs_write,fs_edit"
+else
+  EXFIL_EXEMPT_KV="KOI_EXFIL_EXEMPT_TOOLS="
+fi
+
 # Minimal allowlisted environment for every untrusted child (setup.sh + koi).
 # `env -i` wipes the inherited environment; we re-add only non-sensitive
 # runtime essentials. No secrets here — the model key is added to the koi
@@ -226,15 +244,27 @@ CURRENT_PROMPT="$PROMPT"
 # the first attempt has room instead of burning iters on doomed low caps.
 if echo " $HEAVY_TASKS " | grep -qF " $TASK_ID "; then
   TOKEN_LADDER=(24000 32000 48000 64000)
+  # Per-task turn budget. The engine's DEFAULT_MAX_TURNS is 25, which truncates
+  # large multi-file tasks (e.g. cs-001's rate-limiter impl: 9/9 unit tests
+  # pass mid-run but the agent ran out of turns before writing the results
+  # artifact). Heavy tasks get a higher cap; everything else keeps the engine
+  # default to bound cost on the long tail.
+  MAX_TURNS=60
 else
   TOKEN_LADDER=(8000 16000 32000 64000)
+  # Bumped from engine DEFAULT_MAX_TURNS=25 to 40 after observing 6 non-heavy
+  # tasks (cs-004, doc-004, doc-008, web-010, wfl-011, wfl-012) hitting the
+  # 25-turn cap mid-task. These are batch-mutation flows (rename N files,
+  # restructure document, diff two HTML trees) that legitimately need more
+  # than 25 tool calls. 40 is still well below HEAVY's 60 and bounds cost.
+  MAX_TURNS=40
 fi
 cap_idx=0
 for iter in $(seq 1 $MAX_ITER); do
   iter_cap="${TOKEN_LADDER[$cap_idx]}"
   echo "--- iter $iter (max_tokens=$iter_cap) ---" >&2
   _with_timeout "$KOI_TIMEOUT" env -i "${SAFE_ENV[@]}" \
-    "$EXFIL_ACTION_KV" "$EXFIL_DOWNGRADE_KV" \
+    "$EXFIL_ACTION_KV" "$EXFIL_DOWNGRADE_KV" "$EXFIL_EXEMPT_KV" \
     "KOI_MAX_TOKENS=$iter_cap" \
     "$MODEL_KEY_KV" \
     bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" start \
@@ -248,13 +278,18 @@ for iter in $(seq 1 $MAX_ITER); do
     --allow-tool Grep \
     --allow-tool Bash \
     --max-duration-ms 300000 \
+    --max-turns "$MAX_TURNS" \
     > "$RESULTS_DIR/agent.iter${iter}.ndjson" 2> "$RESULTS_DIR/agent.iter${iter}.stderr" || echo "iter $iter exit=$?" >&2
 
   # Budget-reservation 402: OpenRouter reserves max_tokens*price up front and
   # rejects with "can only afford N" when the reservation exceeds the daily
   # allowance. Escalating UP (the generic path below) makes this strictly
   # worse. Parse the affordable N and clamp the NEXT iter's cap below it.
-  afford=$(grep -oE 'can only afford [0-9]+' "$RESULTS_DIR/agent.iter${iter}.ndjson" 2>/dev/null | grep -oE '[0-9]+' | head -1)
+  # `|| true`: under `set -euo pipefail` a no-match grep makes this
+  # command-substitution exit non-zero, which would abort the whole run
+  # (the common success path has no budget-402 string) before the verifier
+  # ever executes. The empty-string result is the intended "not found".
+  afford=$(grep -oE 'can only afford [0-9]+' "$RESULTS_DIR/agent.iter${iter}.ndjson" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
   if [ -n "${afford:-}" ]; then
     # Clamp strictly below the affordable amount (OpenRouter requires
     # max_tokens <= afford). Leave ~10% headroom; never go below 1000.
@@ -299,8 +334,10 @@ for iter in $(seq 1 $MAX_ITER); do
     continue
   fi
 
-  # Extract failed test names + assertion messages for feedback
-  feedback=$(echo "$fails" | grep -E "^(FAILED|E  |assert )" | head -20)
+  # Extract failed test names + assertion messages for feedback.
+  # `|| true`: a no-match grep here would otherwise abort the run under
+  # `set -e` (pipefail) on the very iteration we need feedback for.
+  feedback=$(echo "$fails" | grep -E "^(FAILED|E  |assert )" | head -20 || true)
   CURRENT_PROMPT="$PROMPT
 
 PREVIOUS ATTEMPT FAILED THE VERIFIER. Failing checks from pytest output:

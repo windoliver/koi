@@ -34,6 +34,10 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
   `KOI_EXFIL_ALLOW_DOWNGRADE=1` is also set — weakening the exfiltration guard
   requires an explicit opt-in; `block` is re-assertable unconditionally and an
   unrecognized/ungated value logs a warning and falls back to the guard default.
+  The same downgrade gate also unlocks `KOI_EXFIL_EXEMPT_TOOLS` (comma-separated
+  tool IDs), which is parsed into a Set and passed to `exemptToolIds` on the
+  guard config so the named tools skip input + tool_call-args scanning while
+  tool-output scanning remains in effect.
 - **Cloud sandbox execution wiring (#1550)**: CLI now depends directly on
   `@koi/code-executor` and `@koi/middleware-sandbox`. The TUI/start runtime
   stack can expose `execute_script` through an injected sandbox executor while

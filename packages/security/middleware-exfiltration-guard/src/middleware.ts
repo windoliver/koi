@@ -87,9 +87,20 @@ export function createExfiltrationGuardMiddleware(
         return response;
       }
 
-      // Build scannable text from content + richContent (tool_call args, thinking, etc.)
+      // Build scannable text from content + richContent (tool_call args, thinking, etc.).
+      // tool_call entries whose `name` is in `exemptToolIds` are excluded from the
+      // scan — their args are an expected destination for secrets (e.g. fs_write
+      // generating a `.env` task deliverable).
+      const filteredRich =
+        response.richContent !== undefined
+          ? response.richContent.filter(
+              (block) => !(block.kind === "tool_call" && config.exemptToolIds.has(block.name)),
+            )
+          : undefined;
       const richText =
-        response.richContent !== undefined ? safeSerializeForScan(response.richContent) : undefined;
+        filteredRich !== undefined && filteredRich.length > 0
+          ? safeSerializeForScan(filteredRich)
+          : undefined;
       const textToScan =
         richText !== undefined ? `${response.content}\n${richText}` : response.content;
 
@@ -161,7 +172,11 @@ export function createExfiltrationGuardMiddleware(
       // --- Input scanning (gated by scanToolInput) ---
       // let justified: mutable to allow redacting input before next()
       let effectiveRequest = request;
-      if (config.scanToolInput) {
+      // Exempt tools (e.g. fs_write generating a `.env` deliverable) skip input
+      // scanning. Output scanning still runs — fs_read returning workspace
+      // secrets to the model remains blocked.
+      const inputScanExempt = config.exemptToolIds.has(request.toolId);
+      if (config.scanToolInput && !inputScanExempt) {
         const result = redactor.redactObject(request.input);
 
         // Fail-closed: redaction engine failure (secretCount === -1)
@@ -336,8 +351,17 @@ export function createExfiltrationGuardMiddleware(
 
       // Buffered chunks — held for scanning, replayed on done
       const heldChunks: ModelChunk[] = [];
+      // Track which tool_call ids are exempt from scan-buffer accumulation.
+      // tool_call_start carries the toolName; subsequent tool_call_delta/end
+      // chunks reference the call by callId. Args of exempt calls are still
+      // held for replay but never enter `buffer`, so they cannot trip the
+      // model-output secret scan.
+      const exemptCallIds = new Set<string>();
 
       for await (const chunk of next(request)) {
+        if (chunk.kind === "tool_call_start" && config.exemptToolIds.has(chunk.toolName)) {
+          exemptCallIds.add(chunk.callId);
+        }
         // Buffer all content-bearing and tool-call lifecycle chunk kinds for scanning.
         // tool_call_end MUST be buffered alongside start/delta to preserve ordering.
         const isContentChunk =
@@ -358,9 +382,18 @@ export function createExfiltrationGuardMiddleware(
           }
 
           heldChunks.push(chunk);
+          // Exempt tool_call args bypass scan-buffer accumulation. Chunk is
+          // still held so it replays in order; only the *scan text* is skipped.
+          const isExemptToolCallChunk =
+            (chunk.kind === "tool_call_start" ||
+              chunk.kind === "tool_call_delta" ||
+              chunk.kind === "tool_call_end") &&
+            "callId" in chunk &&
+            exemptCallIds.has(chunk.callId);
           // Extract scannable text from chunk
-          const chunkText =
-            "delta" in chunk && typeof chunk.delta === "string"
+          const chunkText = isExemptToolCallChunk
+            ? ""
+            : "delta" in chunk && typeof chunk.delta === "string"
               ? chunk.delta
               : "args" in chunk && typeof chunk.args === "string"
                 ? chunk.args
@@ -450,7 +483,14 @@ export function createExfiltrationGuardMiddleware(
         if (chunk.kind === "done" && !scanned && !overflowed) {
           scanned = true;
 
-          if (buffer.length > 0) {
+          // If buffer is empty but held chunks exist (e.g. all content was
+          // exempt tool_call args), replay held chunks before falling through
+          // to the done chunk yield.
+          if (buffer.length === 0 && heldChunks.length > 0) {
+            for (const held of heldChunks) {
+              yield held;
+            }
+          } else if (buffer.length > 0) {
             const result = redactor.redactString(buffer);
 
             // Fail-closed on redaction failure
@@ -524,7 +564,7 @@ export function createExfiltrationGuardMiddleware(
 
             // Buffer scan found no secrets — also check done.response payload
             // in case the adapter placed final content only in the terminal chunk.
-            const donePayload = buildDonePayloadForScan(chunk);
+            const donePayload = buildDonePayloadForScan(chunk, config.exemptToolIds);
             if (donePayload !== undefined) {
               const doneResult = redactor.redactString(donePayload);
               if (doneResult.matchCount > 0) {
@@ -641,14 +681,22 @@ function sanitizeModelResponse(response: ModelResponse, content: string): ModelR
  * Build a scannable string from a done chunk's response payload (content + richContent).
  * Returns undefined if there's nothing to scan.
  */
-function buildDonePayloadForScan(chunk: ModelChunk): string | undefined {
+function buildDonePayloadForScan(
+  chunk: ModelChunk,
+  exemptToolIds: ReadonlySet<string> = new Set<string>(),
+): string | undefined {
   if (chunk.kind !== "done") return undefined;
   const resp = chunk.response;
   const parts: string[] = [];
   if (resp.content.length > 0) parts.push(resp.content);
   if (resp.richContent !== undefined) {
-    const rich = safeSerializeForScan(resp.richContent);
-    if (rich !== undefined) parts.push(rich);
+    const filtered = resp.richContent.filter(
+      (block) => !(block.kind === "tool_call" && exemptToolIds.has(block.name)),
+    );
+    if (filtered.length > 0) {
+      const rich = safeSerializeForScan(filtered);
+      if (rich !== undefined) parts.push(rich);
+    }
   }
   return parts.length > 0 ? parts.join("\n") : undefined;
 }

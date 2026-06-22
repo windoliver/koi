@@ -136,6 +136,7 @@ interface ExfiltrationGuardConfig {
   readonly maxStringLength?: number;                            // default: 100_000
   readonly scanToolInput?: boolean;                             // default: true
   readonly scanModelOutput?: boolean;                           // default: true
+  readonly exemptToolIds?: ReadonlySet<string>;                 // default: empty set
 }
 
 interface ExfiltrationEvent {
@@ -178,7 +179,22 @@ const guard = createExfiltrationGuardMiddleware({
 
 // Disable via RuntimeConfig
 const runtime = createRuntime({ exfiltrationGuard: false });
+
+// Exempt specific tools from input + tool_call-args scanning. Tool *output*
+// scanning still runs. Use for tools whose legitimate job is to persist
+// generated credentials to the agent's own workspace (e.g. `fs_write`
+// producing a `.env` task deliverable). Do NOT add network/shell tools.
+const guard = createExfiltrationGuardMiddleware({
+  exemptToolIds: new Set(["fs_write", "fs_edit"]),
+});
 ```
+
+### `KOI_EXFIL_EXEMPT_TOOLS` (runtime env)
+
+The CLI runtime reads a comma-separated `KOI_EXFIL_EXEMPT_TOOLS` env var and
+passes the parsed Set to `exemptToolIds`. Gated by `KOI_EXFIL_ALLOW_DOWNGRADE=1`
+(same opt-in as `KOI_EXFIL_ACTION`) so an inherited env value cannot silently
+weaken the guard.
 
 ---
 

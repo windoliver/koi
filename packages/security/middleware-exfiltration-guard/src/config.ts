@@ -31,6 +31,19 @@ export interface ExfiltrationGuardConfig {
   readonly scanToolInput: boolean;
   /** Scan model output text. Default: true. */
   readonly scanModelOutput: boolean;
+  /**
+   * Tool IDs whose inputs and tool_call args (in model output) are exempt
+   * from secret scanning. Tool output scanning still runs.
+   *
+   * Use for tools whose legitimate job is to persist credentials to the
+   * agent's own workspace (e.g. `fs_write` generating a `.env` file as
+   * the requested task deliverable). Pre-existing exfil vectors via the
+   * tool's *output* (fs_read leaking workspace secrets back to the model)
+   * are unaffected.
+   *
+   * SECURITY: do NOT add network or shell-execution tools here. Default: empty.
+   */
+  readonly exemptToolIds: ReadonlySet<string>;
 }
 
 const VALID_ACTIONS: ReadonlySet<string> = new Set(["block", "redact", "warn"]);
@@ -43,6 +56,7 @@ export const DEFAULT_EXFILTRATION_GUARD_CONFIG: ExfiltrationGuardConfig = {
   maxStringLength: 100_000,
   scanToolInput: true,
   scanModelOutput: true,
+  exemptToolIds: new Set<string>(),
 } as const;
 
 /** Result type for config validation. */
@@ -73,6 +87,17 @@ export function validateExfiltrationGuardConfig(
       error: {
         code: "VALIDATION",
         message: "maxStringLength must be a positive number",
+        retryable: false,
+      },
+    };
+  }
+
+  if (!(config.exemptToolIds instanceof Set)) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "exemptToolIds must be a Set of strings",
         retryable: false,
       },
     };
