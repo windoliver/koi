@@ -323,10 +323,26 @@ Prefer the package scripts if available under `packages/net/gateway-stack/script
 Temporal E2E is env-gated. Skip only if no Temporal service is available and
 record the skip in `$BUG_LOG`.
 
+No Docker needed — `temporal server start-dev --ip 127.0.0.1 --port 7233 --headless`
+gives a local server. Then run the gated E2E. The env var only reaches the test when
+it is NOT stripped by turbo, so use ONE of:
+
 ```bash
+temporal server start-dev --ip 127.0.0.1 --port 7233 --headless &   # local server
 export TEMPORAL_E2E_ADDRESS=127.0.0.1:7233
-bun test packages/exec/temporal
+
+# (a) file-scoped, archive-safe (env passes through bun directly):
+TEMPORAL_E2E_ADDRESS=127.0.0.1:7233 \
+  bun test packages/exec/temporal/src/__tests__/e2e.test.ts
+# (b) via turbo — works because TEMPORAL_E2E_ADDRESS is in turbo.json passThroughEnv:
+bun run test --filter=@koi/temporal
 ```
+
+> Plain `bun test packages/exec/temporal` also matches `archive/v1/...` (see §5 caveat),
+> and a bare `bun run test --filter=@koi/temporal` previously left the E2E rows SKIPPED
+> because turbo stripped `TEMPORAL_E2E_ADDRESS` from the test env. Both are now addressed:
+> the gate vars (`TEMPORAL_E2E_ADDRESS`, `KOI_E2E_NEXUS`, `DOCKER_E2E`) are in
+> `turbo.json` `passThroughEnv`.
 
 | Q | Command | Setup | Pass Criteria |
 |---|---|---|---|

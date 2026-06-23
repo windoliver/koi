@@ -14,7 +14,8 @@
         "../../tsconfig.base.json",
         "../../../scripts/run-runtime-package-tests.ts"
       ],
-      "outputs": ["coverage/**"]
+      "outputs": ["coverage/**"],
+      "passThroughEnv": ["TEMPORAL_E2E_ADDRESS", "KOI_E2E_NEXUS", "DOCKER_E2E"]
     },
     "test:api": {
       "dependsOn": ["^build", "build"],
