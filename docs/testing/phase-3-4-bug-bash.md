@@ -595,6 +595,25 @@ Phase 3/4 surfaces so integration bugs are not hidden by package-only tests.
 Run these after the query catalog. A Phase 3/4 bug bash is not complete until
 every non-skipped gate is green.
 
+> **Runner caveat (read first).** `bun test <path>` treats `<path>` as a
+> *substring filter*, so from the repo root it also discovers the archived v1
+> mirror under `archive/v1/<path>`. Those archived tests are not workspace
+> members, import unlinked deps, and at least one (`archive/v1/packages/net/gateway`)
+> **hangs indefinitely** without `--timeout`. This produces spurious failures and
+> hangs that look like product regressions but are not. Run each gate through the
+> workspace-scoped turbo runner instead — it executes only the package's own
+> `src/**` and never touches `archive/`:
+>
+> ```bash
+> bun install                      # required once per worktree (CLAUDE.md §Bun)
+> bun run test --filter=@koi/artifacts --filter=@koi/proactive ...   # per gate
+> # or the whole suite (archive-safe, content-cached):
+> bun run test
+> ```
+>
+> Use the literal `bun test <path>` rows below only when scoped to a single file
+> *and* you have confirmed no `archive/v1/<same-path>` exists.
+
 ```bash
 bun test packages/meta/runtime/src/__tests__/artifacts-integration.test.ts
 bun test packages/lib/artifacts
