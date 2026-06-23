@@ -20,7 +20,9 @@ import {
   loadUserMcpSetup,
   loadUserRegisteredHooks,
   mergeUserAndPluginHooks,
+  readSessionMeta,
   resolveWebCacheTtlMs,
+  writeSessionMeta,
 } from "./shared-wiring.js";
 
 function mkTempCwd(): string {
@@ -1158,5 +1160,43 @@ describe("mergeUserAndPluginHooks", () => {
     const merged = mergeUserAndPluginHooks(user, [], { filterAgentHooks: true });
     expect(merged).toHaveLength(1);
     expect(merged[0]?.hook.kind).toBe("agent");
+  });
+});
+
+describe("session provenance sidecar — no-manifest resumability", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-sidecar-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Regression: a default (no-manifest) TUI session must still write a
+  // provenance sidecar, otherwise `koi tui --resume <id>` fails closed with
+  // "session sidecar is missing" even though the TUI prints that exact resume
+  // hint on exit. readSessionMeta must report it as present (kind "ok"), not
+  // "absent", so the resume guard does not refuse it.
+  test("writeSessionMeta with no manifest produces a resumable (kind 'ok') sidecar", async () => {
+    await writeSessionMeta(dir, "sess-no-manifest", {});
+    const result = await readSessionMeta(dir, "sess-no-manifest");
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.meta.manifestPath).toBeUndefined();
+    }
+  });
+
+  test("readSessionMeta reports a truly absent sidecar as 'absent'", async () => {
+    const result = await readSessionMeta(dir, "never-written");
+    expect(result.kind).toBe("absent");
+  });
+
+  test("manifest-backed sidecar round-trips the manifest path", async () => {
+    await writeSessionMeta(dir, "sess-with-manifest", { manifestPath: "/tmp/agent.yaml" });
+    const result = await readSessionMeta(dir, "sess-with-manifest");
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.meta.manifestPath).toBe("/tmp/agent.yaml");
+    }
   });
 });

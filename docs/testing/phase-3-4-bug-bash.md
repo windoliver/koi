@@ -69,9 +69,15 @@ unset KOI_DISABLE_HOOKS
 
 ### 1.3 Launch TUI
 
+> **Model credentials.** The launch `cd`s into `$FIXTURE`, and bun only auto-loads
+> `.env` from the current working directory — so the worktree's `$REPO_ROOT/.env` is
+> NOT picked up and the TUI falls back to a `dummy` key (model calls fail with HTTP
+> 401). Source the repo `.env` into the session (below) or export `OPENROUTER_API_KEY`
+> explicitly. With it loaded, the status line reads `… · openrouter` (not `· openai`).
+
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "set -a; . '$REPO_ROOT/.env'; set +a; cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 sleep 2
 tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ```
@@ -90,7 +96,7 @@ tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
 rm -rf "$KOI_HOME/.koi/sessions" "$FIXTURE/.koi" "$KOI_HOME/.koi/plugins"
 mkdir -p "$KOI_HOME/.koi/sessions"
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "set -a; . '$REPO_ROOT/.env'; set +a; cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 sleep 2
 ```
 
@@ -317,10 +323,26 @@ Prefer the package scripts if available under `packages/net/gateway-stack/script
 Temporal E2E is env-gated. Skip only if no Temporal service is available and
 record the skip in `$BUG_LOG`.
 
+No Docker needed — `temporal server start-dev --ip 127.0.0.1 --port 7233 --headless`
+gives a local server. Then run the gated E2E. The env var only reaches the test when
+it is NOT stripped by turbo, so use ONE of:
+
 ```bash
+temporal server start-dev --ip 127.0.0.1 --port 7233 --headless &   # local server
 export TEMPORAL_E2E_ADDRESS=127.0.0.1:7233
-bun test packages/exec/temporal
+
+# (a) file-scoped, archive-safe (env passes through bun directly):
+TEMPORAL_E2E_ADDRESS=127.0.0.1:7233 \
+  bun test packages/exec/temporal/src/__tests__/e2e.test.ts
+# (b) via turbo — works because TEMPORAL_E2E_ADDRESS is in turbo.json passThroughEnv:
+bun run test --filter=@koi/temporal
 ```
+
+> Plain `bun test packages/exec/temporal` also matches `archive/v1/...` (see §5 caveat),
+> and a bare `bun run test --filter=@koi/temporal` previously left the E2E rows SKIPPED
+> because turbo stripped `TEMPORAL_E2E_ADDRESS` from the test env. Both are now addressed:
+> the gate vars (`TEMPORAL_E2E_ADDRESS`, `KOI_E2E_NEXUS`, `DOCKER_E2E`) are in
+> `turbo.json` `passThroughEnv`.
 
 | Q | Command | Setup | Pass Criteria |
 |---|---|---|---|
@@ -594,6 +616,25 @@ Phase 3/4 surfaces so integration bugs are not hidden by package-only tests.
 
 Run these after the query catalog. A Phase 3/4 bug bash is not complete until
 every non-skipped gate is green.
+
+> **Runner caveat (read first).** `bun test <path>` treats `<path>` as a
+> *substring filter*, so from the repo root it also discovers the archived v1
+> mirror under `archive/v1/<path>`. Those archived tests are not workspace
+> members, import unlinked deps, and at least one (`archive/v1/packages/net/gateway`)
+> **hangs indefinitely** without `--timeout`. This produces spurious failures and
+> hangs that look like product regressions but are not. Run each gate through the
+> workspace-scoped turbo runner instead — it executes only the package's own
+> `src/**` and never touches `archive/`:
+>
+> ```bash
+> bun install                      # required once per worktree (CLAUDE.md §Bun)
+> bun run test --filter=@koi/artifacts --filter=@koi/proactive ...   # per gate
+> # or the whole suite (archive-safe, content-cached):
+> bun run test
+> ```
+>
+> Use the literal `bun test <path>` rows below only when scoped to a single file
+> *and* you have confirmed no `archive/v1/<same-path>` exists.
 
 ```bash
 bun test packages/meta/runtime/src/__tests__/artifacts-integration.test.ts

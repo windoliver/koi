@@ -2839,8 +2839,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Persist session provenance (deferred from earlier so storeId is known).
   // On --resume the sidecar already exists and contains the original
   // storeId — do not rewrite it; the original must remain authoritative.
-  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
-    const meta: import("./shared-wiring.js").SessionMeta = { manifestPath: resolvedManifestPath };
+  // Write the provenance sidecar for EVERY new session, not only
+  // manifest-backed ones. Resume fails closed when the sidecar is absent
+  // (see the "session sidecar is missing" guard above), and the TUI prints
+  // a `koi tui --resume <id>` hint unconditionally on exit — so a
+  // no-manifest session that skipped the sidecar could never be resumed.
+  // The `/clear` re-key path already writes the sidecar unconditionally;
+  // mirror that here. manifestPath is included only when defined.
+  if (flags.resume === undefined) {
+    const meta: import("./shared-wiring.js").SessionMeta = {
+      ...(resolvedManifestPath !== undefined ? { manifestPath: resolvedManifestPath } : {}),
+    };
     if (manifestAceConfig !== undefined) {
       (meta as { ace?: import("./shared-wiring.js").SessionAceProvenance }).ace = {
         enabled: manifestAceConfig.enabled,
