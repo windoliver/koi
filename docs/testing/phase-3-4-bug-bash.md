@@ -69,9 +69,15 @@ unset KOI_DISABLE_HOOKS
 
 ### 1.3 Launch TUI
 
+> **Model credentials.** The launch `cd`s into `$FIXTURE`, and bun only auto-loads
+> `.env` from the current working directory — so the worktree's `$REPO_ROOT/.env` is
+> NOT picked up and the TUI falls back to a `dummy` key (model calls fail with HTTP
+> 401). Source the repo `.env` into the session (below) or export `OPENROUTER_API_KEY`
+> explicitly. With it loaded, the status line reads `… · openrouter` (not `· openai`).
+
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "set -a; . '$REPO_ROOT/.env'; set +a; cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 sleep 2
 tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ```
@@ -90,7 +96,7 @@ tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
 rm -rf "$KOI_HOME/.koi/sessions" "$FIXTURE/.koi" "$KOI_HOME/.koi/plugins"
 mkdir -p "$KOI_HOME/.koi/sessions"
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "set -a; . '$REPO_ROOT/.env'; set +a; cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 sleep 2
 ```
 
